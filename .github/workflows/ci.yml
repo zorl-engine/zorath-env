@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Smoke test (check/docs/init)
+        run: |
+          cp examples/.env.example .env
+          cp examples/env.schema.json env.schema.json
+          cargo run -- check
+          cargo run -- docs > /tmp/ENVIRONMENT.md
+          cargo run -- init --example examples/.env.example --schema /tmp/env.schema.json
