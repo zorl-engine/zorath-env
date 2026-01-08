@@ -20,16 +20,16 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            name: zenv-linux-x64
+            name: zenv-linux
           - target: x86_64-apple-darwin
             os: macos-latest
-            name: zenv-macos-x64
+            name: zenv-macos-intel
           - target: aarch64-apple-darwin
             os: macos-latest
-            name: zenv-macos-arm64
+            name: zenv-macos-arm
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            name: zenv-windows-x64.exe
+            name: zenv.exe
 
     steps:
       - uses: actions/checkout@v4
