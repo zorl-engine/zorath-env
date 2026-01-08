@@ -18,6 +18,10 @@ A tiny, fast CLI that makes `.env` sane.
 
 > **Schema is the source of truth.** Docs and examples should be generated from it.
 
+## Works with any stack
+
+`zenv` is language-agnostic. Use it with Node.js, Python, Go, Ruby, Rust, Java, PHP, or any project that uses `.env` files. It's a standalone binary with zero runtime dependencies.
+
 ## Install
 
 ### Via cargo (recommended)
