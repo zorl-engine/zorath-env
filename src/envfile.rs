@@ -43,3 +43,94 @@ pub fn parse_env_str(content: &str) -> HashMap<String, String> {
 
     map
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_key_value() {
+        let input = "FOO=bar";
+        let result = parse_env_str(input);
+        assert_eq!(result.get("FOO"), Some(&"bar".to_string()));
+    }
+
+    #[test]
+    fn test_multiple_key_values() {
+        let input = "FOO=bar\nBAZ=qux";
+        let result = parse_env_str(input);
+        assert_eq!(result.get("FOO"), Some(&"bar".to_string()));
+        assert_eq!(result.get("BAZ"), Some(&"qux".to_string()));
+    }
+
+    #[test]
+    fn test_ignores_comments() {
+        let input = "# this is a comment\nFOO=bar\n# another comment";
+        let result = parse_env_str(input);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("FOO"), Some(&"bar".to_string()));
+    }
+
+    #[test]
+    fn test_ignores_blank_lines() {
+        let input = "\n\nFOO=bar\n\n\nBAZ=qux\n";
+        let result = parse_env_str(input);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_export_prefix() {
+        let input = "export FOO=bar";
+        let result = parse_env_str(input);
+        assert_eq!(result.get("FOO"), Some(&"bar".to_string()));
+    }
+
+    #[test]
+    fn test_strips_double_quotes() {
+        let input = "FOO=\"bar baz\"";
+        let result = parse_env_str(input);
+        assert_eq!(result.get("FOO"), Some(&"bar baz".to_string()));
+    }
+
+    #[test]
+    fn test_strips_single_quotes() {
+        let input = "FOO='bar baz'";
+        let result = parse_env_str(input);
+        assert_eq!(result.get("FOO"), Some(&"bar baz".to_string()));
+    }
+
+    #[test]
+    fn test_preserves_mismatched_quotes() {
+        let input = "FOO=\"bar'";
+        let result = parse_env_str(input);
+        assert_eq!(result.get("FOO"), Some(&"\"bar'".to_string()));
+    }
+
+    #[test]
+    fn test_empty_value() {
+        let input = "FOO=";
+        let result = parse_env_str(input);
+        assert_eq!(result.get("FOO"), Some(&"".to_string()));
+    }
+
+    #[test]
+    fn test_value_with_equals() {
+        let input = "DATABASE_URL=postgres://user:pass@host/db?foo=bar";
+        let result = parse_env_str(input);
+        assert_eq!(result.get("DATABASE_URL"), Some(&"postgres://user:pass@host/db?foo=bar".to_string()));
+    }
+
+    #[test]
+    fn test_trims_whitespace() {
+        let input = "  FOO  =  bar  ";
+        let result = parse_env_str(input);
+        assert_eq!(result.get("FOO"), Some(&"bar".to_string()));
+    }
+
+    #[test]
+    fn test_empty_input() {
+        let input = "";
+        let result = parse_env_str(input);
+        assert!(result.is_empty());
+    }
+}

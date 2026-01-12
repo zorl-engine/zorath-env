@@ -1,14 +1,28 @@
 # zenv - Tested and Verified
 
-**Version:** 0.1.1
+**Version:** 0.1.3
 **Status:** Verified Working
-**Test Date:** January 2025
+**Test Date:** January 12, 2025
 
 ---
 
 ## Test Summary
 
 zenv was tested on a real-world production codebase with 50+ environment variables across multiple `.env` files. All core features performed as expected.
+
+### Unit Test Coverage
+
+**v0.1.3** includes 90 unit tests covering all core functionality:
+
+| Module | Tests | Coverage |
+|--------|-------|----------|
+| `envfile.rs` | 12 | Parser: KEY=VALUE, comments, quotes, export prefix |
+| `schema.rs` | 12 | Type parsing, serialization, error handling |
+| `commands/check.rs` | 30 | All 6 type validations, required fields, unknown keys |
+| `commands/init.rs` | 22 | Type inference: bool, int, float, url, string |
+| `commands/docs.rs` | 14 | Markdown output format, sorting |
+
+All tests pass with zero warnings.
 
 ---
 
@@ -106,7 +120,7 @@ Runtime environment
 
 ## Conclusion
 
-zenv v0.1.1 successfully validates `.env` files against JSON schemas, detects configuration drift, and generates documentation. Ready for production use.
+zenv v0.1.3 successfully validates `.env` files against JSON schemas, detects configuration drift, and generates documentation. Now with 90 unit tests for comprehensive code coverage. Ready for production use.
 
 ---
 

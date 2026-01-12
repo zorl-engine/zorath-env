@@ -1,11 +1,13 @@
 [package]
 name = "zorath-env"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
-description = "A tiny CLI to validate .env using a schema, generate docs, and keep config sane."
+description = "CLI tool for .env file validation against JSON schema. Validates environment variables, detects missing required vars, catches configuration drift, generates Markdown documentation. Language-agnostic, works with any stack."
 license = "MIT"
 repository = "https://github.com/zorl-engine/zorath-env"
 readme = "README.md"
+keywords = ["dotenv", "env", "validation", "schema", "cli"]
+categories = ["command-line-utilities", "development-tools", "config"]
 
 [[bin]]
 name = "zenv"
