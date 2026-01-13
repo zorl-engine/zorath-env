@@ -5,3 +5,4 @@
 env.schema.json
 !examples/env.schema.json
 distribution/
+.claude/
