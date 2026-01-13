@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/zorl-engine/zorath-env/wiki
+    about: Check the wiki for usage guides and FAQ
+  - name: Security Vulnerabilities
+    url: https://github.com/zorl-engine/zorath-env/security/advisories/new
+    about: Report security issues privately (do not open public issues)
