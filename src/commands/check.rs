@@ -8,15 +8,62 @@ use regex::Regex;
 use crate::envfile;
 use crate::schema::{self, Schema, VarType};
 
+/// Fallback paths to check when primary env file doesn't exist
+const ENV_FALLBACKS: &[&str] = &[
+    ".env.local",
+    ".env.development",
+    ".env.development.local",
+];
+
+/// Try to find an env file, checking fallbacks if primary doesn't exist
+fn resolve_env_file(primary: &str) -> Option<String> {
+    if Path::new(primary).exists() {
+        return Some(primary.to_string());
+    }
+
+    // Only try fallbacks if user specified the default ".env"
+    if primary == ".env" {
+        for fallback in ENV_FALLBACKS {
+            if Path::new(fallback).exists() {
+                return Some((*fallback).to_string());
+            }
+        }
+    }
+
+    None
+}
+
+/// Build a helpful error message listing checked paths
+fn missing_env_error(primary: &str) -> String {
+    let mut msg = format!("Error: env file not found\n\nChecked:\n  - {primary} (not found)");
+
+    if primary == ".env" {
+        for fallback in ENV_FALLBACKS {
+            let status = if Path::new(fallback).exists() {
+                "exists"
+            } else {
+                "not found"
+            };
+            msg.push_str(&format!("\n  - {fallback} ({status})"));
+        }
+    }
+
+    msg.push_str("\n\nTip: Use --env to specify a path, e.g.: zenv check --env .env.local");
+    msg
+}
+
 pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool) -> Result<(), String> {
     let schema = schema::load_schema(schema_path).map_err(|e| e.to_string())?;
 
-    let env_map: HashMap<String, String> = if Path::new(env_path).exists() {
-        envfile::parse_env_file(env_path).map_err(|e| e.to_string())?
-    } else if allow_missing_env {
-        HashMap::new()
-    } else {
-        return Err(format!("env file not found: {env_path}"));
+    let env_map: HashMap<String, String> = match resolve_env_file(env_path) {
+        Some(resolved) => {
+            if resolved != env_path {
+                eprintln!("Note: Using {} (fallback)\n", resolved);
+            }
+            envfile::parse_env_file(&resolved).map_err(|e| e.to_string())?
+        }
+        None if allow_missing_env => HashMap::new(),
+        None => return Err(missing_env_error(env_path)),
     };
 
     // Interpolate variable references (${VAR} and $VAR)
@@ -25,10 +72,25 @@ pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool) -> Result
     let errors = validate(&schema, &env_map);
 
     if !errors.is_empty() {
-        eprintln!("zenv check failed:\n");
+        // Count unknown keys for the tip
+        let unknown_count = errors
+            .iter()
+            .filter(|e| e.contains("not in schema"))
+            .count();
+
+        eprintln!("Error: zenv check failed:\n");
         for e in &errors {
             eprintln!("- {e}");
         }
+
+        // Suggest init --merge if there are unknown keys
+        if unknown_count > 0 {
+            eprintln!(
+                "\nTip: {} unknown key(s) found. Consider updating your schema.",
+                unknown_count
+            );
+        }
+
         return Err("validation failed".into());
     }
 

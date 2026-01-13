@@ -1,6 +1,6 @@
 # zenv - Tested and Verified
 
-**Version:** 0.2.1
+**Version:** 0.2.2
 **Status:** Verified Working
 **Test Date:** January 13, 2025
 
@@ -12,7 +12,7 @@ zenv was tested on a real-world production codebase with 50+ environment variabl
 
 ### Unit Test Coverage
 
-**v0.2.1** includes 144 unit tests covering all core functionality:
+**v0.2.2** includes 145 unit tests covering all core functionality:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
@@ -21,8 +21,35 @@ zenv was tested on a real-world production codebase with 50+ environment variabl
 | `commands/check.rs` | 48 | Type validations, validation rules, required fields |
 | `commands/init.rs` | 22 | Type inference: bool, int, float, url, string |
 | `commands/docs.rs` | 14 | Markdown and JSON output formats, sorting |
+| `commands/version.rs` | 1 | Version output |
 
 All tests pass with zero warnings.
+
+---
+
+## New in v0.2.2
+
+### Version Command
+
+Check installed version and optionally query crates.io for updates:
+
+```bash
+zenv version                  # Show installed version
+zenv version --check-update   # Check for newer version
+```
+
+### Env File Fallback
+
+When `.env` doesn't exist, zenv automatically checks:
+1. `.env.local`
+2. `.env.development`
+3. `.env.development.local`
+
+This improves compatibility with Next.js and similar frameworks.
+
+### Improved Error Messages
+
+Better error output when env files are missing, showing which paths were checked.
 
 ---
 
@@ -227,12 +254,15 @@ $ zenv docs --schema child.schema.json
 | Circular reference detection | Working |
 | Custom file paths | Working |
 | Exit codes (0 = pass, 1 = fail) | Working |
+| `zenv version` command | Working |
+| `--check-update` flag | Working |
+| Env file fallback (.env.local, etc.) | Working |
 
 ---
 
 ## Conclusion
 
-zenv v0.2.1 adds JSON output format for the docs command, enabling tooling integration. Now with 144 unit tests for comprehensive coverage. Ready for production use.
+zenv v0.2.2 adds version command with update checking, env file fallback for Next.js compatibility, and improved error messages. Now with 145 unit tests for comprehensive coverage. Ready for production use.
 
 ---
 

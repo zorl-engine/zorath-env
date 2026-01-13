@@ -4,6 +4,10 @@
 
 # zorath-env
 
+[![Crates.io](https://img.shields.io/crates/v/zorath-env.svg)](https://crates.io/crates/zorath-env)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![More from zorl-engine](https://img.shields.io/badge/zorl--engine-more-blue)](https://edgeurl.io/p/zorl-engine)
+
 **Built by Zorath -- infrastructure for builders.**
 
 A tiny, fast CLI that makes `.env` sane.
@@ -83,6 +87,15 @@ zenv docs --format json > schema.json
 
 Creates `env.schema.json` from `.env.example` (best-effort inference, you refine types after).
 
+### `zenv version`
+
+Shows installed version and optionally checks for updates.
+
+```bash
+zenv version                  # Show installed version
+zenv version --check-update   # Check crates.io for newer version
+```
+
 ## Files
 
 By default, `zenv` looks for:
@@ -90,6 +103,16 @@ By default, `zenv` looks for:
 * `.env` (optional)
 * `.env.example` (optional)
 * `env.schema.json` (preferred)
+
+### Env file fallback
+
+If `.env` doesn't exist, `zenv check` will automatically try:
+
+1. `.env.local`
+2. `.env.development`
+3. `.env.development.local`
+
+This is useful for Next.js and other frameworks that use `.env.local` for secrets.
 
 You can override paths:
 
@@ -224,6 +247,10 @@ if [ -f "env.schema.json" ]; then
   fi
 fi
 ```
+
+## Connect
+
+More from Zorath: [edgeurl.io/p/zorl-engine](https://edgeurl.io/p/zorl-engine)
 
 ## License
 

@@ -40,6 +40,13 @@ enum Command {
         #[arg(long, default_value = "env.schema.json")]
         schema: String,
     },
+
+    /// Show version and optionally check for updates
+    Version {
+        /// Check crates.io for newer version
+        #[arg(long, default_value_t = false)]
+        check_update: bool,
+    },
 }
 
 fn main() {
@@ -51,6 +58,7 @@ fn main() {
         }
         Command::Docs { schema, format } => commands::docs::run(&schema, &format),
         Command::Init { example, schema } => commands::init::run(&example, &schema),
+        Command::Version { check_update } => commands::version::run(check_update),
     };
 
     if let Err(e) = result {

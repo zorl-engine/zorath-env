@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.2] - 2025-01-13
+
+### Added
+- `zenv version` command with optional `--check-update` flag to query crates.io
+- Auto-detection of `.env.local`, `.env.development`, `.env.development.local` when `.env` is missing
+- Helpful error messages showing which env files were checked
+- Tip about unknown keys count when validation fails
+
+### Changed
+- Improved error output formatting for missing env files
+
 ## [0.2.1] - 2025-01-13
 
 ### Added
