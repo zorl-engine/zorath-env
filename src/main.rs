@@ -24,10 +24,13 @@ enum Command {
         allow_missing_env: bool,
     },
 
-    /// Print Markdown docs for schema
+    /// Print docs for schema (markdown or json)
     Docs {
         #[arg(long, default_value = "env.schema.json")]
         schema: String,
+        /// Output format: markdown or json
+        #[arg(long, default_value = "markdown")]
+        format: String,
     },
 
     /// Create a starter schema from .env.example
@@ -46,7 +49,7 @@ fn main() {
         Command::Check { env, schema, allow_missing_env } => {
             commands::check::run(&env, &schema, allow_missing_env)
         }
-        Command::Docs { schema } => commands::docs::run(&schema),
+        Command::Docs { schema, format } => commands::docs::run(&schema, &format),
         Command::Init { example, schema } => commands::init::run(&example, &schema),
     };
 

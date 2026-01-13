@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo run:*)",
+      "Bash(cat:*)",
+      "Bash(dir:*)",
+      "Bash(cargo clippy:*)",
+      "WebSearch",
+      "Bash(cp:*)",
+      "Bash(time:*)",
+      "Bash(time ./target/release/zenv.exe init:*)",
+      "Bash(cargo publish:*)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:github.com)",
+      "Bash(cargo search:*)",
+      "WebFetch(domain:www.edgeurl.io)",
+      "Read(//c/Users/Luis/Documents/edgeurl/**)",
+      "Bash(zenv --help:*)",
+      "Bash(zenv --version:*)",
+      "WebFetch(domain:www.google.com)",
+      "Bash(git filter-branch:*)",
+      "Bash(dir \"C:\\Users\\Luis\\Documents\\zenv\")",
+      "Bash(dir \"C:\\Users\\Luis\\Documents\\zenv\\src\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

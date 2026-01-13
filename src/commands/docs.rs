@@ -1,14 +1,25 @@
 use crate::schema::{self, Schema, VarType};
 
-pub fn run(schema_path: &str) -> Result<(), String> {
+pub fn run(schema_path: &str, format: &str) -> Result<(), String> {
     let schema = schema::load_schema(schema_path).map_err(|e| e.to_string())?;
-    let output = generate_docs(&schema);
+
+    let output = match format {
+        "markdown" | "md" => generate_markdown(&schema),
+        "json" => generate_json(&schema)?,
+        _ => return Err(format!("unknown format '{}'. Use 'markdown' or 'json'", format)),
+    };
+
     print!("{}", output);
     Ok(())
 }
 
+/// Generate JSON documentation from schema
+pub fn generate_json(schema: &Schema) -> Result<String, String> {
+    serde_json::to_string_pretty(schema).map_err(|e| e.to_string())
+}
+
 /// Generate markdown documentation from schema
-pub fn generate_docs(schema: &Schema) -> String {
+pub fn generate_markdown(schema: &Schema) -> String {
     let mut output = String::from("# Environment Variables\n\n");
 
     let mut keys: Vec<_> = schema.keys().cloned().collect();
@@ -57,7 +68,7 @@ mod tests {
     #[test]
     fn test_header_present() {
         let schema = make_schema(vec![]);
-        let output = generate_docs(&schema);
+        let output = generate_markdown(&schema);
         assert!(output.starts_with("# Environment Variables"));
     }
 
@@ -71,7 +82,7 @@ mod tests {
             default: None,
             validate: None,
         })]);
-        let output = generate_docs(&schema);
+        let output = generate_markdown(&schema);
         assert!(output.contains("## `FOO`"));
     }
 
@@ -85,7 +96,7 @@ mod tests {
             default: None,
             validate: None,
         })]);
-        let output = generate_docs(&schema);
+        let output = generate_markdown(&schema);
         assert!(output.contains("- Type: `int`"));
     }
 
@@ -108,7 +119,7 @@ mod tests {
                 default: None,
                 validate: None,
             })]);
-            let output = generate_docs(&schema);
+            let output = generate_markdown(&schema);
             assert!(output.contains(&format!("- Type: `{}`", expected)));
         }
     }
@@ -123,7 +134,7 @@ mod tests {
             default: None,
             validate: None,
         })]);
-        let output = generate_docs(&schema);
+        let output = generate_markdown(&schema);
         assert!(output.contains("- Required: `true`"));
     }
 
@@ -137,7 +148,7 @@ mod tests {
             default: None,
             validate: None,
         })]);
-        let output = generate_docs(&schema);
+        let output = generate_markdown(&schema);
         assert!(output.contains("- Required: `false`"));
     }
 
@@ -151,7 +162,7 @@ mod tests {
             default: Some(serde_json::json!(3000)),
             validate: None,
         })]);
-        let output = generate_docs(&schema);
+        let output = generate_markdown(&schema);
         assert!(output.contains("- Default: `3000`"));
     }
 
@@ -165,7 +176,7 @@ mod tests {
             default: None,
             validate: None,
         })]);
-        let output = generate_docs(&schema);
+        let output = generate_markdown(&schema);
         assert!(output.contains("- Allowed: `dev, prod`"));
     }
 
@@ -179,7 +190,7 @@ mod tests {
             default: None,
             validate: None,
         })]);
-        let output = generate_docs(&schema);
+        let output = generate_markdown(&schema);
         assert!(output.contains("Your API key for authentication"));
     }
 
@@ -190,7 +201,7 @@ mod tests {
             ("ALPHA", VarSpec { var_type: VarType::String, required: false, description: None, values: None, default: None, validate: None }),
             ("MIDDLE", VarSpec { var_type: VarType::String, required: false, description: None, values: None, default: None, validate: None }),
         ]);
-        let output = generate_docs(&schema);
+        let output = generate_markdown(&schema);
         let alpha_pos = output.find("## `ALPHA`").unwrap();
         let middle_pos = output.find("## `MIDDLE`").unwrap();
         let zebra_pos = output.find("## `ZEBRA`").unwrap();
@@ -201,7 +212,45 @@ mod tests {
     #[test]
     fn test_empty_schema() {
         let schema = make_schema(vec![]);
-        let output = generate_docs(&schema);
+        let output = generate_markdown(&schema);
         assert_eq!(output, "# Environment Variables\n\n");
+    }
+
+    #[test]
+    fn test_json_output_valid() {
+        let schema = make_schema(vec![("PORT", VarSpec {
+            var_type: VarType::Int,
+            required: true,
+            description: Some("Server port".into()),
+            values: None,
+            default: Some(serde_json::json!(3000)),
+            validate: None,
+        })]);
+        let output = generate_json(&schema).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert!(parsed.get("PORT").is_some());
+    }
+
+    #[test]
+    fn test_json_contains_all_fields() {
+        let schema = make_schema(vec![("API_KEY", VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: Some("API key".into()),
+            values: None,
+            default: None,
+            validate: None,
+        })]);
+        let output = generate_json(&schema).unwrap();
+        assert!(output.contains("\"type\""));
+        assert!(output.contains("\"required\""));
+        assert!(output.contains("\"description\""));
+    }
+
+    #[test]
+    fn test_json_empty_schema() {
+        let schema = make_schema(vec![]);
+        let output = generate_json(&schema).unwrap();
+        assert_eq!(output, "{}");
     }
 }
