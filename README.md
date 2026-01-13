@@ -8,6 +8,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![More from zorl-engine](https://img.shields.io/badge/zorl--engine-more-blue)](https://edgeurl.io/p/zorl-engine)
 
+**Package:** `zorath-env` | **Binary:** `zenv`
+
 **Built by Zorath -- infrastructure for builders.**
 
 A tiny, fast CLI that makes `.env` sane.
@@ -21,6 +23,10 @@ A tiny, fast CLI that makes `.env` sane.
 `zenv` makes your schema the source of truth.
 
 > **Schema is the source of truth.** Docs and examples should be generated from it.
+
+## Privacy
+
+zenv runs locally. No uploads, no secrets fetching, no phoning home.
 
 ## Works with any stack
 

@@ -1,6 +1,6 @@
 # Contributing to zenv
 
-Thank you for your interest in contributing to zenv! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to zenv (package: `zorath-env`, binary: `zenv`)! This document provides guidelines and instructions for contributing.
 
 ## Code of Conduct
 
