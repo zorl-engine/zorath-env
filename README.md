@@ -93,7 +93,7 @@ zenv docs  --schema env.schema.json
 zenv init  --example .env.example --schema env.schema.json
 ```
 
-## Schema format (v0.1)
+## Schema format (v0.2)
 
 `env.schema.json` is a JSON object where each key is an env var name.
 
@@ -117,7 +117,11 @@ Example:
     "type": "int",
     "default": 3000,
     "required": false,
-    "description": "HTTP port"
+    "description": "HTTP port",
+    "validate": {
+      "min": 1024,
+      "max": 65535
+    }
   }
 }
 ```
@@ -130,6 +134,54 @@ Supported types:
 * `bool`
 * `url`
 * `enum`
+
+### Validation rules
+
+Add constraints with the `validate` field:
+
+```json
+{
+  "PORT": { "type": "int", "validate": { "min": 1024, "max": 65535 } },
+  "RATE": { "type": "float", "validate": { "min_value": 0.0, "max_value": 1.0 } },
+  "API_KEY": { "type": "string", "validate": { "min_length": 32, "pattern": "^sk_" } }
+}
+```
+
+### Schema inheritance
+
+Schemas can extend other schemas:
+
+```json
+{
+  "extends": "base.schema.json",
+  "EXTRA_VAR": { "type": "string" }
+}
+```
+
+## .env features
+
+### Variable interpolation
+
+Reference other variables with `${VAR}` or `$VAR`:
+
+```env
+BASE_URL=https://api.example.com
+API_ENDPOINT=${BASE_URL}/v2
+```
+
+### Multiline values
+
+Use quoted strings for multiline:
+
+```env
+SSH_KEY="-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEA...
+-----END RSA PRIVATE KEY-----"
+```
+
+### Escape sequences
+
+Double-quoted strings support `\n`, `\t`, `\r`, `\\`, `\"`
 
 ## Example output
 

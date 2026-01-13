@@ -3,6 +3,8 @@ use std::path::Path;
 
 use url::Url;
 
+use regex::Regex;
+
 use crate::envfile;
 use crate::schema::{self, Schema, VarType};
 
@@ -16,6 +18,9 @@ pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool) -> Result
     } else {
         return Err(format!("env file not found: {env_path}"));
     };
+
+    // Interpolate variable references (${VAR} and $VAR)
+    let env_map = envfile::interpolate_env(env_map).map_err(|e| e.to_string())?;
 
     let errors = validate(&schema, &env_map);
 
@@ -48,17 +53,77 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
         let value = value_opt.unwrap();
 
         match spec.var_type {
-            VarType::String => { /* always ok */ }
+            VarType::String => {
+                // Apply string validation rules
+                if let Some(ref rules) = spec.validate {
+                    if let Some(min_len) = rules.min_length {
+                        if value.len() < min_len {
+                            errors.push(format!("{key}: length {} is less than minimum {}", value.len(), min_len));
+                        }
+                    }
+                    if let Some(max_len) = rules.max_length {
+                        if value.len() > max_len {
+                            errors.push(format!("{key}: length {} exceeds maximum {}", value.len(), max_len));
+                        }
+                    }
+                    if let Some(ref pattern) = rules.pattern {
+                        match Regex::new(pattern) {
+                            Ok(re) => {
+                                if !re.is_match(value) {
+                                    errors.push(format!("{key}: value '{value}' does not match pattern '{pattern}'"));
+                                }
+                            }
+                            Err(e) => {
+                                errors.push(format!("{key}: invalid regex pattern '{pattern}': {e}"));
+                            }
+                        }
+                    }
+                }
+            }
 
             VarType::Int => {
-                if value.parse::<i64>().is_err() {
-                    errors.push(format!("{key}: expected int, got '{value}'"));
+                match value.parse::<i64>() {
+                    Err(_) => {
+                        errors.push(format!("{key}: expected int, got '{value}'"));
+                    }
+                    Ok(n) => {
+                        // Apply int validation rules
+                        if let Some(ref rules) = spec.validate {
+                            if let Some(min) = rules.min {
+                                if n < min {
+                                    errors.push(format!("{key}: value {n} is less than minimum {min}"));
+                                }
+                            }
+                            if let Some(max) = rules.max {
+                                if n > max {
+                                    errors.push(format!("{key}: value {n} exceeds maximum {max}"));
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
             VarType::Float => {
-                if value.parse::<f64>().is_err() {
-                    errors.push(format!("{key}: expected float, got '{value}'"));
+                match value.parse::<f64>() {
+                    Err(_) => {
+                        errors.push(format!("{key}: expected float, got '{value}'"));
+                    }
+                    Ok(n) => {
+                        // Apply float validation rules
+                        if let Some(ref rules) = spec.validate {
+                            if let Some(min_val) = rules.min_value {
+                                if n < min_val {
+                                    errors.push(format!("{key}: value {n} is less than minimum {min_val}"));
+                                }
+                            }
+                            if let Some(max_val) = rules.max_value {
+                                if n > max_val {
+                                    errors.push(format!("{key}: value {n} exceeds maximum {max_val}"));
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -104,7 +169,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{VarSpec, VarType};
+    use crate::schema::{ValidationRule, VarSpec, VarType};
 
     fn make_schema(entries: Vec<(&str, VarSpec)>) -> Schema {
         entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
@@ -121,6 +186,7 @@ mod tests {
             description: None,
             values: None,
             default: None,
+            validate: None,
         }
     }
 
@@ -131,6 +197,7 @@ mod tests {
             description: None,
             values: None,
             default: None,
+            validate: None,
         }
     }
 
@@ -141,6 +208,7 @@ mod tests {
             description: None,
             values: None,
             default: None,
+            validate: None,
         }
     }
 
@@ -151,6 +219,7 @@ mod tests {
             description: None,
             values: None,
             default: None,
+            validate: None,
         }
     }
 
@@ -161,6 +230,7 @@ mod tests {
             description: None,
             values: None,
             default: None,
+            validate: None,
         }
     }
 
@@ -171,6 +241,7 @@ mod tests {
             description: None,
             values: Some(values.into_iter().map(String::from).collect()),
             default: None,
+            validate: None,
         }
     }
 
@@ -361,6 +432,7 @@ mod tests {
             description: None,
             values: None,
             default: None,
+            validate: None,
         })]);
         let env = make_env(vec![("ENV", "dev")]);
         let errors = validate(&schema, &env);
@@ -402,6 +474,7 @@ mod tests {
             description: None,
             values: None,
             default: Some(serde_json::json!(3000)),
+            validate: None,
         })]);
         let env = make_env(vec![]);
         let errors = validate(&schema, &env);
@@ -435,5 +508,369 @@ mod tests {
         let env = make_env(vec![]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
+    }
+
+    // Validation rule tests - Int min/max
+
+    #[test]
+    fn test_int_min_valid() {
+        let schema = make_schema(vec![("PORT", VarSpec {
+            var_type: VarType::Int,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                min: Some(1024),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("PORT", "3000")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_int_min_invalid() {
+        let schema = make_schema(vec![("PORT", VarSpec {
+            var_type: VarType::Int,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                min: Some(1024),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("PORT", "80")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("less than minimum"));
+    }
+
+    #[test]
+    fn test_int_max_valid() {
+        let schema = make_schema(vec![("PORT", VarSpec {
+            var_type: VarType::Int,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                max: Some(65535),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("PORT", "8080")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_int_max_invalid() {
+        let schema = make_schema(vec![("PORT", VarSpec {
+            var_type: VarType::Int,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                max: Some(65535),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("PORT", "70000")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn test_int_min_max_range_valid() {
+        let schema = make_schema(vec![("PORT", VarSpec {
+            var_type: VarType::Int,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                min: Some(1024),
+                max: Some(65535),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("PORT", "8080")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    // Validation rule tests - Float min_value/max_value
+
+    #[test]
+    fn test_float_min_value_valid() {
+        let schema = make_schema(vec![("RATE", VarSpec {
+            var_type: VarType::Float,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                min_value: Some(0.0),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("RATE", "0.5")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_float_min_value_invalid() {
+        let schema = make_schema(vec![("RATE", VarSpec {
+            var_type: VarType::Float,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                min_value: Some(0.0),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("RATE", "-0.5")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("less than minimum"));
+    }
+
+    #[test]
+    fn test_float_max_value_valid() {
+        let schema = make_schema(vec![("RATE", VarSpec {
+            var_type: VarType::Float,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                max_value: Some(1.0),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("RATE", "0.75")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_float_max_value_invalid() {
+        let schema = make_schema(vec![("RATE", VarSpec {
+            var_type: VarType::Float,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                max_value: Some(1.0),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("RATE", "1.5")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("exceeds maximum"));
+    }
+
+    // Validation rule tests - String min_length/max_length
+
+    #[test]
+    fn test_string_min_length_valid() {
+        let schema = make_schema(vec![("API_KEY", VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                min_length: Some(8),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("API_KEY", "abcdefghij")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_string_min_length_invalid() {
+        let schema = make_schema(vec![("API_KEY", VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                min_length: Some(8),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("API_KEY", "short")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("less than minimum"));
+    }
+
+    #[test]
+    fn test_string_max_length_valid() {
+        let schema = make_schema(vec![("CODE", VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                max_length: Some(10),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("CODE", "ABC123")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_string_max_length_invalid() {
+        let schema = make_schema(vec![("CODE", VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                max_length: Some(5),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("CODE", "TOOLONG123")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("exceeds maximum"));
+    }
+
+    // Validation rule tests - String pattern (regex)
+
+    #[test]
+    fn test_string_pattern_valid() {
+        let schema = make_schema(vec![("EMAIL", VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                pattern: Some(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$".to_string()),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("EMAIL", "user@example.com")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_string_pattern_invalid() {
+        let schema = make_schema(vec![("EMAIL", VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                pattern: Some(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$".to_string()),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("EMAIL", "not-an-email")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("does not match pattern"));
+    }
+
+    #[test]
+    fn test_string_pattern_simple_valid() {
+        let schema = make_schema(vec![("VERSION", VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                pattern: Some(r"^v\d+\.\d+\.\d+$".to_string()),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("VERSION", "v1.2.3")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_string_pattern_invalid_regex() {
+        let schema = make_schema(vec![("FOO", VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                pattern: Some(r"[invalid".to_string()),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("FOO", "bar")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("invalid regex"));
+    }
+
+    // Combined validation rules
+
+    #[test]
+    fn test_string_length_and_pattern_valid() {
+        let schema = make_schema(vec![("UUID", VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                min_length: Some(36),
+                max_length: Some(36),
+                pattern: Some(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".to_string()),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("UUID", "550e8400-e29b-41d4-a716-446655440000")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_string_multiple_validation_failures() {
+        let schema = make_schema(vec![("CODE", VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                min_length: Some(10),
+                pattern: Some(r"^[A-Z]+$".to_string()),
+                ..Default::default()
+            }),
+        })]);
+        let env = make_env(vec![("CODE", "abc")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 2); // too short AND wrong pattern
     }
 }

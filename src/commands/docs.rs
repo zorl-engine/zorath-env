@@ -69,6 +69,7 @@ mod tests {
             description: None,
             values: None,
             default: None,
+            validate: None,
         })]);
         let output = generate_docs(&schema);
         assert!(output.contains("## `FOO`"));
@@ -82,6 +83,7 @@ mod tests {
             description: None,
             values: None,
             default: None,
+            validate: None,
         })]);
         let output = generate_docs(&schema);
         assert!(output.contains("- Type: `int`"));
@@ -104,6 +106,7 @@ mod tests {
                 description: None,
                 values: None,
                 default: None,
+                validate: None,
             })]);
             let output = generate_docs(&schema);
             assert!(output.contains(&format!("- Type: `{}`", expected)));
@@ -118,6 +121,7 @@ mod tests {
             description: None,
             values: None,
             default: None,
+            validate: None,
         })]);
         let output = generate_docs(&schema);
         assert!(output.contains("- Required: `true`"));
@@ -131,6 +135,7 @@ mod tests {
             description: None,
             values: None,
             default: None,
+            validate: None,
         })]);
         let output = generate_docs(&schema);
         assert!(output.contains("- Required: `false`"));
@@ -144,6 +149,7 @@ mod tests {
             description: None,
             values: None,
             default: Some(serde_json::json!(3000)),
+            validate: None,
         })]);
         let output = generate_docs(&schema);
         assert!(output.contains("- Default: `3000`"));
@@ -157,6 +163,7 @@ mod tests {
             description: None,
             values: Some(vec!["dev".into(), "prod".into()]),
             default: None,
+            validate: None,
         })]);
         let output = generate_docs(&schema);
         assert!(output.contains("- Allowed: `dev, prod`"));
@@ -170,6 +177,7 @@ mod tests {
             description: Some("Your API key for authentication".into()),
             values: None,
             default: None,
+            validate: None,
         })]);
         let output = generate_docs(&schema);
         assert!(output.contains("Your API key for authentication"));
@@ -178,9 +186,9 @@ mod tests {
     #[test]
     fn test_keys_sorted_alphabetically() {
         let schema = make_schema(vec![
-            ("ZEBRA", VarSpec { var_type: VarType::String, required: false, description: None, values: None, default: None }),
-            ("ALPHA", VarSpec { var_type: VarType::String, required: false, description: None, values: None, default: None }),
-            ("MIDDLE", VarSpec { var_type: VarType::String, required: false, description: None, values: None, default: None }),
+            ("ZEBRA", VarSpec { var_type: VarType::String, required: false, description: None, values: None, default: None, validate: None }),
+            ("ALPHA", VarSpec { var_type: VarType::String, required: false, description: None, values: None, default: None, validate: None }),
+            ("MIDDLE", VarSpec { var_type: VarType::String, required: false, description: None, values: None, default: None, validate: None }),
         ]);
         let output = generate_docs(&schema);
         let alpha_pos = output.find("## `ALPHA`").unwrap();

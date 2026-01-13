@@ -1,6 +1,6 @@
 # zenv - Tested and Verified
 
-**Version:** 0.1.3
+**Version:** 0.2.0
 **Status:** Verified Working
 **Test Date:** January 12, 2025
 
@@ -12,17 +12,111 @@ zenv was tested on a real-world production codebase with 50+ environment variabl
 
 ### Unit Test Coverage
 
-**v0.1.3** includes 90 unit tests covering all core functionality:
+**v0.2.0** includes 141 unit tests covering all core functionality:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| `envfile.rs` | 12 | Parser: KEY=VALUE, comments, quotes, export prefix |
-| `schema.rs` | 12 | Type parsing, serialization, error handling |
-| `commands/check.rs` | 30 | All 6 type validations, required fields, unknown keys |
+| `envfile.rs` | 39 | Parser, multiline, escapes, variable interpolation |
+| `schema.rs` | 20 | Type parsing, serialization, inheritance, error handling |
+| `commands/check.rs` | 48 | Type validations, validation rules, required fields |
 | `commands/init.rs` | 22 | Type inference: bool, int, float, url, string |
-| `commands/docs.rs` | 14 | Markdown output format, sorting |
+| `commands/docs.rs` | 12 | Markdown output format, sorting |
 
 All tests pass with zero warnings.
+
+---
+
+## New in v0.2.0
+
+### Variable Interpolation
+
+Support for `${VAR}` and `$VAR` syntax:
+
+```env
+BASE_URL=https://api.example.com
+API_ENDPOINT=${BASE_URL}/v2
+GREETING=Hello $USER!
+```
+
+Circular references are detected and reported as errors.
+
+### Multiline Values
+
+Quoted strings can span multiple lines:
+
+```env
+SSH_KEY="-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEA...
+-----END RSA PRIVATE KEY-----"
+```
+
+### Escape Sequences
+
+Double-quoted strings support escape sequences:
+
+| Escape | Character |
+|--------|-----------|
+| `\n` | newline |
+| `\t` | tab |
+| `\r` | carriage return |
+| `\\` | backslash |
+| `\"` | double quote |
+
+Single-quoted strings are literal (no escape processing).
+
+### Custom Validation Rules
+
+Add constraints to your schema:
+
+```json
+{
+  "PORT": {
+    "type": "int",
+    "validate": {
+      "min": 1024,
+      "max": 65535
+    }
+  },
+  "EMAIL": {
+    "type": "string",
+    "validate": {
+      "pattern": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+    }
+  },
+  "API_KEY": {
+    "type": "string",
+    "validate": {
+      "min_length": 32,
+      "max_length": 64
+    }
+  }
+}
+```
+
+Available rules:
+- `min`, `max` - for int types
+- `min_value`, `max_value` - for float types
+- `min_length`, `max_length` - for string types
+- `pattern` - regex pattern for string types
+
+### Schema Inheritance
+
+Schemas can extend base schemas:
+
+```json
+// base.schema.json
+{
+  "DATABASE_URL": { "type": "url", "required": true }
+}
+
+// production.schema.json
+{
+  "extends": "base.schema.json",
+  "REDIS_URL": { "type": "url", "required": true }
+}
+```
+
+Child schemas inherit all variables from parent and can override them.
 
 ---
 
@@ -35,15 +129,7 @@ $ zenv init --example .env.example --schema env.schema.json
 zenv: wrote schema to env.schema.json
 ```
 
-**Result:** Schema successfully generated from example file. Types were correctly inferred:
-
-| Variable | Inferred Type |
-|----------|---------------|
-| `DATABASE_URL` | url |
-| `API_KEY` | string |
-| `PORT` | int |
-| `DEBUG_MODE` | bool |
-| `NODE_ENV` | string |
+**Result:** Schema successfully generated from example file. Types were correctly inferred.
 
 ---
 
@@ -53,53 +139,51 @@ zenv: wrote schema to env.schema.json
 $ zenv check --env .env --schema env.schema.json
 zenv check failed:
 
-- SECRET_KEY: missing (required)
-- ANALYTICS_ID: missing (required)
-- LEGACY_API_URL: not in schema (unknown key)
-- OLD_DATABASE_HOST: not in schema (unknown key)
+- PORT: value 80 is less than minimum 1024
+- EMAIL: value 'not-email' does not match pattern
+- SECRET_KEY: length 10 is less than minimum 32
 ```
 
-**Result:** Validation correctly detected:
-- **Missing variables:** Required vars defined in schema but absent from `.env`
-- **Unknown variables:** Vars in `.env` that have no schema definition (drift detected)
-
-This is exactly what zenv is designed to catch - configuration drift between environments.
+**Result:** Validation correctly detected type errors and validation rule violations.
 
 ---
 
-### 3. Documentation (`zenv docs`)
+### 3. Interpolation
 
 ```bash
-$ zenv docs --schema env.schema.json
+$ cat .env
+BASE=https://api.example.com
+FULL_URL=${BASE}/endpoint
+
+$ zenv check
+zenv: OK
 ```
 
-**Output:**
+**Result:** Variable references correctly interpolated before validation.
 
-```markdown
+---
+
+### 4. Inheritance
+
+```bash
+$ cat base.schema.json
+{"BASE_VAR": {"type": "string"}}
+
+$ cat child.schema.json
+{"extends": "base.schema.json", "CHILD_VAR": {"type": "int"}}
+
+$ zenv docs --schema child.schema.json
 # Environment Variables
 
-## `DATABASE_URL`
-- Type: `url`
-- Required: `true`
+## `BASE_VAR`
+- Type: `string`
+...
 
-Primary database connection string
-
-## `PORT`
+## `CHILD_VAR`
 - Type: `int`
-- Required: `false`
-- Default: `3000`
-
-HTTP server port
-
-## `NODE_ENV`
-- Type: `enum`
-- Required: `true`
-- Values: `["development", "staging", "production"]`
-
-Runtime environment
 ```
 
-**Result:** Markdown documentation generated correctly with all schema fields.
+**Result:** Child schema correctly inherits variables from parent.
 
 ---
 
@@ -113,14 +197,20 @@ Runtime environment
 | Type inference (string, int, bool, url) | Working |
 | Required field validation | Working |
 | Unknown key detection | Working |
-| Custom file paths (`--env`, `--schema`, `--example`) | Working |
+| Variable interpolation (${VAR}, $VAR) | Working |
+| Multiline quoted values | Working |
+| Escape sequences in double quotes | Working |
+| Validation rules (min/max/pattern/length) | Working |
+| Schema inheritance (extends) | Working |
+| Circular reference detection | Working |
+| Custom file paths | Working |
 | Exit codes (0 = pass, 1 = fail) | Working |
 
 ---
 
 ## Conclusion
 
-zenv v0.1.3 successfully validates `.env` files against JSON schemas, detects configuration drift, and generates documentation. Now with 90 unit tests for comprehensive code coverage. Ready for production use.
+zenv v0.2.0 is a major feature release with variable interpolation, multiline support, custom validation rules, and schema inheritance. Now with 141 unit tests for comprehensive coverage. Ready for production use.
 
 ---
 

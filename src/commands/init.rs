@@ -25,6 +25,7 @@ pub fn run(example_path: &str, schema_path: &str) -> Result<(), String> {
             description: Some("TODO: describe this variable".into()),
             values: None,
             default: None,
+            validate: None,
         });
     }
 
