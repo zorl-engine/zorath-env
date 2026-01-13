@@ -193,7 +193,27 @@ Schemas can extend other schemas:
 }
 ```
 
+Inheritance supports up to 10 levels of depth. Circular references are detected and will cause an error.
+
 ## .env features
+
+### Comments
+
+Full-line and inline comments are supported:
+
+```env
+# This is a full-line comment
+DATABASE_URL=postgres://localhost/db  # inline comment
+```
+
+### Export prefix
+
+Shell-style export prefix is supported for compatibility:
+
+```env
+export DATABASE_URL=postgres://localhost/db
+export NODE_ENV=development
+```
 
 ### Variable interpolation
 
@@ -237,6 +257,8 @@ zenv check failed:
 - NODE_ENV: expected one of ["development", "staging", "production"], got 'dev'
 - API_KEY: missing (required)
 ```
+
+When unknown variables are found in your `.env` that are not in the schema, zenv will show a helpful tip suggesting you update your schema.
 
 ## Pre-commit hook
 
