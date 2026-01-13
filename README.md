@@ -71,7 +71,13 @@ Validates `.env` against `env.schema.json`.
 
 ### `zenv docs`
 
-Prints Markdown documentation for all env vars in the schema.
+Generates documentation for all env vars in the schema.
+
+```bash
+zenv docs                      # Markdown (default)
+zenv docs --format json        # JSON output
+zenv docs --format json > schema.json
+```
 
 ### `zenv init`
 

@@ -1,8 +1,8 @@
 # zenv - Tested and Verified
 
-**Version:** 0.2.0
+**Version:** 0.2.1
 **Status:** Verified Working
-**Test Date:** January 12, 2025
+**Test Date:** January 13, 2025
 
 ---
 
@@ -12,7 +12,7 @@ zenv was tested on a real-world production codebase with 50+ environment variabl
 
 ### Unit Test Coverage
 
-**v0.2.0** includes 141 unit tests covering all core functionality:
+**v0.2.1** includes 144 unit tests covering all core functionality:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
@@ -20,9 +20,30 @@ zenv was tested on a real-world production codebase with 50+ environment variabl
 | `schema.rs` | 20 | Type parsing, serialization, inheritance, error handling |
 | `commands/check.rs` | 48 | Type validations, validation rules, required fields |
 | `commands/init.rs` | 22 | Type inference: bool, int, float, url, string |
-| `commands/docs.rs` | 12 | Markdown output format, sorting |
+| `commands/docs.rs` | 14 | Markdown and JSON output formats, sorting |
 
 All tests pass with zero warnings.
+
+---
+
+## New in v0.2.1
+
+### JSON Output Format
+
+The `docs` command now supports JSON output for tooling integration:
+
+```bash
+# Default Markdown output
+zenv docs
+
+# JSON output
+zenv docs --format json
+
+# Save to file
+zenv docs --format json > schema.json
+```
+
+Supported format values: `markdown`, `md`, `json`
 
 ---
 
@@ -194,6 +215,7 @@ $ zenv docs --schema child.schema.json
 | `zenv init` | Working |
 | `zenv check` | Working |
 | `zenv docs` | Working |
+| `zenv docs --format json` | Working |
 | Type inference (string, int, bool, url) | Working |
 | Required field validation | Working |
 | Unknown key detection | Working |
@@ -210,7 +232,7 @@ $ zenv docs --schema child.schema.json
 
 ## Conclusion
 
-zenv v0.2.0 is a major feature release with variable interpolation, multiline support, custom validation rules, and schema inheritance. Now with 141 unit tests for comprehensive coverage. Ready for production use.
+zenv v0.2.1 adds JSON output format for the docs command, enabling tooling integration. Now with 144 unit tests for comprehensive coverage. Ready for production use.
 
 ---
 
