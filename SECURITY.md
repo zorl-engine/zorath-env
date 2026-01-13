@@ -17,8 +17,7 @@ We take security seriously. If you discover a security vulnerability in zenv, pl
 
 Instead, please report security issues via:
 
-1. **GitHub Security Advisories** (preferred): [Report a vulnerability](https://github.com/zorl-engine/zorath-env/security/advisories/new)
-2. **Email**: Contact via [edgeurl.io/p/rex0lux](https://www.edgeurl.io/p/rex0lux)
+**GitHub Security Advisories**: [Report a vulnerability](https://github.com/zorl-engine/zorath-env/security/advisories/new)
 
 ### What to Include
 

@@ -219,7 +219,6 @@ zenv v0.2.0 is a major feature release with variable interpolation, multiline su
 Found a bug? Have a feature request?
 
 - GitHub Issues: [github.com/zorl-engine/zorath-env/issues](https://github.com/zorl-engine/zorath-env/issues)
-- Contact: [edgeurl.io/p/rex0lux](https://www.edgeurl.io/p/rex0lux)
 
 ---
 
