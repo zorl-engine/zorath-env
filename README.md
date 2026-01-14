@@ -6,7 +6,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/zorath-env.svg)](https://crates.io/crates/zorath-env)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![More from zorl-engine](https://img.shields.io/badge/zorl--engine-more-blue)](https://edgeurl.io/p/zorl-engine)
+[![Docs](https://img.shields.io/badge/docs-zorl.cloud-blue)](https://zorl.cloud/zenv)
 
 **Package:** `zorath-env` | **Binary:** `zenv`
 
@@ -278,7 +278,9 @@ fi
 
 ## Connect
 
-More from Zorath: [edgeurl.io/p/zorl-engine](https://edgeurl.io/p/zorl-engine)
+- Official site: [zorl.cloud](https://zorl.cloud)
+- Documentation: [zorl.cloud/zenv/docs](https://zorl.cloud/zenv/docs)
+- GitHub: [github.com/zorl-engine/zorath-env](https://github.com/zorl-engine/zorath-env)
 
 ## License
 

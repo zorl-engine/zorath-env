@@ -182,7 +182,8 @@ src/
 
 ## Questions?
 
-- Open an issue for questions
+- Read the [official documentation](https://zorl.cloud/zenv/docs)
 - Check the [FAQ](https://github.com/zorl-engine/zorath-env/wiki/FAQ)
+- Open an issue for questions
 
 Thank you for contributing!
