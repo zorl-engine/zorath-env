@@ -1,0 +1,76 @@
+name: Sync Website
+
+on:
+  # Trigger after a release is published
+  release:
+    types: [published]
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to sync (leave empty to use latest release)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync to zorl.cloud
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout zenv
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Checkout zorl.cloud
+        uses: actions/checkout@v4
+        with:
+          repository: zorl-engine/zorl.cloud
+          path: zorl.cloud
+          token: ${{ secrets.ZORL_WEBSITE_TOKEN }}
+
+      - name: Get version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "VERSION=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          elif [ -n "${{ github.event.release.tag_name }}" ]; then
+            # Remove 'v' prefix if present
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          else
+            # Get version from Cargo.toml
+            VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run sync script
+        run: |
+          node scripts/sync-website.js \
+            --version ${{ steps.version.outputs.VERSION }} \
+            --website-path ./zorl.cloud
+
+      - name: Commit and push
+        working-directory: zorl.cloud
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add src/data/zenv.json public/llms.txt
+          git diff --staged --quiet || git commit -m "Update zenv to v${{ steps.version.outputs.VERSION }}"
+          git push
+
+      - name: Summary
+        run: |
+          echo "## Sync Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Version: v${{ steps.version.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Repository: zorl-engine/zorl.cloud" >> $GITHUB_STEP_SUMMARY
+          echo "- File: src/data/zenv.json" >> $GITHUB_STEP_SUMMARY
