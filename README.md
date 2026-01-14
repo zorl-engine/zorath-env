@@ -281,6 +281,8 @@ fi
 - Official site: [zorl.cloud](https://zorl.cloud)
 - Documentation: [zorl.cloud/zenv/docs](https://zorl.cloud/zenv/docs)
 - GitHub: [github.com/zorl-engine/zorath-env](https://github.com/zorl-engine/zorath-env)
+- crates.io: [crates.io/crates/zorath-env](https://crates.io/crates/zorath-env)
+- All links: [edgeurl.io/p/zorl-engine](https://edgeurl.io/p/zorl-engine)
 
 ## License
 
