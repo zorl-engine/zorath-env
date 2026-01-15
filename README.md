@@ -221,13 +221,16 @@ Inheritance supports up to 10 levels of depth. Circular references are detected 
 
 ## .env features
 
-### Comments
+### Comments and Blank Lines
 
-Full-line and inline comments are supported:
+Full-line comments, inline comments, and blank lines are supported:
 
 ```env
 # This is a full-line comment
 DATABASE_URL=postgres://localhost/db  # inline comment
+
+# Blank lines are ignored
+PORT=3000
 ```
 
 ### Export prefix
