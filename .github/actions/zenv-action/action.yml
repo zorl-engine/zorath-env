@@ -20,7 +20,7 @@ inputs:
     required: false
     default: 'true'
   version:
-    description: 'Version of zenv to use (e.g., "0.3.0" or "latest")'
+    description: 'Version of zenv to use (e.g., "0.3.1" or "latest")'
     required: false
     default: 'latest'
 
@@ -44,7 +44,7 @@ runs:
           VERSION=$(curl -s https://crates.io/api/v1/crates/zorath-env | jq -r '.crate.newest_version // empty')
           if [ -z "$VERSION" ]; then
             echo "Warning: Could not fetch version from crates.io, using fallback"
-            VERSION="0.3.0"
+            VERSION="0.3.1"
           fi
         else
           VERSION="${{ inputs.version }}"

@@ -1,6 +1,6 @@
 # zenv - Tested and Verified
 
-**Version:** 0.3.0
+**Version:** 0.3.1
 **Status:** Verified Working
 **Test Date:** January 15, 2026
 
@@ -25,7 +25,7 @@ Tested on production schema with 56 variables (Supabase, Stripe, Redis, Vercel i
 | `zenv example --include-defaults` | PASS | Included default values |
 | `zenv completions bash` | PASS | Valid bash completion script |
 | `zenv completions powershell` | PASS | Valid PowerShell completion script |
-| `zenv version` | PASS | Shows `zenv v0.3.0` |
+| `zenv version` | PASS | Shows `zenv v0.3.1` |
 | `zenv version --check-update` | PASS | Reports "latest version" (matches crates.io) |
 | `zenv --help` | PASS | Shows all 6 commands |
 
@@ -33,7 +33,7 @@ Tested on production schema with 56 variables (Supabase, Stripe, Redis, Vercel i
 
 ### Unit Test Coverage
 
-**v0.3.0** includes 168 unit tests covering all core functionality:
+**v0.3.1** includes 168 unit tests covering all core functionality:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
@@ -345,7 +345,7 @@ $ zenv docs --schema child.schema.json
 
 ## Conclusion
 
-zenv v0.3.0 adds shell completions for all major shells, `zenv example` command for generating .env.example files from schemas, and a GitHub Action for CI/CD integration. Now with 168 unit tests for comprehensive coverage. Ready for production use.
+zenv v0.3.1 adds Windows support in GitHub Action, improved crates.io metadata, and code cleanup. v0.3.0 introduced shell completions, `zenv example` command, and GitHub Action. 168 unit tests for comprehensive coverage. Ready for production use.
 
 ---
 

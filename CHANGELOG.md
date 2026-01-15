@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-01-15
+
+### Added
+- Windows support in GitHub Action (downloads `zenv.exe` for Windows runners)
+- Sidebar navigation for GitHub wiki
+
+### Changed
+- Updated crates.io metadata: homepage now points to zorl.cloud/zenv, documentation to GitHub wiki
+- Removed unused `parse_env_file_interpolated` function (dead code cleanup)
+- Improved GitHub Action reliability with `jq` for version parsing
+
+### Fixed
+- GitHub Action test workflow syntax errors
+
 ## [0.3.0] - 2025-01-15
 
 ### Added
