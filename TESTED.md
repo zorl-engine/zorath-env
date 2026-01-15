@@ -2,13 +2,34 @@
 
 **Version:** 0.3.0
 **Status:** Verified Working
-**Test Date:** January 15, 2025
+**Test Date:** January 15, 2026
 
 ---
 
 ## Test Summary
 
-zenv was tested on a real-world production codebase with 50+ environment variables across multiple `.env` files. All core features performed as expected.
+zenv was tested on a production Next.js codebase (56 environment variables) and passed all tests. All 6 commands perform as expected.
+
+---
+
+## Real-World Testing
+
+Tested on production schema with 56 variables (Supabase, Stripe, Redis, Vercel integrations):
+
+| Command | Result | Details |
+|---------|--------|---------|
+| `zenv check` | PASS | Correctly identified 26 missing required vars, 4 unknown keys |
+| `zenv docs` | PASS | Generated markdown documentation for all 56 variables |
+| `zenv docs --format json` | PASS | Valid JSON output with all schema fields |
+| `zenv example` | PASS | Generated .env.example with type/required comments |
+| `zenv example --include-defaults` | PASS | Included default values |
+| `zenv completions bash` | PASS | Valid bash completion script |
+| `zenv completions powershell` | PASS | Valid PowerShell completion script |
+| `zenv version` | PASS | Shows `zenv v0.3.0` |
+| `zenv version --check-update` | PASS | Reports "latest version" (matches crates.io) |
+| `zenv --help` | PASS | Shows all 6 commands |
+
+**Schema complexity:** 56 variables including URLs, strings, bools, and enums with defaults.
 
 ### Unit Test Coverage
 
@@ -81,6 +102,7 @@ CI/CD integration via GitHub Action:
 
 **Inputs:** `schema`, `env-file`, `allow-missing-env`, `version`
 **Outputs:** `valid`, `errors`
+**Platforms:** Linux, macOS (Intel/ARM), Windows
 
 ---
 
