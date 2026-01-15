@@ -79,6 +79,9 @@ runs:
               BINARY_NAME="zenv-macos-intel"
             fi
             ;;
+          Windows)
+            BINARY_NAME="zenv.exe"
+            ;;
           *)
             echo "Unsupported OS: ${{ runner.os }}"
             exit 1

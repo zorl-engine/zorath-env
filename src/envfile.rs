@@ -383,13 +383,6 @@ pub fn interpolate_env(env_map: HashMap<String, String>) -> Result<HashMap<Strin
     Ok(result)
 }
 
-/// Parse and interpolate env file
-#[allow(dead_code)]
-pub fn parse_env_file_interpolated(path: &str) -> Result<HashMap<String, String>, EnvError> {
-    let env_map = parse_env_file(path)?;
-    interpolate_env(env_map)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
