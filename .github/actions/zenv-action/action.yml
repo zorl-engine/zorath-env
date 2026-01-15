@@ -40,9 +40,10 @@ runs:
       shell: bash
       run: |
         if [ "${{ inputs.version }}" = "latest" ]; then
-          # Get latest version from crates.io
-          VERSION=$(curl -s https://crates.io/api/v1/crates/zorath-env | grep -o '"newest_version":"[^"]*"' | cut -d'"' -f4)
+          # Get latest version from crates.io using jq for reliable parsing
+          VERSION=$(curl -s https://crates.io/api/v1/crates/zorath-env | jq -r '.crate.newest_version // empty')
           if [ -z "$VERSION" ]; then
+            echo "Warning: Could not fetch version from crates.io, using fallback"
             VERSION="0.3.0"
           fi
         else
@@ -51,39 +52,30 @@ runs:
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "Using zenv version: $VERSION"
 
+    - name: Setup Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+        cache: true
+
     - name: Cache zenv binary
       id: cache
       uses: actions/cache@v4
       with:
-        path: ~/.local/bin/zenv
+        path: ~/.cargo/bin/zenv
         key: zenv-${{ runner.os }}-${{ steps.version.outputs.version }}
 
     - name: Install zenv
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        mkdir -p ~/.local/bin
+        cargo install zorath-env --version ${{ steps.version.outputs.version }}
 
-        # Try to download pre-built binary first
-        BINARY_URL="https://github.com/zorl-engine/zorath-env/releases/download/v${{ steps.version.outputs.version }}/zenv-x86_64-unknown-linux-gnu.tar.gz"
-
-        if curl -sL --fail -o /tmp/zenv.tar.gz "$BINARY_URL" 2>/dev/null; then
-          echo "Downloaded pre-built binary"
-          tar -xzf /tmp/zenv.tar.gz -C ~/.local/bin
-          chmod +x ~/.local/bin/zenv
-        else
-          echo "Pre-built binary not available, building from source..."
-          # Install Rust if not present
-          if ! command -v cargo &> /dev/null; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            source $HOME/.cargo/env
-          fi
-          cargo install zorath-env --version ${{ steps.version.outputs.version }} --root ~/.local
-        fi
-
-    - name: Add zenv to PATH
+    - name: Verify installation
       shell: bash
-      run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+      run: |
+        zenv version
+        echo "zenv installed successfully"
 
     - name: Validate environment
       id: validate
