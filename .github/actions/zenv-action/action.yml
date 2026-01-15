@@ -52,24 +52,57 @@ runs:
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "Using zenv version: $VERSION"
 
-    - name: Setup Rust
-      uses: actions-rust-lang/setup-rust-toolchain@v1
-      with:
-        toolchain: stable
-        cache: true
-
     - name: Cache zenv binary
       id: cache
       uses: actions/cache@v4
       with:
-        path: ~/.cargo/bin/zenv
+        path: ~/.local/bin/zenv
         key: zenv-${{ runner.os }}-${{ steps.version.outputs.version }}
 
     - name: Install zenv
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        cargo install zorath-env --version ${{ steps.version.outputs.version }}
+        mkdir -p ~/.local/bin
+        VERSION="${{ steps.version.outputs.version }}"
+        BASE_URL="https://github.com/zorl-engine/zorath-env/releases/download/v${VERSION}"
+
+        # Determine binary name based on OS
+        case "${{ runner.os }}" in
+          Linux)
+            BINARY_NAME="zenv-linux"
+            ;;
+          macOS)
+            if [ "$(uname -m)" = "arm64" ]; then
+              BINARY_NAME="zenv-macos-arm"
+            else
+              BINARY_NAME="zenv-macos-intel"
+            fi
+            ;;
+          *)
+            echo "Unsupported OS: ${{ runner.os }}"
+            exit 1
+            ;;
+        esac
+
+        # Download prebuilt binary
+        echo "Downloading ${BINARY_NAME} from ${BASE_URL}..."
+        if curl -sL --fail -o ~/.local/bin/zenv "${BASE_URL}/${BINARY_NAME}"; then
+          chmod +x ~/.local/bin/zenv
+          echo "Downloaded prebuilt binary successfully"
+        else
+          echo "Prebuilt binary not available, building from source..."
+          # Fallback to cargo install
+          if ! command -v cargo &> /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            source $HOME/.cargo/env
+          fi
+          cargo install zorath-env --version ${VERSION} --root ~/.local
+        fi
+
+    - name: Add zenv to PATH
+      shell: bash
+      run: echo "$HOME/.local/bin" >> $GITHUB_PATH
 
     - name: Verify installation
       shell: bash
