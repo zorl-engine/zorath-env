@@ -1,0 +1,124 @@
+name: 'zenv - Environment Validator'
+description: 'Validate .env files against JSON schemas using zenv'
+author: 'Zorath LLC'
+
+branding:
+  icon: 'check-circle'
+  color: 'green'
+
+inputs:
+  schema:
+    description: 'Path to the JSON schema file'
+    required: false
+    default: 'env.schema.json'
+  env-file:
+    description: 'Path to the .env file to validate'
+    required: false
+    default: '.env'
+  allow-missing-env:
+    description: 'Allow missing .env file (validates schema defaults only)'
+    required: false
+    default: 'true'
+  version:
+    description: 'Version of zenv to use (e.g., "0.3.0" or "latest")'
+    required: false
+    default: 'latest'
+
+outputs:
+  valid:
+    description: 'Whether the .env file is valid (true/false)'
+    value: ${{ steps.validate.outputs.valid }}
+  errors:
+    description: 'JSON array of validation error messages (empty if valid)'
+    value: ${{ steps.validate.outputs.errors }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Determine version
+      id: version
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          # Get latest version from crates.io
+          VERSION=$(curl -s https://crates.io/api/v1/crates/zorath-env | grep -o '"newest_version":"[^"]*"' | cut -d'"' -f4)
+          if [ -z "$VERSION" ]; then
+            VERSION="0.3.0"
+          fi
+        else
+          VERSION="${{ inputs.version }}"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Using zenv version: $VERSION"
+
+    - name: Cache zenv binary
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.local/bin/zenv
+        key: zenv-${{ runner.os }}-${{ steps.version.outputs.version }}
+
+    - name: Install zenv
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p ~/.local/bin
+
+        # Try to download pre-built binary first
+        BINARY_URL="https://github.com/zorl-engine/zorath-env/releases/download/v${{ steps.version.outputs.version }}/zenv-x86_64-unknown-linux-gnu.tar.gz"
+
+        if curl -sL --fail -o /tmp/zenv.tar.gz "$BINARY_URL" 2>/dev/null; then
+          echo "Downloaded pre-built binary"
+          tar -xzf /tmp/zenv.tar.gz -C ~/.local/bin
+          chmod +x ~/.local/bin/zenv
+        else
+          echo "Pre-built binary not available, building from source..."
+          # Install Rust if not present
+          if ! command -v cargo &> /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            source $HOME/.cargo/env
+          fi
+          cargo install zorath-env --version ${{ steps.version.outputs.version }} --root ~/.local
+        fi
+
+    - name: Add zenv to PATH
+      shell: bash
+      run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: Validate environment
+      id: validate
+      shell: bash
+      run: |
+        set +e
+
+        # Build command
+        CMD="zenv check --schema '${{ inputs.schema }}' --env '${{ inputs.env-file }}'"
+        if [ "${{ inputs.allow-missing-env }}" = "true" ]; then
+          CMD="$CMD --allow-missing-env"
+        fi
+
+        # Run validation and capture output
+        OUTPUT=$(eval $CMD 2>&1)
+        EXIT_CODE=$?
+
+        echo "Command: $CMD"
+        echo "Exit code: $EXIT_CODE"
+        echo "Output:"
+        echo "$OUTPUT"
+
+        if [ $EXIT_CODE -eq 0 ]; then
+          echo "valid=true" >> $GITHUB_OUTPUT
+          echo "errors=[]" >> $GITHUB_OUTPUT
+        else
+          echo "valid=false" >> $GITHUB_OUTPUT
+          # Convert output to JSON array
+          ERRORS=$(echo "$OUTPUT" | grep -E "^  - " | sed 's/^  - //' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          if [ -z "$ERRORS" ] || [ "$ERRORS" = "[]" ]; then
+            ERRORS=$(echo "$OUTPUT" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          fi
+          echo "errors=$ERRORS" >> $GITHUB_OUTPUT
+
+          # Fail the step
+          echo "::error::Environment validation failed"
+          exit 1
+        fi

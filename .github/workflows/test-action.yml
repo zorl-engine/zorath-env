@@ -1,0 +1,97 @@
+name: Test GitHub Action
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - '.github/actions/zenv-action/**'
+      - '.github/workflows/test-action.yml'
+  pull_request:
+    paths:
+      - '.github/actions/zenv-action/**'
+      - '.github/workflows/test-action.yml'
+  workflow_dispatch:
+
+jobs:
+  test-action-valid:
+    name: Test with valid .env
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup test files
+        run: |
+          cp examples/.env.example .env
+          cp examples/env.schema.json env.schema.json
+
+      - name: Run zenv action
+        id: zenv
+        uses: ./.github/actions/zenv-action
+        with:
+          schema: env.schema.json
+          env-file: .env
+
+      - name: Check outputs
+        run: |
+          echo "Valid: ${{ steps.zenv.outputs.valid }}"
+          echo "Errors: ${{ steps.zenv.outputs.errors }}"
+          if [ "${{ steps.zenv.outputs.valid }}" != "true" ]; then
+            echo "Expected valid=true but got ${{ steps.zenv.outputs.valid }}"
+            exit 1
+          fi
+
+  test-action-invalid:
+    name: Test with invalid .env
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup test files
+        run: |
+          # Create an invalid .env (missing required DATABASE_URL)
+          echo "PORT=not_a_number" > .env
+          cp examples/env.schema.json env.schema.json
+
+      - name: Run zenv action (expect failure)
+        id: zenv
+        uses: ./.github/actions/zenv-action
+        continue-on-error: true
+        with:
+          schema: env.schema.json
+          env-file: .env
+
+      - name: Check outputs
+        run: |
+          echo "Valid: ${{ steps.zenv.outputs.valid }}"
+          echo "Errors: ${{ steps.zenv.outputs.errors }}"
+          if [ "${{ steps.zenv.outputs.valid }}" != "false" ]; then
+            echo "Expected valid=false but got ${{ steps.zenv.outputs.valid }}"
+            exit 1
+          fi
+
+  test-action-missing-env:
+    name: Test with missing .env (allowed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup test files
+        run: |
+          # Only copy schema, no .env file
+          cp examples/env.schema.json env.schema.json
+
+      - name: Run zenv action with allow-missing-env
+        id: zenv
+        uses: ./.github/actions/zenv-action
+        with:
+          schema: env.schema.json
+          env-file: .env
+          allow-missing-env: 'true'
+
+      - name: Check outputs
+        run: |
+          echo "Valid: ${{ steps.zenv.outputs.valid }}"
+          if [ "${{ steps.zenv.outputs.valid }}" != "true" ]; then
+            echo "Expected valid=true with allow-missing-env but got ${{ steps.zenv.outputs.valid }}"
+            exit 1
+          fi

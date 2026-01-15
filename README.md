@@ -102,6 +102,30 @@ zenv version                  # Show installed version
 zenv version --check-update   # Check crates.io for newer version
 ```
 
+### `zenv completions`
+
+Generates shell completions for bash, zsh, fish, and PowerShell.
+
+```bash
+zenv completions bash > /etc/bash_completion.d/zenv
+zenv completions zsh > ~/.zfunc/_zenv
+zenv completions fish > ~/.config/fish/completions/zenv.fish
+zenv completions powershell > zenv.ps1
+
+# Or evaluate directly
+eval "$(zenv completions bash)"
+```
+
+### `zenv example`
+
+Generates `.env.example` from schema (reverse of `init`).
+
+```bash
+zenv example                     # Output to stdout
+zenv example --include-defaults  # Include default values
+zenv example --output .env.example  # Write to file
+```
+
 ## Files
 
 By default, `zenv` looks for:
@@ -275,6 +299,28 @@ if [ -f "env.schema.json" ]; then
   fi
 fi
 ```
+
+## GitHub Action
+
+Validate `.env` files in your CI/CD pipeline:
+
+```yaml
+- name: Validate .env
+  uses: zorl-engine/zorath-env/.github/actions/zenv-action@main
+  with:
+    schema: env.schema.json
+    env-file: .env.example
+```
+
+**Inputs:**
+- `schema` - Path to schema file (default: `env.schema.json`)
+- `env-file` - Path to .env file (default: `.env`)
+- `allow-missing-env` - Allow missing .env (default: `true`)
+- `version` - zenv version to use (default: `latest`)
+
+**Outputs:**
+- `valid` - `true` if validation passed
+- `errors` - JSON array of error messages
 
 ## Connect
 

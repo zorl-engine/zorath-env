@@ -3,6 +3,7 @@ mod schema;
 mod commands;
 
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Parser, Debug)]
 #[command(name="zenv", version, about="Validate .env files with a schema and generate docs.")]
@@ -47,6 +48,25 @@ enum Command {
         #[arg(long, default_value_t = false)]
         check_update: bool,
     },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for (bash, zsh, fish, powershell)
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+
+    /// Generate .env.example from schema
+    Example {
+        #[arg(long, default_value = "env.schema.json")]
+        schema: String,
+        /// Output file path (defaults to stdout)
+        #[arg(long)]
+        output: Option<String>,
+        /// Include default values in output
+        #[arg(long, default_value_t = false)]
+        include_defaults: bool,
+    },
 }
 
 fn main() {
@@ -59,6 +79,10 @@ fn main() {
         Command::Docs { schema, format } => commands::docs::run(&schema, &format),
         Command::Init { example, schema } => commands::init::run(&example, &schema),
         Command::Version { check_update } => commands::version::run(check_update),
+        Command::Completions { shell } => commands::completions::run(shell),
+        Command::Example { schema, output, include_defaults } => {
+            commands::example::run(&schema, output.as_deref(), include_defaults)
+        }
     };
 
     if let Err(e) = result {

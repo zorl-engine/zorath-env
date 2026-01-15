@@ -1,8 +1,8 @@
 # zenv - Tested and Verified
 
-**Version:** 0.2.2
+**Version:** 0.3.0
 **Status:** Verified Working
-**Test Date:** January 13, 2025
+**Test Date:** January 15, 2025
 
 ---
 
@@ -12,7 +12,7 @@ zenv was tested on a real-world production codebase with 50+ environment variabl
 
 ### Unit Test Coverage
 
-**v0.2.2** includes 145 unit tests covering all core functionality:
+**v0.3.0** includes 168 unit tests covering all core functionality:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
@@ -22,8 +22,65 @@ zenv was tested on a real-world production codebase with 50+ environment variabl
 | `commands/init.rs` | 22 | Type inference: bool, int, float, url, string |
 | `commands/docs.rs` | 14 | Markdown and JSON output formats, sorting |
 | `commands/version.rs` | 1 | Version output |
+| `commands/completions.rs` | 4 | Shell completions for bash, zsh, fish, powershell |
+| `commands/example.rs` | 19 | .env.example generation from schema |
 
 All tests pass with zero warnings.
+
+---
+
+## New in v0.3.0
+
+### Shell Completions
+
+Generate shell completions for bash, zsh, fish, and PowerShell:
+
+```bash
+# Bash
+zenv completions bash > /etc/bash_completion.d/zenv
+
+# Zsh
+zenv completions zsh > ~/.zfunc/_zenv
+
+# Fish
+zenv completions fish > ~/.config/fish/completions/zenv.fish
+
+# PowerShell
+zenv completions powershell > zenv.ps1
+
+# Or evaluate directly
+eval "$(zenv completions bash)"
+```
+
+### Example Command
+
+Generate `.env.example` from schema (reverse of `init`):
+
+```bash
+# Output to stdout
+zenv example
+
+# Include default values
+zenv example --include-defaults
+
+# Write to file
+zenv example --output .env.example
+```
+
+### GitHub Action
+
+CI/CD integration via GitHub Action:
+
+```yaml
+- name: Validate .env
+  uses: zorl-engine/zorath-env/.github/actions/zenv-action@main
+  with:
+    schema: env.schema.json
+    env-file: .env.example
+```
+
+**Inputs:** `schema`, `env-file`, `allow-missing-env`, `version`
+**Outputs:** `valid`, `errors`
 
 ---
 
@@ -243,6 +300,9 @@ $ zenv docs --schema child.schema.json
 | `zenv check` | Working |
 | `zenv docs` | Working |
 | `zenv docs --format json` | Working |
+| `zenv version` | Working |
+| `zenv completions` | Working |
+| `zenv example` | Working |
 | Type inference (string, int, bool, url) | Working |
 | Required field validation | Working |
 | Unknown key detection | Working |
@@ -254,15 +314,16 @@ $ zenv docs --schema child.schema.json
 | Circular reference detection | Working |
 | Custom file paths | Working |
 | Exit codes (0 = pass, 1 = fail) | Working |
-| `zenv version` command | Working |
 | `--check-update` flag | Working |
 | Env file fallback (.env.local, etc.) | Working |
+| Shell completions (bash/zsh/fish/powershell) | Working |
+| GitHub Action | Working |
 
 ---
 
 ## Conclusion
 
-zenv v0.2.2 adds version command with update checking, env file fallback for Next.js compatibility, and improved error messages. Now with 145 unit tests for comprehensive coverage. Ready for production use.
+zenv v0.3.0 adds shell completions for all major shells, `zenv example` command for generating .env.example files from schemas, and a GitHub Action for CI/CD integration. Now with 168 unit tests for comprehensive coverage. Ready for production use.
 
 ---
 

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2025-01-15
+
+### Added
+- `zenv completions` command for shell auto-completion (bash, zsh, fish, powershell)
+- `zenv example` command to generate `.env.example` from schema
+  - `--include-defaults` flag to populate default values
+  - `--output` flag to write to file instead of stdout
+- GitHub Action for CI/CD validation (`.github/actions/zenv-action`)
+  - Inputs: `schema`, `env-file`, `allow-missing-env`, `version`
+  - Outputs: `valid`, `errors`
+- 19 new tests (168 total)
+
 ## [0.2.2] - 2025-01-13
 
 ### Added

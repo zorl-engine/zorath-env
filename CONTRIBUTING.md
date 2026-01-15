@@ -62,7 +62,7 @@ cargo run -- init
 cargo test
 ```
 
-All 145 tests should pass.
+All 168 tests should pass.
 
 ### Check Code Quality
 
@@ -175,7 +175,9 @@ src/
   commands/
     mod.rs         # Command module
     check.rs       # zenv check command
+    completions.rs # zenv completions command
     docs.rs        # zenv docs command
+    example.rs     # zenv example command
     init.rs        # zenv init command
     version.rs     # zenv version command
 ```
