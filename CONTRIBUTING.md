@@ -62,7 +62,7 @@ cargo run -- init
 cargo test
 ```
 
-All 168 tests should pass.
+All 185 tests should pass.
 
 ### Check Code Quality
 

@@ -1,14 +1,14 @@
 # zenv - Tested and Verified
 
-**Version:** 0.3.1
+**Version:** 0.3.2
 **Status:** Verified Working
-**Test Date:** January 15, 2026
+**Test Date:** January 16, 2026
 
 ---
 
 ## Test Summary
 
-zenv was tested on a production Next.js codebase (56 environment variables) and passed all tests. All 6 commands perform as expected.
+zenv was tested on a production Next.js codebase (56 environment variables) and passed all tests. All 7 commands perform as expected.
 
 ---
 
@@ -19,27 +19,32 @@ Tested on production schema with 56 variables (Supabase, Stripe, Redis, Vercel i
 | Command | Result | Details |
 |---------|--------|---------|
 | `zenv check` | PASS | Correctly identified 26 missing required vars, 4 unknown keys |
+| `zenv check --detect-secrets` | PASS | Detected potential secrets in test files |
 | `zenv docs` | PASS | Generated markdown documentation for all 56 variables |
 | `zenv docs --format json` | PASS | Valid JSON output with all schema fields |
 | `zenv example` | PASS | Generated .env.example with type/required comments |
 | `zenv example --include-defaults` | PASS | Included default values |
+| `zenv diff` | PASS | Correctly compared two .env files |
+| `zenv diff --schema` | PASS | Schema compliance check for both files |
 | `zenv completions bash` | PASS | Valid bash completion script |
 | `zenv completions powershell` | PASS | Valid PowerShell completion script |
-| `zenv version` | PASS | Shows `zenv v0.3.1` |
+| `zenv version` | PASS | Shows `zenv v0.3.2` |
 | `zenv version --check-update` | PASS | Reports "latest version" (matches crates.io) |
-| `zenv --help` | PASS | Shows all 6 commands |
+| `zenv --help` | PASS | Shows all 7 commands |
 
 **Schema complexity:** 56 variables including URLs, strings, bools, and enums with defaults.
 
 ### Unit Test Coverage
 
-**v0.3.1** includes 168 unit tests covering all core functionality:
+**v0.3.2** includes 185 unit tests covering all core functionality:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `envfile.rs` | 39 | Parser, multiline, escapes, variable interpolation |
 | `schema.rs` | 20 | Type parsing, serialization, inheritance, error handling |
+| `secrets.rs` | 10 | Secret detection patterns, high-entropy strings, URL passwords |
 | `commands/check.rs` | 48 | Type validations, validation rules, required fields |
+| `commands/diff.rs` | 5 | File comparison, truncation, schema compliance |
 | `commands/init.rs` | 22 | Type inference: bool, int, float, url, string |
 | `commands/docs.rs` | 14 | Markdown and JSON output formats, sorting |
 | `commands/version.rs` | 1 | Version output |
@@ -47,6 +52,53 @@ Tested on production schema with 56 variables (Supabase, Stripe, Redis, Vercel i
 | `commands/example.rs` | 19 | .env.example generation from schema |
 
 All tests pass with zero warnings.
+
+---
+
+## New in v0.3.2
+
+### Secret Detection
+
+Detect potential secrets in .env files with `--detect-secrets`:
+
+```bash
+zenv check --detect-secrets
+```
+
+Detects:
+- AWS Access Keys and Secret Keys (AKIA...)
+- Stripe API keys (sk_live_, pk_test_)
+- GitHub/GitLab/Slack tokens
+- Private key headers (RSA, SSH, PGP)
+- JWT tokens
+- URLs with embedded passwords
+- High-entropy strings (possible secrets)
+
+Example output:
+```
+Warning: Potential secrets detected:
+
+- AWS_SECRET_KEY (line 12): AWS Secret Access Key
+- DATABASE_URL (line 15): URL contains embedded password
+- API_TOKEN (line 22): High-entropy string (possible secret)
+
+These values may be real secrets. Consider using placeholders in committed files.
+```
+
+### Diff Command
+
+Compare two .env files:
+
+```bash
+zenv diff .env.development .env.production
+zenv diff .env.dev .env.prod --schema env.schema.json
+```
+
+Shows:
+- Variables only in first file
+- Variables only in second file
+- Variables with different values
+- Optional schema compliance check
 
 ---
 
@@ -320,11 +372,14 @@ $ zenv docs --schema child.schema.json
 |---------|--------|
 | `zenv init` | Working |
 | `zenv check` | Working |
+| `zenv check --detect-secrets` | Working |
 | `zenv docs` | Working |
 | `zenv docs --format json` | Working |
 | `zenv version` | Working |
 | `zenv completions` | Working |
 | `zenv example` | Working |
+| `zenv diff` | Working |
+| `zenv diff --schema` | Working |
 | Type inference (string, int, bool, url) | Working |
 | Required field validation | Working |
 | Unknown key detection | Working |
@@ -339,13 +394,14 @@ $ zenv docs --schema child.schema.json
 | `--check-update` flag | Working |
 | Env file fallback (.env.local, etc.) | Working |
 | Shell completions (bash/zsh/fish/powershell) | Working |
+| Secret detection (AWS, Stripe, GitHub, etc.) | Working |
 | GitHub Action | Working |
 
 ---
 
 ## Conclusion
 
-zenv v0.3.1 adds Windows support in GitHub Action, improved crates.io metadata, and code cleanup. v0.3.0 introduced shell completions, `zenv example` command, and GitHub Action. 168 unit tests for comprehensive coverage. Ready for production use.
+zenv v0.3.2 adds secret detection (`--detect-secrets`) and `zenv diff` command for comparing .env files. v0.3.1 added Windows support in GitHub Action. v0.3.0 introduced shell completions, `zenv example` command, and GitHub Action. 185 unit tests for comprehensive coverage. Ready for production use.
 
 ---
 

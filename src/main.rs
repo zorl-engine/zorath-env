@@ -1,5 +1,6 @@
 mod envfile;
 mod schema;
+mod secrets;
 mod commands;
 
 use clap::{Parser, Subcommand};
@@ -23,6 +24,9 @@ enum Command {
         /// If set, missing .env is allowed (schema still validated against defaults/required rules)
         #[arg(long, default_value_t = true)]
         allow_missing_env: bool,
+        /// Detect potential secrets in .env file (API keys, passwords, tokens)
+        #[arg(long, default_value_t = false)]
+        detect_secrets: bool,
     },
 
     /// Print docs for schema (markdown or json)
@@ -67,14 +71,25 @@ enum Command {
         #[arg(long, default_value_t = false)]
         include_defaults: bool,
     },
+
+    /// Compare two .env files
+    Diff {
+        /// First .env file
+        env_a: String,
+        /// Second .env file
+        env_b: String,
+        /// Optional schema to check compliance
+        #[arg(long)]
+        schema: Option<String>,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Command::Check { env, schema, allow_missing_env } => {
-            commands::check::run(&env, &schema, allow_missing_env)
+        Command::Check { env, schema, allow_missing_env, detect_secrets } => {
+            commands::check::run(&env, &schema, allow_missing_env, detect_secrets)
         }
         Command::Docs { schema, format } => commands::docs::run(&schema, &format),
         Command::Init { example, schema } => commands::init::run(&example, &schema),
@@ -82,6 +97,9 @@ fn main() {
         Command::Completions { shell } => commands::completions::run(shell),
         Command::Example { schema, output, include_defaults } => {
             commands::example::run(&schema, output.as_deref(), include_defaults)
+        }
+        Command::Diff { env_a, env_b, schema } => {
+            commands::diff::run(&env_a, &env_b, schema.as_deref())
         }
     };
 

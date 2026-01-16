@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2026-01-16
+
+### Added
+- `zenv diff` command to compare two .env files
+  - Shows variables only in first file, only in second file, and with different values
+  - Optional `--schema` flag for compliance checking both files
+- `--detect-secrets` flag for `zenv check` command
+  - Detects AWS keys, Stripe/GitHub/GitLab/Slack tokens
+  - Detects private key headers (RSA, SSH, PGP)
+  - Detects JWT tokens and URLs with embedded passwords
+  - Detects high-entropy strings (potential secrets)
+- 17 new tests (185 total)
+
 ## [0.3.1] - 2026-01-15
 
 ### Added

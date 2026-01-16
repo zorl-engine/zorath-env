@@ -79,6 +79,21 @@ Validates `.env` against `env.schema.json`.
 * exits `0` if valid
 * exits `1` if invalid (CI-friendly)
 
+```bash
+zenv check                       # Basic validation
+zenv check --detect-secrets      # Also scan for potential secrets
+```
+
+**Secret Detection** (`--detect-secrets`):
+
+Scans for potential secrets that shouldn't be committed:
+- AWS Access Keys and Secret Keys
+- Stripe, GitHub, GitLab, Slack tokens
+- Private key headers (RSA, SSH, PGP)
+- JWT tokens
+- URLs with embedded passwords
+- High-entropy strings
+
 ### `zenv docs`
 
 Generates documentation for all env vars in the schema.
@@ -125,6 +140,21 @@ zenv example                     # Output to stdout
 zenv example --include-defaults  # Include default values
 zenv example --output .env.example  # Write to file
 ```
+
+### `zenv diff`
+
+Compares two `.env` files and shows differences.
+
+```bash
+zenv diff .env.development .env.production
+zenv diff .env.dev .env.prod --schema env.schema.json
+```
+
+Shows:
+- Variables only in first file
+- Variables only in second file
+- Variables with different values
+- Optional schema compliance check for both files
 
 ## Files
 

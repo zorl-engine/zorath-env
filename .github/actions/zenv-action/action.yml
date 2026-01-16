@@ -44,7 +44,7 @@ runs:
           VERSION=$(curl -s https://crates.io/api/v1/crates/zorath-env | jq -r '.crate.newest_version // empty')
           if [ -z "$VERSION" ]; then
             echo "Warning: Could not fetch version from crates.io, using fallback"
-            VERSION="0.3.1"
+            VERSION="0.3.2"
           fi
         else
           VERSION="${{ inputs.version }}"

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 
 use url::Url;
@@ -7,6 +8,7 @@ use regex::Regex;
 
 use crate::envfile;
 use crate::schema::{self, Schema, VarType};
+use crate::secrets;
 
 /// Fallback paths to check when primary env file doesn't exist
 const ENV_FALLBACKS: &[&str] = &[
@@ -52,17 +54,20 @@ fn missing_env_error(primary: &str) -> String {
     msg
 }
 
-pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool) -> Result<(), String> {
+pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool, detect_secrets: bool) -> Result<(), String> {
     let schema = schema::load_schema(schema_path).map_err(|e| e.to_string())?;
 
-    let env_map: HashMap<String, String> = match resolve_env_file(env_path) {
+    let resolved_path = resolve_env_file(env_path);
+    let (env_map, raw_content): (HashMap<String, String>, Option<String>) = match &resolved_path {
         Some(resolved) => {
             if resolved != env_path {
                 eprintln!("Note: Using {} (fallback)\n", resolved);
             }
-            envfile::parse_env_file(&resolved).map_err(|e| e.to_string())?
+            let content = fs::read_to_string(resolved).map_err(|e| e.to_string())?;
+            let map = envfile::parse_env_file(resolved).map_err(|e| e.to_string())?;
+            (map, Some(content))
         }
-        None if allow_missing_env => HashMap::new(),
+        None if allow_missing_env => (HashMap::new(), None),
         None => return Err(missing_env_error(env_path)),
     };
 
@@ -71,7 +76,21 @@ pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool) -> Result
 
     let errors = validate(&schema, &env_map);
 
-    if !errors.is_empty() {
+    // Check for secrets if flag is set
+    let secret_warnings = if detect_secrets {
+        if let Some(content) = &raw_content {
+            secrets::detect_secrets(&env_map, content)
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    let has_errors = !errors.is_empty();
+    let has_warnings = !secret_warnings.is_empty();
+
+    if has_errors {
         // Count unknown keys for the tip
         let unknown_count = errors
             .iter()
@@ -90,11 +109,33 @@ pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool) -> Result
                 unknown_count
             );
         }
+    }
 
+    if has_warnings {
+        if has_errors {
+            eprintln!();
+        }
+        eprintln!("Warning: Potential secrets detected:\n");
+        for warning in &secret_warnings {
+            if warning.line > 0 {
+                eprintln!("- {} (line {}): {}", warning.key, warning.line, warning.reason);
+            } else {
+                eprintln!("- {}: {}", warning.key, warning.reason);
+            }
+        }
+        eprintln!("\nThese values may be real secrets. Consider using placeholders in committed files.");
+        eprintln!("Use `zenv example --schema {}` to generate safe placeholders.", schema_path);
+    }
+
+    if has_errors {
         return Err("validation failed".into());
     }
 
-    println!("zenv: OK");
+    if has_warnings {
+        println!("\nzenv: OK (with {} secret warning(s))", secret_warnings.len());
+    } else {
+        println!("zenv: OK");
+    }
     Ok(())
 }
 
