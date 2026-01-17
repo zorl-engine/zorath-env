@@ -1,6 +1,6 @@
 [package]
 name = "zorath-env"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 description = "CLI tool for .env file validation against JSON schema. Validates environment variables, detects missing required vars, catches configuration drift, generates Markdown or JSON documentation. Language-agnostic, works with any stack."
 license = "MIT"
@@ -23,6 +23,8 @@ serde_json = "1.0"
 regex = "1.10"
 thiserror = "1.0"
 url = "2.5"
+ureq = { version = "2.12", features = ["tls"] }
+dirs = "5.0"
 
 [dev-dependencies]
 tempfile = "3.10"

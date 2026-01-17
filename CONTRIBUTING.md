@@ -62,7 +62,7 @@ cargo run -- init
 cargo test
 ```
 
-All 185 tests should pass.
+All 189 tests should pass.
 
 ### Check Code Quality
 
@@ -172,10 +172,13 @@ src/
   main.rs          # CLI entry point
   schema.rs        # Schema parsing and types
   envfile.rs       # .env file parsing
+  remote.rs        # Remote schema fetching and caching
+  secrets.rs       # Secret detection patterns
   commands/
     mod.rs         # Command module
     check.rs       # zenv check command
     completions.rs # zenv completions command
+    diff.rs        # zenv diff command
     docs.rs        # zenv docs command
     example.rs     # zenv example command
     init.rs        # zenv init command

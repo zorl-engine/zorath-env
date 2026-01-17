@@ -1,8 +1,8 @@
 # zenv - Tested and Verified
 
-**Version:** 0.3.2
+**Version:** 0.3.3
 **Status:** Verified Working
-**Test Date:** January 16, 2026
+**Test Date:** January 17, 2026
 
 ---
 
@@ -26,9 +26,11 @@ Tested on production schema with 56 variables (Supabase, Stripe, Redis, Vercel i
 | `zenv example --include-defaults` | PASS | Included default values |
 | `zenv diff` | PASS | Correctly compared two .env files |
 | `zenv diff --schema` | PASS | Schema compliance check for both files |
+| `zenv check --schema https://...` | PASS | Remote schema fetch and validation |
+| `zenv docs --schema https://... --no-cache` | PASS | Fresh fetch bypassing cache |
 | `zenv completions bash` | PASS | Valid bash completion script |
 | `zenv completions powershell` | PASS | Valid PowerShell completion script |
-| `zenv version` | PASS | Shows `zenv v0.3.2` |
+| `zenv version` | PASS | Shows `zenv v0.3.3` |
 | `zenv version --check-update` | PASS | Reports "latest version" (matches crates.io) |
 | `zenv --help` | PASS | Shows all 7 commands |
 
@@ -36,13 +38,14 @@ Tested on production schema with 56 variables (Supabase, Stripe, Redis, Vercel i
 
 ### Unit Test Coverage
 
-**v0.3.2** includes 185 unit tests covering all core functionality:
+**v0.3.3** includes 189 unit tests covering all core functionality:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `envfile.rs` | 39 | Parser, multiline, escapes, variable interpolation |
 | `schema.rs` | 20 | Type parsing, serialization, inheritance, error handling |
 | `secrets.rs` | 10 | Secret detection patterns, high-entropy strings, URL passwords |
+| `remote.rs` | 4 | URL detection, HTTP rejection, cache filename, URL resolution |
 | `commands/check.rs` | 48 | Type validations, validation rules, required fields |
 | `commands/diff.rs` | 5 | File comparison, truncation, schema compliance |
 | `commands/init.rs` | 22 | Type inference: bool, int, float, url, string |
@@ -52,6 +55,36 @@ Tested on production schema with 56 variables (Supabase, Stripe, Redis, Vercel i
 | `commands/example.rs` | 19 | .env.example generation from schema |
 
 All tests pass with zero warnings.
+
+---
+
+## New in v0.3.3
+
+### Remote Schema Support
+
+Fetch schemas from HTTPS URLs for shared team configurations:
+
+```bash
+# Validate against remote schema
+zenv check --schema https://example.com/env.schema.json
+
+# Generate docs from remote schema
+zenv docs --schema https://raw.githubusercontent.com/org/repo/main/env.schema.json
+
+# Skip cache for fresh fetch
+zenv check --schema https://example.com/schema.json --no-cache
+```
+
+**Features:**
+- HTTPS only (HTTP rejected for security)
+- Automatic caching with 1-hour TTL
+- `--no-cache` flag to bypass cache
+- Remote schemas can extend other remote schemas
+- Relative URLs resolved against parent schema URL
+
+**Cache location:**
+- Windows: `%LOCALAPPDATA%\zorath-env\cache\`
+- Unix: `~/.cache/zorath-env/`
 
 ---
 
@@ -380,6 +413,8 @@ $ zenv docs --schema child.schema.json
 | `zenv example` | Working |
 | `zenv diff` | Working |
 | `zenv diff --schema` | Working |
+| Remote schema (`--schema https://...`) | Working |
+| `--no-cache` flag | Working |
 | Type inference (string, int, bool, url) | Working |
 | Required field validation | Working |
 | Unknown key detection | Working |
@@ -388,6 +423,7 @@ $ zenv docs --schema child.schema.json
 | Escape sequences in double quotes | Working |
 | Validation rules (min/max/pattern/length) | Working |
 | Schema inheritance (extends) | Working |
+| Remote schema inheritance | Working |
 | Circular reference detection | Working |
 | Custom file paths | Working |
 | Exit codes (0 = pass, 1 = fail) | Working |
@@ -401,7 +437,7 @@ $ zenv docs --schema child.schema.json
 
 ## Conclusion
 
-zenv v0.3.2 adds secret detection (`--detect-secrets`) and `zenv diff` command for comparing .env files. v0.3.1 added Windows support in GitHub Action. v0.3.0 introduced shell completions, `zenv example` command, and GitHub Action. 185 unit tests for comprehensive coverage. Ready for production use.
+zenv v0.3.3 adds remote schema support (`--schema https://...`) with automatic caching and `--no-cache` flag. v0.3.2 added secret detection (`--detect-secrets`) and `zenv diff` command. v0.3.1 added Windows support in GitHub Action. v0.3.0 introduced shell completions, `zenv example` command, and GitHub Action. 189 unit tests for comprehensive coverage. Ready for production use.
 
 ---
 

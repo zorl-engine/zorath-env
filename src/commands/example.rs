@@ -1,9 +1,10 @@
-use crate::schema::{load_schema, VarSpec, VarType};
+use crate::schema::{load_schema_with_options, LoadOptions, VarSpec, VarType};
 use std::fs;
 
 /// Generate .env.example from schema
-pub fn run(schema_path: &str, output_path: Option<&str>, include_defaults: bool) -> Result<(), String> {
-    let schema = load_schema(schema_path).map_err(|e| e.to_string())?;
+pub fn run(schema_path: &str, output_path: Option<&str>, include_defaults: bool, no_cache: bool) -> Result<(), String> {
+    let options = LoadOptions { no_cache };
+    let schema = load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
 
     // Sort keys alphabetically for consistent output
     let mut keys: Vec<&String> = schema.keys().collect();
@@ -309,6 +310,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_format_default_value_float() {
         let value = serde_json::json!(3.14);
         assert_eq!(format_default_value(&value), "3.14");
@@ -333,6 +335,7 @@ mod tests {
             file.path().to_str().unwrap(),
             Some(output_path.to_str().unwrap()),
             true,
+            false,
         );
         assert!(result.is_ok());
 
@@ -357,6 +360,7 @@ mod tests {
         let result = run(
             file.path().to_str().unwrap(),
             Some(output_path.to_str().unwrap()),
+            false,
             false,
         );
         assert!(result.is_ok());
@@ -385,6 +389,7 @@ mod tests {
         run(
             file.path().to_str().unwrap(),
             Some(output_path.to_str().unwrap()),
+            false,
             false,
         )
         .unwrap();
@@ -421,6 +426,7 @@ mod tests {
             file.path().to_str().unwrap(),
             Some(output_path.to_str().unwrap()),
             false,
+            false,
         )
         .unwrap();
 
@@ -435,7 +441,7 @@ mod tests {
 
     #[test]
     fn test_invalid_schema_path() {
-        let result = run("/nonexistent/path/schema.json", None, false);
+        let result = run("/nonexistent/path/schema.json", None, false, false);
         assert!(result.is_err());
     }
 }

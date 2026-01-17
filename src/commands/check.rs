@@ -7,7 +7,7 @@ use url::Url;
 use regex::Regex;
 
 use crate::envfile;
-use crate::schema::{self, Schema, VarType};
+use crate::schema::{self, LoadOptions, Schema, VarType};
 use crate::secrets;
 
 /// Fallback paths to check when primary env file doesn't exist
@@ -54,8 +54,9 @@ fn missing_env_error(primary: &str) -> String {
     msg
 }
 
-pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool, detect_secrets: bool) -> Result<(), String> {
-    let schema = schema::load_schema(schema_path).map_err(|e| e.to_string())?;
+pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool, detect_secrets: bool, no_cache: bool) -> Result<(), String> {
+    let options = LoadOptions { no_cache };
+    let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
 
     let resolved_path = resolve_env_file(env_path);
     let (env_map, raw_content): (HashMap<String, String>, Option<String>) = match &resolved_path {

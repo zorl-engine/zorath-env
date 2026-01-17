@@ -1,4 +1,5 @@
 mod envfile;
+mod remote;
 mod schema;
 mod secrets;
 mod commands;
@@ -27,6 +28,9 @@ enum Command {
         /// Detect potential secrets in .env file (API keys, passwords, tokens)
         #[arg(long, default_value_t = false)]
         detect_secrets: bool,
+        /// Skip cache when fetching remote schemas
+        #[arg(long, default_value_t = false)]
+        no_cache: bool,
     },
 
     /// Print docs for schema (markdown or json)
@@ -36,6 +40,9 @@ enum Command {
         /// Output format: markdown or json
         #[arg(long, default_value = "markdown")]
         format: String,
+        /// Skip cache when fetching remote schemas
+        #[arg(long, default_value_t = false)]
+        no_cache: bool,
     },
 
     /// Create a starter schema from .env.example
@@ -70,6 +77,9 @@ enum Command {
         /// Include default values in output
         #[arg(long, default_value_t = false)]
         include_defaults: bool,
+        /// Skip cache when fetching remote schemas
+        #[arg(long, default_value_t = false)]
+        no_cache: bool,
     },
 
     /// Compare two .env files
@@ -81,6 +91,9 @@ enum Command {
         /// Optional schema to check compliance
         #[arg(long)]
         schema: Option<String>,
+        /// Skip cache when fetching remote schemas
+        #[arg(long, default_value_t = false)]
+        no_cache: bool,
     },
 }
 
@@ -88,18 +101,18 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Command::Check { env, schema, allow_missing_env, detect_secrets } => {
-            commands::check::run(&env, &schema, allow_missing_env, detect_secrets)
+        Command::Check { env, schema, allow_missing_env, detect_secrets, no_cache } => {
+            commands::check::run(&env, &schema, allow_missing_env, detect_secrets, no_cache)
         }
-        Command::Docs { schema, format } => commands::docs::run(&schema, &format),
+        Command::Docs { schema, format, no_cache } => commands::docs::run(&schema, &format, no_cache),
         Command::Init { example, schema } => commands::init::run(&example, &schema),
         Command::Version { check_update } => commands::version::run(check_update),
         Command::Completions { shell } => commands::completions::run(shell),
-        Command::Example { schema, output, include_defaults } => {
-            commands::example::run(&schema, output.as_deref(), include_defaults)
+        Command::Example { schema, output, include_defaults, no_cache } => {
+            commands::example::run(&schema, output.as_deref(), include_defaults, no_cache)
         }
-        Command::Diff { env_a, env_b, schema } => {
-            commands::diff::run(&env_a, &env_b, schema.as_deref())
+        Command::Diff { env_a, env_b, schema, no_cache } => {
+            commands::diff::run(&env_a, &env_b, schema.as_deref(), no_cache)
         }
     };
 

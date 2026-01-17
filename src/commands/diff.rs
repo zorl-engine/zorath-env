@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::envfile;
-use crate::schema;
+use crate::schema::{self, LoadOptions};
 
 pub fn run(
     env_a: &str,
     env_b: &str,
     schema_path: Option<&str>,
+    no_cache: bool,
 ) -> Result<(), String> {
     // Parse both env files
     let map_a = envfile::parse_env_file(env_a).map_err(|e| format!("Error reading {}: {}", env_a, e))?;
@@ -74,7 +75,8 @@ pub fn run(
 
     // Schema compliance check if schema provided
     if let Some(schema_path) = schema_path {
-        match schema::load_schema(schema_path) {
+        let options = LoadOptions { no_cache };
+        match schema::load_schema_with_options(schema_path, &options) {
             Ok(schema) => {
                 println!("Schema compliance ({}):", schema_path);
 
@@ -203,7 +205,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar\nBAZ=qux");
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
 
-        let result = run(&env_a, &env_b, None);
+        let result = run(&env_a, &env_b, None, false);
         assert!(result.is_ok());
     }
 
@@ -213,7 +215,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar\nONLY_A=value");
         let env_b = create_temp_env(&dir, "b.env", "FOO=different\nONLY_B=value");
 
-        let result = run(&env_a, &env_b, None);
+        let result = run(&env_a, &env_b, None, false);
         assert!(result.is_ok());
     }
 
@@ -224,13 +226,13 @@ mod tests {
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
         let schema = create_temp_env(&dir, "schema.json", r#"{"FOO": {"type": "string", "required": true}}"#);
 
-        let result = run(&env_a, &env_b, Some(&schema));
+        let result = run(&env_a, &env_b, Some(&schema), false);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_diff_missing_file() {
-        let result = run("nonexistent_a.env", "nonexistent_b.env", None);
+        let result = run("nonexistent_a.env", "nonexistent_b.env", None, false);
         assert!(result.is_err());
     }
 }

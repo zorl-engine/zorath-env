@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3] - 2026-01-17
+
+### Added
+- Remote schema support: fetch schemas from HTTPS URLs
+  - `zenv check --schema https://example.com/env.schema.json`
+  - Automatic caching with 1-hour TTL
+  - `--no-cache` flag to force fresh fetch
+  - HTTPS only (HTTP rejected for security)
+- Schema inheritance works with remote URLs
+  - Remote schemas can extend other remote schemas
+  - Relative URLs resolved against parent schema URL
+- 4 new tests for remote schema functionality (189 total)
+
+### Changed
+- `load_schema` now accepts both local paths and HTTPS URLs
+
 ## [0.3.2] - 2026-01-16
 
 ### Added

@@ -1,7 +1,8 @@
-use crate::schema::{self, Schema, VarType};
+use crate::schema::{self, LoadOptions, Schema, VarType};
 
-pub fn run(schema_path: &str, format: &str) -> Result<(), String> {
-    let schema = schema::load_schema(schema_path).map_err(|e| e.to_string())?;
+pub fn run(schema_path: &str, format: &str, no_cache: bool) -> Result<(), String> {
+    let options = LoadOptions { no_cache };
+    let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
 
     let output = match format {
         "markdown" | "md" => generate_markdown(&schema),

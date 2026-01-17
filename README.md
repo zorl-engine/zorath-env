@@ -249,6 +249,27 @@ Schemas can extend other schemas:
 
 Inheritance supports up to 10 levels of depth. Circular references are detected and will cause an error.
 
+### Remote schemas
+
+Fetch schemas from HTTPS URLs for shared team configurations:
+
+```bash
+# Validate against remote schema
+zenv check --schema https://example.com/schemas/env.schema.json
+
+# Generate docs from remote schema
+zenv docs --schema https://raw.githubusercontent.com/org/repo/main/env.schema.json
+
+# Force fresh fetch (skip cache)
+zenv check --schema https://example.com/schema.json --no-cache
+```
+
+**Features:**
+- HTTPS only (HTTP rejected for security)
+- Automatic caching with 1-hour TTL
+- `--no-cache` flag to bypass cache
+- Remote schemas can extend other schemas (URLs resolved relative to parent)
+
 ## .env features
 
 ### Comments and Blank Lines

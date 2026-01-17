@@ -5,6 +5,8 @@ use std::path::Path;
 
 use thiserror::Error;
 
+use crate::remote::{self, RemoteError};
+
 #[derive(Error, Debug)]
 pub enum SchemaError {
     #[error("failed to read schema file: {0}")]
@@ -15,6 +17,8 @@ pub enum SchemaError {
     CircularInheritance(String),
     #[error("inheritance depth exceeded (max 10)")]
     InheritanceDepthExceeded,
+    #[error("remote schema error: {0}")]
+    Remote(#[from] RemoteError),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,22 +100,44 @@ pub struct SchemaFile {
     pub vars: Schema,
 }
 
-/// Load schema from file, resolving inheritance chain
+/// Schema loading options
+#[derive(Debug, Clone, Default)]
+pub struct LoadOptions {
+    /// Skip cache for remote schemas
+    pub no_cache: bool,
+}
+
+/// Load schema from file or URL, resolving inheritance chain
+#[allow(dead_code)]
 pub fn load_schema(path: &str) -> Result<Schema, SchemaError> {
-    load_schema_with_chain(path, &mut Vec::new())
+    load_schema_with_options(path, &LoadOptions::default())
+}
+
+/// Load schema with options (e.g., no_cache for remote schemas)
+pub fn load_schema_with_options(path: &str, options: &LoadOptions) -> Result<Schema, SchemaError> {
+    load_schema_with_chain(path, &mut Vec::new(), options)
 }
 
 /// Internal: Load schema with circular reference detection
-fn load_schema_with_chain(path: &str, chain: &mut Vec<String>) -> Result<Schema, SchemaError> {
+fn load_schema_with_chain(
+    path: &str,
+    chain: &mut Vec<String>,
+    options: &LoadOptions,
+) -> Result<Schema, SchemaError> {
     // Check max depth
     if chain.len() > 10 {
         return Err(SchemaError::InheritanceDepthExceeded);
     }
 
-    // Resolve absolute path for comparison
-    let abs_path = fs::canonicalize(path)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| path.to_string());
+    // For remote URLs, use the URL as the identifier
+    // For local files, resolve to absolute path
+    let abs_path = if remote::is_remote_url(path) {
+        path.to_string()
+    } else {
+        fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| path.to_string())
+    };
 
     // Check for circular reference
     if chain.contains(&abs_path) {
@@ -119,16 +145,26 @@ fn load_schema_with_chain(path: &str, chain: &mut Vec<String>) -> Result<Schema,
     }
     chain.push(abs_path);
 
-    // Read and parse the schema file
-    let content = fs::read_to_string(path).map_err(|e| SchemaError::Read(e.to_string()))?;
+    // Read schema content (from file or URL)
+    let content = if remote::is_remote_url(path) {
+        remote::fetch_remote_schema(path, options.no_cache)?
+    } else {
+        fs::read_to_string(path).map_err(|e| SchemaError::Read(e.to_string()))?
+    };
+
     let schema_file: SchemaFile =
         serde_json::from_str(&content).map_err(|e| SchemaError::Parse(e.to_string()))?;
 
     // Start with parent schema if extends is specified
     let mut result = if let Some(ref parent_path) = schema_file.extends {
         // Resolve parent path relative to current schema
-        let parent_full_path = resolve_relative_path(path, parent_path);
-        load_schema_with_chain(&parent_full_path, chain)?
+        let parent_full_path = if remote::is_remote_url(path) {
+            // For remote schemas, resolve relative URLs
+            remote::resolve_relative_url(path, parent_path)?
+        } else {
+            resolve_relative_path(path, parent_path)
+        };
+        load_schema_with_chain(&parent_full_path, chain, options)?
     } else {
         Schema::new()
     };
