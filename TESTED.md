@@ -1,8 +1,8 @@
 # zenv - Tested and Verified
 
-**Version:** 0.3.3
+**Version:** 0.3.4
 **Status:** Verified Working
-**Test Date:** January 17, 2026
+**Test Date:** January 18, 2026
 
 ---
 
@@ -19,42 +19,142 @@ Tested on production schema with 56 variables (Supabase, Stripe, Redis, Vercel i
 | Command | Result | Details |
 |---------|--------|---------|
 | `zenv check` | PASS | Correctly identified 26 missing required vars, 4 unknown keys |
-| `zenv check --detect-secrets` | PASS | Detected potential secrets in test files |
-| `zenv docs` | PASS | Generated markdown documentation for all 56 variables |
+| `zenv check --detect-secrets` | PASS | Detected 24 potential secrets (Stripe, JWT, URL passwords) |
+| `zenv check --watch` | PASS | Continuous validation with delta detection |
+| `zenv docs` | PASS | Generated markdown documentation with validation rules |
 | `zenv docs --format json` | PASS | Valid JSON output with all schema fields |
-| `zenv example` | PASS | Generated .env.example with type/required comments |
+| `zenv example` | PASS | Type-aware placeholders (PORT=3000, etc.) |
 | `zenv example --include-defaults` | PASS | Included default values |
 | `zenv diff` | PASS | Correctly compared two .env files |
 | `zenv diff --schema` | PASS | Schema compliance check for both files |
+| `zenv diff --format json` | PASS | Machine-readable JSON output |
 | `zenv check --schema https://...` | PASS | Remote schema fetch and validation |
 | `zenv docs --schema https://... --no-cache` | PASS | Fresh fetch bypassing cache |
+| `zenv init` | PASS | Smart description inference (STRIPE_API_KEY -> "Stripe API key") |
 | `zenv completions bash` | PASS | Valid bash completion script |
 | `zenv completions powershell` | PASS | Valid PowerShell completion script |
-| `zenv version` | PASS | Shows `zenv v0.3.3` |
-| `zenv version --check-update` | PASS | Reports "latest version" (matches crates.io) |
+| `zenv version` | PASS | Shows `zenv v0.3.4` |
+| `zenv version --check-update` | PASS | Reports "latest version" with changelog links |
 | `zenv --help` | PASS | Shows all 7 commands |
 
 **Schema complexity:** 56 variables including URLs, strings, bools, and enums with defaults.
 
 ### Unit Test Coverage
 
-**v0.3.3** includes 189 unit tests covering all core functionality:
+**v0.3.4** includes 205 unit tests covering all core functionality:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| `envfile.rs` | 39 | Parser, multiline, escapes, variable interpolation |
+| `envfile.rs` | 43 | Parser, multiline, escapes, variable interpolation, duplicate key detection |
 | `schema.rs` | 20 | Type parsing, serialization, inheritance, error handling |
 | `secrets.rs` | 10 | Secret detection patterns, high-entropy strings, URL passwords |
 | `remote.rs` | 4 | URL detection, HTTP rejection, cache filename, URL resolution |
-| `commands/check.rs` | 48 | Type validations, validation rules, required fields |
-| `commands/diff.rs` | 5 | File comparison, truncation, schema compliance |
-| `commands/init.rs` | 22 | Type inference: bool, int, float, url, string |
-| `commands/docs.rs` | 14 | Markdown and JSON output formats, sorting |
+| `commands/check.rs` | 52 | Type validations, validation rules, required fields, watch mode |
+| `commands/diff.rs` | 9 | File comparison, truncation, schema compliance, JSON output |
+| `commands/init.rs` | 26 | Type inference, smart description inference, service name extraction |
+| `commands/docs.rs` | 14 | Markdown and JSON output formats, sorting, validation rules display |
 | `commands/version.rs` | 1 | Version output |
 | `commands/completions.rs` | 4 | Shell completions for bash, zsh, fish, powershell |
-| `commands/example.rs` | 19 | .env.example generation from schema |
+| `commands/example.rs` | 22 | .env.example generation, type-aware placeholders |
 
 All tests pass with zero warnings.
+
+---
+
+## New in v0.3.4
+
+### Watch Mode
+
+Continuous validation with `--watch` flag:
+
+```bash
+# Watch .env file and schema for changes
+zenv check --watch
+
+# Watch with custom files
+zenv check --env .env.local --schema env.schema.json --watch
+```
+
+**Features:**
+- Delta detection: only shows changed variables
+- Schema change detection: revalidates when schema is modified
+- Timestamped output for clear tracking
+- Terminal bell on errors (audible notification)
+
+### JSON Output for Diff
+
+Machine-readable diff output:
+
+```bash
+zenv diff .env.dev .env.prod --format json
+```
+
+Returns structured JSON with `only_in_first`, `only_in_second`, and `different_values` arrays.
+
+### Smart Description Inference
+
+`zenv init` now generates intelligent descriptions:
+
+```bash
+zenv init --example .env.example --schema env.schema.json
+```
+
+- Infers descriptions from key names (DATABASE_URL -> "Database connection string")
+- Service name extraction (STRIPE_API_KEY -> "Stripe API key")
+- Pattern-based inference for ports, hosts, timeouts, tokens, etc.
+
+### Type-Aware Placeholders
+
+`zenv example` generates smarter placeholder values:
+
+| Key Pattern | Placeholder |
+|-------------|-------------|
+| PORT, *_PORT | 3000 |
+| DATABASE_URL | postgres://user:password@localhost:5432/dbname |
+| REDIS_* | redis://localhost:6379 |
+| *_API_KEY | your_api_key_here |
+| *_SECRET | your_secret_here |
+| *_TOKEN | your_token_here |
+| *_URL, *_URI | https://api.example.com |
+| NODE_ENV | development |
+| *_EMAIL | user@example.com |
+
+### Duplicate Key Warnings
+
+Parser now warns about duplicate keys with line numbers:
+
+```
+Warning: Duplicate key 'API_KEY' at line 15 (previously defined at line 3)
+```
+
+### Validation Rules in Docs
+
+`zenv docs` now shows validation rules:
+
+```markdown
+## `PORT`
+- Type: `int` (required)
+- Validation: min=1024, max=65535
+```
+
+### Actionable Tips for Unknown Keys
+
+When unknown keys are detected:
+
+```
+Tip: 4 unknown keys found. To add them to your schema:
+  zenv init --example .env --schema env.schema.json
+```
+
+### Version Update Notifications
+
+When a newer version is available, includes helpful links:
+
+```
+zenv v0.3.3 -> v0.3.4 available!
+Changelog: https://github.com/zorl-engine/zorath-env/blob/main/CHANGELOG.md
+Releases: https://github.com/zorl-engine/zorath-env/releases
+```
 
 ---
 
@@ -406,6 +506,7 @@ $ zenv docs --schema child.schema.json
 | `zenv init` | Working |
 | `zenv check` | Working |
 | `zenv check --detect-secrets` | Working |
+| `zenv check --watch` | Working |
 | `zenv docs` | Working |
 | `zenv docs --format json` | Working |
 | `zenv version` | Working |
@@ -413,6 +514,7 @@ $ zenv docs --schema child.schema.json
 | `zenv example` | Working |
 | `zenv diff` | Working |
 | `zenv diff --schema` | Working |
+| `zenv diff --format json` | Working |
 | Remote schema (`--schema https://...`) | Working |
 | `--no-cache` flag | Working |
 | Type inference (string, int, bool, url) | Working |
@@ -422,6 +524,7 @@ $ zenv docs --schema child.schema.json
 | Multiline quoted values | Working |
 | Escape sequences in double quotes | Working |
 | Validation rules (min/max/pattern/length) | Working |
+| Validation rules in docs output | Working |
 | Schema inheritance (extends) | Working |
 | Remote schema inheritance | Working |
 | Circular reference detection | Working |
@@ -432,12 +535,18 @@ $ zenv docs --schema child.schema.json
 | Shell completions (bash/zsh/fish/powershell) | Working |
 | Secret detection (AWS, Stripe, GitHub, etc.) | Working |
 | GitHub Action | Working |
+| Watch mode with delta detection | Working |
+| Smart description inference | Working |
+| Type-aware placeholders | Working |
+| Duplicate key warnings | Working |
+| Actionable unknown key tips | Working |
+| Changelog links in version updates | Working |
 
 ---
 
 ## Conclusion
 
-zenv v0.3.3 adds remote schema support (`--schema https://...`) with automatic caching and `--no-cache` flag. v0.3.2 added secret detection (`--detect-secrets`) and `zenv diff` command. v0.3.1 added Windows support in GitHub Action. v0.3.0 introduced shell completions, `zenv example` command, and GitHub Action. 189 unit tests for comprehensive coverage. Ready for production use.
+zenv v0.3.4 adds watch mode (`--watch`) for continuous validation with delta detection, `--format json` for diff command, smart description inference in `zenv init`, type-aware placeholders in `zenv example`, duplicate key warnings, validation rules in docs output, and actionable tips for unknown keys. v0.3.3 added remote schema support. v0.3.2 added secret detection and diff command. v0.3.0 introduced shell completions, example command, and GitHub Action. 205 unit tests for comprehensive coverage. Ready for production use.
 
 ---
 
