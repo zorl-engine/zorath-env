@@ -1,3 +1,6 @@
+const CHANGELOG_URL: &str = "https://github.com/zorl-engine/zorath-env/blob/main/CHANGELOG.md";
+const RELEASES_URL: &str = "https://github.com/zorl-engine/zorath-env/releases";
+
 /// Show version information
 pub fn run(check_update: bool) -> Result<(), String> {
     let version = env!("CARGO_PKG_VERSION");
@@ -8,6 +11,9 @@ pub fn run(check_update: bool) -> Result<(), String> {
             Ok(Some(latest)) if latest != version => {
                 println!("Latest: v{latest} (update available)");
                 println!("Run: cargo install zorath-env --force");
+                println!();
+                println!("Changelog: {}", CHANGELOG_URL);
+                println!("Releases:  {}", RELEASES_URL);
             }
             Ok(Some(_)) => {
                 println!("You are on the latest version.");

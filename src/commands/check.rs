@@ -1,14 +1,43 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use url::Url;
 
 use regex::Regex;
 
 use crate::envfile;
-use crate::schema::{self, LoadOptions, Schema, VarType};
+use crate::schema::{self, LoadOptions, Schema, VarSpec, VarType};
 use crate::secrets;
+
+/// State tracked between watch iterations for delta detection
+struct WatchState {
+    /// Hash of raw .env file content
+    content_hash: u64,
+    /// Parsed environment variables
+    env_map: HashMap<String, String>,
+    /// Hash of schema content (for detecting schema changes)
+    schema_hash: u64,
+}
+
+/// Type of change detected for a variable
+#[derive(Debug, Clone, PartialEq)]
+enum ChangeType {
+    Added,
+    Removed,
+    Modified { old_value: String },
+}
+
+/// A detected change in the environment
+struct EnvChange {
+    key: String,
+    change_type: ChangeType,
+    new_value: Option<String>,
+}
 
 /// Fallback paths to check when primary env file doesn't exist
 const ENV_FALLBACKS: &[&str] = &[
@@ -54,7 +83,29 @@ fn missing_env_error(primary: &str) -> String {
     msg
 }
 
-pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool, detect_secrets: bool, no_cache: bool) -> Result<(), String> {
+pub fn run(
+    env_path: &str,
+    schema_path: &str,
+    allow_missing_env: bool,
+    detect_secrets: bool,
+    no_cache: bool,
+    watch: bool,
+) -> Result<(), String> {
+    if watch {
+        run_watch_mode(env_path, schema_path, allow_missing_env, detect_secrets, no_cache)
+    } else {
+        run_once(env_path, schema_path, allow_missing_env, detect_secrets, no_cache)
+    }
+}
+
+/// Run validation once and exit
+fn run_once(
+    env_path: &str,
+    schema_path: &str,
+    allow_missing_env: bool,
+    detect_secrets: bool,
+    no_cache: bool,
+) -> Result<(), String> {
     let options = LoadOptions { no_cache };
     let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
 
@@ -103,12 +154,11 @@ pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool, detect_se
             eprintln!("- {e}");
         }
 
-        // Suggest init --merge if there are unknown keys
+        // Suggest how to fix unknown keys
         if unknown_count > 0 {
-            eprintln!(
-                "\nTip: {} unknown key(s) found. Consider updating your schema.",
-                unknown_count
-            );
+            eprintln!("\nTip: {} unknown key(s) found in .env but not in schema.", unknown_count);
+            eprintln!("  To add them: zenv init --example .env --schema {} (creates new schema)", schema_path);
+            eprintln!("  Or manually add them to your schema file.");
         }
     }
 
@@ -138,6 +188,633 @@ pub fn run(env_path: &str, schema_path: &str, allow_missing_env: bool, detect_se
         println!("zenv: OK");
     }
     Ok(())
+}
+
+/// Run validation in watch mode with intelligent delta detection
+fn run_watch_mode(
+    env_path: &str,
+    schema_path: &str,
+    allow_missing_env: bool,
+    detect_secrets: bool,
+    no_cache: bool,
+) -> Result<(), String> {
+    // Check if schema is a remote URL - can't watch remote schemas
+    let is_remote_schema = schema_path.starts_with("http://") || schema_path.starts_with("https://");
+
+    // Collect files to watch
+    let mut watch_paths: Vec<String> = Vec::new();
+
+    // Add env file(s) to watch
+    if let Some(resolved) = resolve_env_file(env_path) {
+        watch_paths.push(resolved);
+    } else if Path::new(env_path).exists() {
+        watch_paths.push(env_path.to_string());
+    } else if env_path == ".env" {
+        // Watch all fallback paths even if they don't exist yet
+        watch_paths.push(".env".to_string());
+        for fallback in ENV_FALLBACKS {
+            watch_paths.push((*fallback).to_string());
+        }
+    } else {
+        watch_paths.push(env_path.to_string());
+    }
+
+    // Add schema to watch (only if local file)
+    if !is_remote_schema {
+        watch_paths.push(schema_path.to_string());
+    }
+
+    // Print header
+    println!("zenv watch v0.3.4\n");
+    let watch_display: Vec<&str> = watch_paths.iter().map(|s| s.as_str()).collect();
+    println!("[watching] {}", watch_display.join(", "));
+    if is_remote_schema {
+        println!("[note] Remote schema will not be watched for changes");
+    }
+
+    // Load schema for initial validation
+    let options = LoadOptions { no_cache };
+    let schema = schema::load_schema_with_options(schema_path, &options)
+        .map_err(|e| format!("Schema error: {}", e))?;
+
+    // Run initial validation and capture state
+    let mut state = run_initial_validation(env_path, &schema, allow_missing_env, detect_secrets, schema_path)?;
+
+    // Set up file watcher
+    let (tx, rx) = mpsc::channel();
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        },
+        Config::default(),
+    )
+    .map_err(|e| format!("Failed to create file watcher: {}", e))?;
+
+    // Watch each path
+    for path in &watch_paths {
+        let p = Path::new(path);
+        let watch_target = if p.exists() {
+            p.to_path_buf()
+        } else if let Some(parent) = p.parent() {
+            if parent.as_os_str().is_empty() {
+                Path::new(".").to_path_buf()
+            } else {
+                parent.to_path_buf()
+            }
+        } else {
+            Path::new(".").to_path_buf()
+        };
+
+        if watch_target.exists() {
+            let _ = watcher.watch(&watch_target, RecursiveMode::NonRecursive);
+        }
+    }
+
+    // Debounce settings
+    let debounce_duration = Duration::from_millis(150);
+    let mut last_event_time = Instant::now() - debounce_duration;
+
+    println!("\nPress Ctrl+C to stop watching.\n");
+
+    // Event loop with delta detection
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(_event) => {
+                let now = Instant::now();
+                if now.duration_since(last_event_time) >= debounce_duration {
+                    last_event_time = now;
+
+                    // Check for schema changes first (if local)
+                    if !is_remote_schema {
+                        if let Ok(schema_content) = fs::read_to_string(schema_path) {
+                            let new_schema_hash = compute_hash(&schema_content);
+                            if new_schema_hash != state.schema_hash {
+                                // Schema changed - reload and revalidate everything
+                                let timestamp = local_timestamp();
+                                println!("[{}] ~ schema changed", timestamp);
+
+                                match schema::load_schema_with_options(schema_path, &options) {
+                                    Ok(new_schema) => {
+                                        state.schema_hash = new_schema_hash;
+                                        // Full revalidation with new schema
+                                        state = match run_initial_validation(env_path, &new_schema, allow_missing_env, detect_secrets, schema_path) {
+                                            Ok(s) => s,
+                                            Err(e) => {
+                                                eprintln!("           {}", e);
+                                                print_bell();
+                                                continue;
+                                            }
+                                        };
+                                    }
+                                    Err(e) => {
+                                        print_schema_error(&e);
+                                        print_bell();
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Check for env file changes with delta detection
+                    let resolved_path = resolve_env_file(env_path);
+                    if let Some(ref resolved) = resolved_path {
+                        if let Ok(content) = fs::read_to_string(resolved) {
+                            let new_hash = compute_hash(&content);
+
+                            // Skip if content unchanged (editor touch without changes)
+                            if new_hash == state.content_hash {
+                                continue;
+                            }
+
+                            // Parse new env file
+                            match envfile::parse_env_file(resolved) {
+                                Ok(new_env_raw) => {
+                                    match envfile::interpolate_env(new_env_raw) {
+                                        Ok(new_env) => {
+                                            // Reload schema for validation
+                                            let schema = match schema::load_schema_with_options(schema_path, &options) {
+                                                Ok(s) => s,
+                                                Err(e) => {
+                                                    print_schema_error(&e);
+                                                    print_bell();
+                                                    continue;
+                                                }
+                                            };
+
+                                            // Detect changes
+                                            let changes = detect_changes(&state.env_map, &new_env);
+
+                                            if changes.is_empty() {
+                                                // No logical changes (whitespace only?)
+                                                state.content_hash = new_hash;
+                                                continue;
+                                            }
+
+                                            // Validate changed variables and print results
+                                            let had_errors = print_delta_validation(
+                                                &changes,
+                                                &new_env,
+                                                &schema,
+                                                detect_secrets,
+                                                &content,
+                                            );
+
+                                            if had_errors {
+                                                print_bell();
+                                            }
+
+                                            // Update state
+                                            state.content_hash = new_hash;
+                                            state.env_map = new_env;
+                                        }
+                                        Err(e) => {
+                                            let timestamp = local_timestamp();
+                                            eprintln!("[{}] Interpolation error: {}", timestamp, e);
+                                            print_bell();
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let timestamp = local_timestamp();
+                                    eprintln!("[{}] Parse error: {}", timestamp, e);
+                                    print_bell();
+                                }
+                            }
+                        }
+                    } else if !allow_missing_env {
+                        let timestamp = local_timestamp();
+                        eprintln!("[{}] Env file not found: {}", timestamp, env_path);
+                        print_bell();
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // No event, continue waiting
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("File watcher disconnected".into());
+            }
+        }
+    }
+}
+
+/// Run initial validation and return state for delta tracking
+fn run_initial_validation(
+    env_path: &str,
+    schema: &Schema,
+    allow_missing_env: bool,
+    detect_secrets: bool,
+    schema_path: &str,
+) -> Result<WatchState, String> {
+    let timestamp = local_timestamp();
+
+    // Read schema content for hash
+    let schema_hash = if let Ok(content) = fs::read_to_string(schema_path) {
+        compute_hash(&content)
+    } else {
+        0 // Remote schema or missing
+    };
+
+    // Load env file
+    let resolved_path = resolve_env_file(env_path);
+    let (env_map, raw_content, content_hash): (HashMap<String, String>, Option<String>, u64) =
+        match &resolved_path {
+            Some(resolved) => {
+                let content = fs::read_to_string(resolved).map_err(|e| e.to_string())?;
+                let hash = compute_hash(&content);
+                let map = envfile::parse_env_file(resolved).map_err(|e| e.to_string())?;
+                (map, Some(content), hash)
+            }
+            None if allow_missing_env => (HashMap::new(), None, 0),
+            None => return Err(missing_env_error(env_path)),
+        };
+
+    // Interpolate
+    let env_map = envfile::interpolate_env(env_map).map_err(|e| e.to_string())?;
+
+    // Validate all
+    let errors = validate(schema, &env_map);
+
+    // Check for secrets
+    let secret_warnings = if detect_secrets {
+        if let Some(content) = &raw_content {
+            secrets::detect_secrets(&env_map, content)
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    let has_errors = !errors.is_empty();
+    let has_warnings = !secret_warnings.is_empty();
+    let var_count = env_map.len();
+
+    if has_errors {
+        eprintln!("[{}] Initial: FAILED ({} variables)", timestamp, var_count);
+        for e in &errors {
+            eprintln!("           - {}", e);
+        }
+        print_bell();
+    } else if has_warnings {
+        println!("[{}] Initial: OK ({} variables, {} secret warning(s))", timestamp, var_count, secret_warnings.len());
+        for warning in &secret_warnings {
+            eprintln!("           - {}: {}", warning.key, warning.reason);
+        }
+    } else {
+        println!("[{}] Initial: OK ({} variables)", timestamp, var_count);
+    }
+
+    Ok(WatchState {
+        content_hash,
+        env_map,
+        schema_hash,
+    })
+}
+
+/// Detect changes between old and new environment maps
+fn detect_changes(old: &HashMap<String, String>, new: &HashMap<String, String>) -> Vec<EnvChange> {
+    let mut changes = Vec::new();
+
+    let old_keys: HashSet<&String> = old.keys().collect();
+    let new_keys: HashSet<&String> = new.keys().collect();
+
+    // Added keys
+    for key in new_keys.difference(&old_keys) {
+        changes.push(EnvChange {
+            key: (*key).clone(),
+            change_type: ChangeType::Added,
+            new_value: new.get(*key).cloned(),
+        });
+    }
+
+    // Removed keys
+    for key in old_keys.difference(&new_keys) {
+        changes.push(EnvChange {
+            key: (*key).clone(),
+            change_type: ChangeType::Removed,
+            new_value: None,
+        });
+    }
+
+    // Modified keys
+    for key in old_keys.intersection(&new_keys) {
+        let old_val = old.get(*key).unwrap();
+        let new_val = new.get(*key).unwrap();
+        if old_val != new_val {
+            changes.push(EnvChange {
+                key: (*key).clone(),
+                change_type: ChangeType::Modified { old_value: old_val.clone() },
+                new_value: Some(new_val.clone()),
+            });
+        }
+    }
+
+    // Sort by key for consistent output
+    changes.sort_by(|a, b| a.key.cmp(&b.key));
+    changes
+}
+
+/// Print delta validation results for changed variables
+fn print_delta_validation(
+    changes: &[EnvChange],
+    env_map: &HashMap<String, String>,
+    schema: &Schema,
+    detect_secrets: bool,
+    raw_content: &str,
+) -> bool {
+    let timestamp = local_timestamp();
+    let mut had_errors = false;
+
+    for change in changes {
+        let symbol = match &change.change_type {
+            ChangeType::Added => "+",
+            ChangeType::Removed => "-",
+            ChangeType::Modified { .. } => "~",
+        };
+
+        // Build change description
+        let change_desc = match &change.change_type {
+            ChangeType::Added => {
+                let val = truncate_value(change.new_value.as_deref().unwrap_or(""));
+                format!("{} {} = \"{}\"", symbol, change.key, val)
+            }
+            ChangeType::Removed => {
+                format!("{} {} (removed)", symbol, change.key)
+            }
+            ChangeType::Modified { old_value } => {
+                let old = truncate_value(old_value);
+                let new = truncate_value(change.new_value.as_deref().unwrap_or(""));
+                format!("{} {}: \"{}\" -> \"{}\"", symbol, change.key, old, new)
+            }
+        };
+
+        // Validate this specific key
+        let validation_result = if change.change_type == ChangeType::Removed {
+            // Check if removed key was required
+            if let Some(spec) = schema.get(&change.key) {
+                if spec.required && spec.default.is_none() {
+                    Some(format!("FAILED: {} is required", change.key))
+                } else {
+                    Some("OK: optional variable removed".to_string())
+                }
+            } else {
+                Some("OK: unknown variable removed".to_string())
+            }
+        } else {
+            // Validate the key against schema
+            match schema.get(&change.key) {
+                Some(spec) => {
+                    let value = change.new_value.as_deref().unwrap_or("");
+                    match validate_single_key(&change.key, value, spec) {
+                        Ok(type_info) => Some(format!("OK ({})", type_info)),
+                        Err(e) => {
+                            had_errors = true;
+                            Some(format!("FAILED: {}", e))
+                        }
+                    }
+                }
+                None => {
+                    // Key not in schema
+                    had_errors = true;
+                    Some("WARNING: not in schema".to_string())
+                }
+            }
+        };
+
+        // Print the change and validation result
+        print!("[{}] {}", timestamp, change_desc);
+        if let Some(result) = validation_result {
+            if result.starts_with("FAILED") || result.starts_with("WARNING") {
+                eprintln!();
+                eprintln!("           {}", result);
+            } else {
+                println!();
+                println!("           {}", result);
+            }
+        } else {
+            println!();
+        }
+    }
+
+    // Check for secrets on added/modified values
+    if detect_secrets {
+        let changed_keys: HashSet<String> = changes.iter()
+            .filter(|c| c.change_type != ChangeType::Removed)
+            .map(|c| c.key.clone())
+            .collect();
+
+        let secret_warnings = secrets::detect_secrets(env_map, raw_content);
+        for warning in secret_warnings {
+            if changed_keys.contains(&warning.key) {
+                eprintln!("[{}] ! {}: potential secret detected", timestamp, warning.key);
+                eprintln!("           {}", warning.reason);
+            }
+        }
+    }
+
+    had_errors
+}
+
+/// Validate a single key-value pair against its spec
+fn validate_single_key(_key: &str, value: &str, spec: &VarSpec) -> Result<String, String> {
+    match spec.var_type {
+        VarType::String => {
+            if let Some(ref rules) = spec.validate {
+                if let Some(min_len) = rules.min_length {
+                    if value.len() < min_len {
+                        return Err(format!("length {} < minimum {}", value.len(), min_len));
+                    }
+                }
+                if let Some(max_len) = rules.max_length {
+                    if value.len() > max_len {
+                        return Err(format!("length {} > maximum {}", value.len(), max_len));
+                    }
+                }
+                if let Some(ref pattern) = rules.pattern {
+                    match Regex::new(pattern) {
+                        Ok(re) => {
+                            if !re.is_match(value) {
+                                return Err(format!("does not match pattern '{}'", pattern));
+                            }
+                        }
+                        Err(e) => {
+                            return Err(format!("invalid regex: {}", e));
+                        }
+                    }
+                }
+            }
+            Ok("string".to_string())
+        }
+        VarType::Int => {
+            match value.parse::<i64>() {
+                Ok(n) => {
+                    if let Some(ref rules) = spec.validate {
+                        if let Some(min) = rules.min {
+                            if n < min {
+                                return Err(format!("value {} < minimum {}", n, min));
+                            }
+                        }
+                        if let Some(max) = rules.max {
+                            if n > max {
+                                return Err(format!("value {} > maximum {}", n, max));
+                            }
+                        }
+                    }
+                    Ok(format!("int: {}", n))
+                }
+                Err(_) => Err(format!("expected int, got '{}'", truncate_value(value))),
+            }
+        }
+        VarType::Float => {
+            match value.parse::<f64>() {
+                Ok(n) => {
+                    if let Some(ref rules) = spec.validate {
+                        if let Some(min_val) = rules.min_value {
+                            if n < min_val {
+                                return Err(format!("value {} < minimum {}", n, min_val));
+                            }
+                        }
+                        if let Some(max_val) = rules.max_value {
+                            if n > max_val {
+                                return Err(format!("value {} > maximum {}", n, max_val));
+                            }
+                        }
+                    }
+                    Ok(format!("float: {}", n))
+                }
+                Err(_) => Err(format!("expected float, got '{}'", truncate_value(value))),
+            }
+        }
+        VarType::Bool => {
+            let v = value.to_lowercase();
+            if matches!(v.as_str(), "true" | "false" | "1" | "0" | "yes" | "no") {
+                Ok(format!("bool: {}", v))
+            } else {
+                Err(format!("expected bool, got '{}'", truncate_value(value)))
+            }
+        }
+        VarType::Url => {
+            if Url::parse(value).is_ok() {
+                Ok("url".to_string())
+            } else {
+                Err(format!("expected url, got '{}'", truncate_value(value)))
+            }
+        }
+        VarType::Enum => {
+            match spec.values.as_ref() {
+                Some(allowed) => {
+                    if allowed.iter().any(|v| v == value) {
+                        Ok(format!("enum: {}", value))
+                    } else {
+                        Err(format!("expected one of {:?}", allowed))
+                    }
+                }
+                None => Err("enum type missing 'values' in schema".to_string()),
+            }
+        }
+    }
+}
+
+/// Truncate a value for display (max 30 chars)
+fn truncate_value(value: &str) -> String {
+    if value.len() <= 30 {
+        value.replace('\n', "\\n")
+    } else {
+        format!("{}...", &value[..27].replace('\n', "\\n"))
+    }
+}
+
+/// Compute a simple hash of a string for change detection
+fn compute_hash(content: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Print terminal bell character (beep on error)
+fn print_bell() {
+    eprint!("\x07");
+}
+
+/// Print a schema error with helpful context
+fn print_schema_error(error: &dyn std::fmt::Display) {
+    let timestamp = local_timestamp();
+    let error_str = error.to_string();
+
+    eprintln!("[{}] Schema error:", timestamp);
+
+    // Parse the error for better formatting
+    if error_str.contains("line ") && error_str.contains("column ") {
+        // JSON parse error with location
+        eprintln!("           {}", error_str);
+        eprintln!();
+        eprintln!("           Tip: Check for trailing commas, missing quotes, or invalid JSON syntax.");
+    } else if error_str.contains("No such file") || error_str.contains("cannot find") || error_str.contains("not found") {
+        eprintln!("           File not found: {}", error_str);
+        eprintln!();
+        eprintln!("           Tip: Create a schema with: zenv init --example .env.example");
+    } else if error_str.contains("invalid type") || error_str.contains("unknown variant") {
+        eprintln!("           {}", error_str);
+        eprintln!();
+        eprintln!("           Tip: Valid types are: string, int, float, bool, url, enum");
+    } else {
+        // Generic error
+        eprintln!("           {}", error_str);
+    }
+}
+
+/// Get local timestamp in HH:MM:SS format using OS APIs
+#[cfg(windows)]
+fn local_timestamp() -> String {
+    use std::mem::MaybeUninit;
+
+    #[repr(C)]
+    struct SystemTime {
+        w_year: u16,
+        w_month: u16,
+        w_day_of_week: u16,
+        w_day: u16,
+        w_hour: u16,
+        w_minute: u16,
+        w_second: u16,
+        w_milliseconds: u16,
+    }
+
+    extern "system" {
+        fn GetLocalTime(lp_system_time: *mut SystemTime);
+    }
+
+    let mut st = MaybeUninit::<SystemTime>::uninit();
+    unsafe {
+        GetLocalTime(st.as_mut_ptr());
+        let st = st.assume_init();
+        format!("{:02}:{:02}:{:02}", st.w_hour, st.w_minute, st.w_second)
+    }
+}
+
+#[cfg(not(windows))]
+fn local_timestamp() -> String {
+    use std::time::SystemTime;
+
+    // On Unix, we could use libc::localtime_r for proper local time
+    // For simplicity, falling back to UTC with note
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+
+    let total_secs = now.as_secs();
+    let secs_in_day = total_secs % 86400;
+    let hours = (secs_in_day / 3600) % 24;
+    let minutes = (secs_in_day % 3600) / 60;
+    let seconds = secs_in_day % 60;
+
+    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }
 
 /// Validate env_map against schema, returns list of error messages

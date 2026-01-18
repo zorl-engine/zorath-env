@@ -30,7 +30,7 @@ zenv runs locally. No uploads, no secrets fetching, no phoning home.
 
 ## Works with any stack
 
-`zenv` is language-agnostic. Use it with Node.js, Python, Go, Ruby, Rust, Java, PHP, or any project that uses `.env` files. It's a standalone binary with zero runtime dependencies.
+`zenv` is language-agnostic. Use it with Node.js, Python, Go, Ruby, Rust, Java, PHP, or any project that uses `.env` files. It's a single-binary CLI with no runtime dependencies.
 
 ## Install
 
@@ -93,6 +93,22 @@ Scans for potential secrets that shouldn't be committed:
 - JWT tokens
 - URLs with embedded passwords
 - High-entropy strings
+
+**Watch Mode** (`--watch`):
+
+Watches for file changes and re-validates automatically:
+
+```bash
+zenv check --watch                  # Watch .env and schema
+zenv check --watch --detect-secrets # Watch with secret detection
+```
+
+Features:
+- Delta detection: shows exactly which variable changed
+- Targeted validation: only validates changed keys
+- Content-hash skip: ignores saves without changes
+- Local timestamps
+- Terminal bell on errors
 
 ### `zenv docs`
 

@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.4] - 2026-01-18
+
+### Added
+- **Watch mode**: `zenv check --watch` for continuous validation
+  - Delta detection: only shows changed variables
+  - Schema change detection: revalidates on schema updates
+  - Timestamped output with terminal bell on errors
+- `--format json` for diff command: machine-readable output
+- Smart description inference in `zenv init`
+  - Infers descriptions from key names (DATABASE_URL, API_KEY, etc.)
+  - Service name extraction (STRIPE_API_KEY -> "Stripe API key")
+- Type-aware placeholders in `zenv example`
+  - PORT -> 3000, DATABASE_URL -> postgres://..., API_KEY -> your_api_key_here
+- Duplicate key warnings with line numbers in .env parser
+- Validation rules shown in `zenv docs` output (min, max, pattern, etc.)
+- Actionable tips for unknown keys ("To add them: zenv init...")
+- Changelog and releases links shown on version update available
+- 16 new tests (205 total)
+
+### Changed
+- Improved watch mode schema error display with context-aware tips
+
 ## [0.3.3] - 2026-01-17
 
 ### Added

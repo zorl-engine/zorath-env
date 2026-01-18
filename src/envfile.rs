@@ -34,20 +34,43 @@ enum ParseState {
 }
 
 pub fn parse_env_str(content: &str) -> HashMap<String, String> {
+    parse_env_str_with_warnings(content, true)
+}
+
+/// Parse .env content with optional duplicate key warnings
+pub fn parse_env_str_with_warnings(content: &str, warn_duplicates: bool) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let mut state = ParseState::LineStart;
     let mut current_key = String::new();
     let mut current_value = String::new();
     let mut chars = content.chars().peekable();
+    let mut line_number: usize = 1;
+    let mut key_start_line: usize = 1;
+
+    // Helper to insert with duplicate warning
+    let insert_with_warning = |map: &mut HashMap<String, String>, key: String, value: String, line: usize| {
+        if warn_duplicates && map.contains_key(&key) {
+            eprintln!("warning: duplicate key '{}' at line {} (overwriting previous value)", key, line);
+        }
+        map.insert(key, value);
+    };
 
     while let Some(ch) = chars.next() {
+        // Track line numbers
+        if ch == '\n' {
+            line_number += 1;
+        }
+
         match state {
             ParseState::LineStart => {
                 if ch == '#' {
                     // Skip comment line
                     while let Some(&c) = chars.peek() {
                         chars.next();
-                        if c == '\n' { break; }
+                        if c == '\n' {
+                            line_number += 1;
+                            break;
+                        }
                     }
                 } else if ch == '\n' || ch == '\r' {
                     // Empty line, stay in LineStart
@@ -70,6 +93,7 @@ pub fn parse_env_str(content: &str) -> HashMap<String, String> {
                     }
                 } else {
                     current_key.push(ch);
+                    key_start_line = line_number;
                     state = ParseState::InKey;
                 }
             }
@@ -97,7 +121,7 @@ pub fn parse_env_str(content: &str) -> HashMap<String, String> {
                     // Empty value
                     let key = current_key.trim().to_string();
                     if !key.is_empty() {
-                        map.insert(key, String::new());
+                        insert_with_warning(&mut map, key, String::new(), key_start_line);
                     }
                     current_key.clear();
                     state = ParseState::LineStart;
@@ -114,7 +138,7 @@ pub fn parse_env_str(content: &str) -> HashMap<String, String> {
                     let key = current_key.trim().to_string();
                     let val = current_value.trim().to_string();
                     if !key.is_empty() {
-                        map.insert(key, val);
+                        insert_with_warning(&mut map, key, val, key_start_line);
                     }
                     current_key.clear();
                     current_value.clear();
@@ -124,14 +148,17 @@ pub fn parse_env_str(content: &str) -> HashMap<String, String> {
                     let key = current_key.trim().to_string();
                     let val = current_value.trim().to_string();
                     if !key.is_empty() {
-                        map.insert(key, val);
+                        insert_with_warning(&mut map, key, val, key_start_line);
                     }
                     current_key.clear();
                     current_value.clear();
                     // Skip rest of line
                     while let Some(&c) = chars.peek() {
                         chars.next();
-                        if c == '\n' { break; }
+                        if c == '\n' {
+                            line_number += 1;
+                            break;
+                        }
                     }
                     state = ParseState::LineStart;
                 } else {
@@ -146,7 +173,7 @@ pub fn parse_env_str(content: &str) -> HashMap<String, String> {
                     // End of double-quoted value
                     let key = current_key.trim().to_string();
                     if !key.is_empty() {
-                        map.insert(key, current_value.clone());
+                        insert_with_warning(&mut map, key, current_value.clone(), key_start_line);
                     }
                     current_key.clear();
                     current_value.clear();
@@ -189,7 +216,7 @@ pub fn parse_env_str(content: &str) -> HashMap<String, String> {
                     // End of single-quoted value (no escape processing)
                     let key = current_key.trim().to_string();
                     if !key.is_empty() {
-                        map.insert(key, current_value.clone());
+                        insert_with_warning(&mut map, key, current_value.clone(), key_start_line);
                     }
                     current_key.clear();
                     current_value.clear();
@@ -213,20 +240,20 @@ pub fn parse_env_str(content: &str) -> HashMap<String, String> {
             let key = current_key.trim().to_string();
             let val = current_value.trim().to_string();
             if !key.is_empty() {
-                map.insert(key, val);
+                insert_with_warning(&mut map, key, val, key_start_line);
             }
         }
         ParseState::InDoubleQuoted | ParseState::InSingleQuoted => {
             // Unclosed quote - still save what we have
             let key = current_key.trim().to_string();
             if !key.is_empty() {
-                map.insert(key, current_value);
+                insert_with_warning(&mut map, key, current_value, key_start_line);
             }
         }
         ParseState::AfterEquals => {
             let key = current_key.trim().to_string();
             if !key.is_empty() {
-                map.insert(key, String::new());
+                insert_with_warning(&mut map, key, String::new(), key_start_line);
             }
         }
         _ => {}
@@ -659,5 +686,28 @@ mod tests {
         assert_eq!(result.get("A"), Some(&"first".to_string()));
         assert_eq!(result.get("B"), Some(&"multi\nline".to_string()));
         assert_eq!(result.get("C"), Some(&"third".to_string()));
+    }
+
+    // Duplicate key tests
+    #[test]
+    fn test_duplicate_key_last_value_wins() {
+        let input = "FOO=first\nFOO=second";
+        let result = parse_env_str_with_warnings(input, false);
+        assert_eq!(result.get("FOO"), Some(&"second".to_string()));
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_duplicate_key_multiple_times() {
+        let input = "FOO=1\nFOO=2\nFOO=3";
+        let result = parse_env_str_with_warnings(input, false);
+        assert_eq!(result.get("FOO"), Some(&"3".to_string()));
+    }
+
+    #[test]
+    fn test_duplicate_with_different_types() {
+        let input = "KEY=unquoted\nKEY=\"quoted\"";
+        let result = parse_env_str_with_warnings(input, false);
+        assert_eq!(result.get("KEY"), Some(&"quoted".to_string()));
     }
 }

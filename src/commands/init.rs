@@ -18,11 +18,12 @@ pub fn run(example_path: &str, schema_path: &str) -> Result<(), String> {
 
     for (k, v) in env {
         let inferred = infer_type(&v);
+        let description = infer_description(&k, &inferred);
 
         schema_map.insert(k, VarSpec {
             var_type: inferred,
             required: true,
-            description: Some("TODO: describe this variable".into()),
+            description: Some(description),
             values: None,
             default: None,
             validate: None,
@@ -50,6 +51,148 @@ fn infer_type(v: &str) -> VarType {
         return VarType::Url;
     }
     VarType::String
+}
+
+/// Infer a description from the variable name and type
+fn infer_description(key: &str, var_type: &VarType) -> String {
+    let lower_key = key.to_lowercase();
+
+    // Database-related
+    if lower_key.contains("database") || lower_key.contains("db_") || lower_key == "db" {
+        return "Database connection string".to_string();
+    }
+    if lower_key.contains("redis") {
+        return "Redis connection URL".to_string();
+    }
+    if lower_key.contains("mongo") {
+        return "MongoDB connection URL".to_string();
+    }
+
+    // URL patterns
+    if lower_key.ends_with("_url") || lower_key.ends_with("_uri") {
+        let service = extract_service_name(key);
+        return format!("{} endpoint URL", service);
+    }
+    if lower_key.ends_with("_endpoint") {
+        let service = extract_service_name(key);
+        return format!("{} API endpoint", service);
+    }
+
+    // Authentication
+    if lower_key.contains("api_key") || lower_key.contains("apikey") {
+        let service = extract_service_name(key);
+        return format!("{} API key", service);
+    }
+    if lower_key.contains("secret_key") || lower_key.contains("secretkey") {
+        let service = extract_service_name(key);
+        return format!("{} secret key", service);
+    }
+    if lower_key.contains("access_key") {
+        let service = extract_service_name(key);
+        return format!("{} access key", service);
+    }
+    if lower_key.contains("_token") || lower_key.ends_with("token") {
+        let service = extract_service_name(key);
+        return format!("{} authentication token", service);
+    }
+    if lower_key.contains("password") || lower_key.contains("passwd") {
+        return "Password credential".to_string();
+    }
+    if lower_key.contains("_secret") || lower_key.ends_with("secret") {
+        let service = extract_service_name(key);
+        return format!("{} secret", service);
+    }
+
+    // Environment
+    if lower_key == "node_env" || lower_key == "app_env" || lower_key == "environment" || lower_key == "env" {
+        return "Application environment (e.g., development, staging, production)".to_string();
+    }
+
+    // Common patterns
+    if lower_key.contains("port") {
+        return "Port number for network service".to_string();
+    }
+    if lower_key.contains("host") && !lower_key.contains("_url") {
+        return "Hostname or IP address".to_string();
+    }
+    if lower_key.contains("timeout") {
+        return "Timeout duration in milliseconds".to_string();
+    }
+    if lower_key.contains("max_") || lower_key.contains("_max") {
+        return format!("Maximum {} limit", key.replace('_', " ").to_lowercase());
+    }
+    if lower_key.contains("min_") || lower_key.contains("_min") {
+        return format!("Minimum {} threshold", key.replace('_', " ").to_lowercase());
+    }
+    if lower_key.contains("enable") || lower_key.contains("disable") {
+        return format!("Toggle for {}", key.replace('_', " ").to_lowercase());
+    }
+    if lower_key.starts_with("debug") {
+        return "Enable debug mode".to_string();
+    }
+    if lower_key.contains("log_level") || lower_key == "loglevel" {
+        return "Logging verbosity level".to_string();
+    }
+    if lower_key.contains("path") || lower_key.contains("dir") || lower_key.contains("directory") {
+        return "File system path".to_string();
+    }
+
+    // Type-based fallback
+    match var_type {
+        VarType::Url => format!("{} URL", humanize_key(key)),
+        VarType::Int => format!("{} (integer)", humanize_key(key)),
+        VarType::Float => format!("{} (decimal)", humanize_key(key)),
+        VarType::Bool => format!("{} flag", humanize_key(key)),
+        _ => format!("{} configuration", humanize_key(key)),
+    }
+}
+
+/// Extract service name from a key like STRIPE_API_KEY -> Stripe
+fn extract_service_name(key: &str) -> String {
+    let parts: Vec<&str> = key.split('_').collect();
+    if parts.is_empty() {
+        return key.to_string();
+    }
+
+    // Common suffixes to strip
+    let suffixes = ["API", "KEY", "SECRET", "TOKEN", "URL", "URI", "ENDPOINT", "HOST", "PORT"];
+
+    // Find the first part that's not a common suffix
+    for part in &parts {
+        let upper = part.to_uppercase();
+        if !suffixes.contains(&upper.as_str()) && !part.is_empty() {
+            // Capitalize first letter, lowercase rest
+            let mut chars = part.chars();
+            return match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+            };
+        }
+    }
+
+    humanize_key(key)
+}
+
+/// Convert KEY_NAME to "Key name"
+fn humanize_key(key: &str) -> String {
+    let result = key
+        .split('_')
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let mut chars = s.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ");
+
+    if result.is_empty() {
+        key.to_string()
+    } else {
+        result
+    }
 }
 
 #[cfg(test)]
@@ -195,5 +338,50 @@ mod tests {
     fn test_int_takes_priority_over_float() {
         // "42" parses as both i64 and f64, but should be Int
         assert!(matches!(infer_type("42"), VarType::Int));
+    }
+
+    // Description inference tests
+    #[test]
+    fn test_infer_description_database_url() {
+        let desc = infer_description("DATABASE_URL", &VarType::Url);
+        assert_eq!(desc, "Database connection string");
+    }
+
+    #[test]
+    fn test_infer_description_api_key() {
+        let desc = infer_description("STRIPE_API_KEY", &VarType::String);
+        assert_eq!(desc, "Stripe API key");
+    }
+
+    #[test]
+    fn test_infer_description_port() {
+        let desc = infer_description("PORT", &VarType::Int);
+        assert_eq!(desc, "Port number for network service");
+    }
+
+    #[test]
+    fn test_infer_description_node_env() {
+        let desc = infer_description("NODE_ENV", &VarType::String);
+        assert_eq!(desc, "Application environment (e.g., development, staging, production)");
+    }
+
+    #[test]
+    fn test_infer_description_generic_url() {
+        let desc = infer_description("WEBHOOK_URL", &VarType::Url);
+        assert_eq!(desc, "Webhook endpoint URL");
+    }
+
+    #[test]
+    fn test_humanize_key() {
+        assert_eq!(humanize_key("DATABASE_URL"), "Database Url");
+        assert_eq!(humanize_key("API_KEY"), "Api Key");
+        assert_eq!(humanize_key("PORT"), "Port");
+    }
+
+    #[test]
+    fn test_extract_service_name() {
+        assert_eq!(extract_service_name("STRIPE_API_KEY"), "Stripe");
+        assert_eq!(extract_service_name("AWS_SECRET_KEY"), "Aws");
+        assert_eq!(extract_service_name("GITHUB_TOKEN"), "Github");
     }
 }

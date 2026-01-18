@@ -31,6 +31,9 @@ enum Command {
         /// Skip cache when fetching remote schemas
         #[arg(long, default_value_t = false)]
         no_cache: bool,
+        /// Watch for file changes and re-run validation
+        #[arg(long, default_value_t = false)]
+        watch: bool,
     },
 
     /// Print docs for schema (markdown or json)
@@ -91,6 +94,9 @@ enum Command {
         /// Optional schema to check compliance
         #[arg(long)]
         schema: Option<String>,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
         /// Skip cache when fetching remote schemas
         #[arg(long, default_value_t = false)]
         no_cache: bool,
@@ -101,8 +107,8 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Command::Check { env, schema, allow_missing_env, detect_secrets, no_cache } => {
-            commands::check::run(&env, &schema, allow_missing_env, detect_secrets, no_cache)
+        Command::Check { env, schema, allow_missing_env, detect_secrets, no_cache, watch } => {
+            commands::check::run(&env, &schema, allow_missing_env, detect_secrets, no_cache, watch)
         }
         Command::Docs { schema, format, no_cache } => commands::docs::run(&schema, &format, no_cache),
         Command::Init { example, schema } => commands::init::run(&example, &schema),
@@ -111,8 +117,8 @@ fn main() {
         Command::Example { schema, output, include_defaults, no_cache } => {
             commands::example::run(&schema, output.as_deref(), include_defaults, no_cache)
         }
-        Command::Diff { env_a, env_b, schema, no_cache } => {
-            commands::diff::run(&env_a, &env_b, schema.as_deref(), no_cache)
+        Command::Diff { env_a, env_b, schema, format, no_cache } => {
+            commands::diff::run(&env_a, &env_b, schema.as_deref(), &format, no_cache)
         }
     };
 

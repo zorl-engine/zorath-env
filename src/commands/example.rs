@@ -122,12 +122,77 @@ fn generate_var_line(key: &str, spec: &VarSpec, include_defaults: bool) -> Strin
         spec.default
             .as_ref()
             .map(format_default_value)
-            .unwrap_or_default()
+            .unwrap_or_else(|| generate_placeholder(key, spec))
     } else {
-        String::new()
+        generate_placeholder(key, spec)
     };
 
     format!("{}={}", key, value)
+}
+
+/// Generate a type-aware placeholder value
+fn generate_placeholder(key: &str, spec: &VarSpec) -> String {
+    let lower_key = key.to_lowercase();
+
+    // Special cases based on key name
+    if lower_key.contains("database") || lower_key.contains("db_url") {
+        return "postgres://user:password@localhost:5432/dbname".to_string();
+    }
+    if lower_key.contains("redis") {
+        return "redis://localhost:6379".to_string();
+    }
+    if lower_key.contains("mongo") {
+        return "mongodb://localhost:27017/dbname".to_string();
+    }
+    if lower_key == "port" || lower_key.ends_with("_port") {
+        return "3000".to_string();
+    }
+    if lower_key.contains("host") && !lower_key.contains("url") {
+        return "localhost".to_string();
+    }
+    if lower_key.contains("api_key") || lower_key.contains("apikey") {
+        return "your_api_key_here".to_string();
+    }
+    if lower_key.contains("secret") {
+        return "your_secret_here".to_string();
+    }
+    if lower_key.contains("token") {
+        return "your_token_here".to_string();
+    }
+    if lower_key.contains("password") || lower_key.contains("passwd") {
+        return "your_password_here".to_string();
+    }
+    if lower_key == "node_env" || lower_key == "app_env" || lower_key == "environment" {
+        return "development".to_string();
+    }
+    if lower_key.contains("email") {
+        return "user@example.com".to_string();
+    }
+    if lower_key.contains("url") || lower_key.contains("uri") || lower_key.contains("endpoint") {
+        return "https://api.example.com".to_string();
+    }
+    if lower_key.contains("timeout") {
+        return "30000".to_string();
+    }
+    if lower_key.contains("path") || lower_key.contains("dir") {
+        return "/path/to/directory".to_string();
+    }
+
+    // Type-based fallback
+    match spec.var_type {
+        VarType::String => String::new(),
+        VarType::Int => "0".to_string(),
+        VarType::Float => "0.0".to_string(),
+        VarType::Bool => "false".to_string(),
+        VarType::Url => "https://example.com".to_string(),
+        VarType::Enum => {
+            // Use first enum value as placeholder
+            spec.values
+                .as_ref()
+                .and_then(|v| v.first().cloned())
+                .unwrap_or_default()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -347,10 +412,11 @@ mod tests {
 
     #[test]
     fn test_run_without_defaults() {
+        // Use a non-standard port value to distinguish schema default from placeholder
         let mut file = NamedTempFile::new().unwrap();
         writeln!(
             file,
-            r#"{{"PORT": {{"type": "int", "default": 3000}}}}"#
+            r#"{{"PORT": {{"type": "int", "default": 8080}}}}"#
         )
         .unwrap();
 
@@ -366,8 +432,9 @@ mod tests {
         assert!(result.is_ok());
 
         let content = fs::read_to_string(&output_path).unwrap();
-        assert!(content.contains("PORT="));
-        assert!(!content.contains("PORT=3000"));
+        // Should use smart placeholder (3000 for port), not schema default (8080)
+        assert!(content.contains("PORT=3000"));
+        assert!(!content.contains("PORT=8080"));
     }
 
     #[test]

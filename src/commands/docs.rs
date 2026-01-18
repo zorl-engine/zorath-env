@@ -47,6 +47,34 @@ pub fn generate_markdown(schema: &Schema) -> String {
         if let Some(vals) = &spec.values {
             output.push_str(&format!("- Allowed: `{}`\n", vals.join(", ")));
         }
+        // Show validation constraints
+        if let Some(ref rules) = spec.validate {
+            let mut constraints = Vec::new();
+            if let Some(min) = rules.min {
+                constraints.push(format!("min: {}", min));
+            }
+            if let Some(max) = rules.max {
+                constraints.push(format!("max: {}", max));
+            }
+            if let Some(min_value) = rules.min_value {
+                constraints.push(format!("min_value: {}", min_value));
+            }
+            if let Some(max_value) = rules.max_value {
+                constraints.push(format!("max_value: {}", max_value));
+            }
+            if let Some(min_length) = rules.min_length {
+                constraints.push(format!("min_length: {}", min_length));
+            }
+            if let Some(max_length) = rules.max_length {
+                constraints.push(format!("max_length: {}", max_length));
+            }
+            if let Some(ref pattern) = rules.pattern {
+                constraints.push(format!("pattern: {}", pattern));
+            }
+            if !constraints.is_empty() {
+                output.push_str(&format!("- Constraints: `{}`\n", constraints.join(", ")));
+            }
+        }
         if let Some(desc) = &spec.description {
             output.push_str(&format!("\n{}\n\n", desc.trim()));
         } else {
@@ -253,5 +281,58 @@ mod tests {
         let schema = make_schema(vec![]);
         let output = generate_json(&schema).unwrap();
         assert_eq!(output, "{}");
+    }
+
+    #[test]
+    fn test_validation_rules_displayed() {
+        use crate::schema::ValidationRule;
+        let schema = make_schema(vec![("PORT", VarSpec {
+            var_type: VarType::Int,
+            required: true,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                min: Some(1024),
+                max: Some(65535),
+                ..Default::default()
+            }),
+        })]);
+        let output = generate_markdown(&schema);
+        assert!(output.contains("- Constraints: `min: 1024, max: 65535`"));
+    }
+
+    #[test]
+    fn test_validation_rules_string_constraints() {
+        use crate::schema::ValidationRule;
+        let schema = make_schema(vec![("API_KEY", VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: None,
+            values: None,
+            default: None,
+            validate: Some(ValidationRule {
+                min_length: Some(32),
+                pattern: Some("^sk_".to_string()),
+                ..Default::default()
+            }),
+        })]);
+        let output = generate_markdown(&schema);
+        assert!(output.contains("min_length: 32"));
+        assert!(output.contains("pattern: ^sk_"));
+    }
+
+    #[test]
+    fn test_no_constraints_when_validate_none() {
+        let schema = make_schema(vec![("FOO", VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: None,
+            values: None,
+            default: None,
+            validate: None,
+        })]);
+        let output = generate_markdown(&schema);
+        assert!(!output.contains("Constraints"));
     }
 }
