@@ -225,7 +225,7 @@ fn run_watch_mode(
     }
 
     // Print header
-    println!("zenv watch v0.3.4\n");
+    println!("zenv watch v{}\n", env!("CARGO_PKG_VERSION"));
     let watch_display: Vec<&str> = watch_paths.iter().map(|s| s.as_str()).collect();
     println!("[watching] {}", watch_display.join(", "));
     if is_remote_schema {

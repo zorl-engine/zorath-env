@@ -2,7 +2,7 @@
 name = "zorath-env"
 version = "0.3.4"
 edition = "2021"
-description = "Fast CLI for .env validation against JSON schemas. Type checking, secret detection, remote schemas, env diff, docs generation. CI-friendly exit codes. Language-agnostic, single-binary CLI."
+description = "Fast CLI for .env validation against JSON schemas. Type checking, secret detection (AWS, Stripe, GitHub, Google, npm, and more), watch mode, remote schemas, env diff, docs generation. CI-friendly. Language-agnostic single binary."
 license = "MIT"
 repository = "https://github.com/zorl-engine/zorath-env"
 homepage = "https://zorl.cloud/zenv"

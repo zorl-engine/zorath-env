@@ -89,6 +89,8 @@ zenv check --detect-secrets      # Also scan for potential secrets
 Scans for potential secrets that shouldn't be committed:
 - AWS Access Keys and Secret Keys
 - Stripe, GitHub, GitLab, Slack tokens
+- Google, Heroku, SendGrid, Twilio, Mailchimp API keys
+- npm tokens
 - Private key headers (RSA, SSH, PGP)
 - JWT tokens
 - URLs with embedded passwords
