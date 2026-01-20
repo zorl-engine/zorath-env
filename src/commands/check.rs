@@ -322,7 +322,29 @@ fn run_once(
             let map = envfile::parse_env_file(resolved).map_err(|e| e.to_string())?;
             (map, Some(content))
         }
-        None if allow_missing_env => (HashMap::new(), None),
+        None if allow_missing_env => {
+            // When env file is missing and flag is set, validate schema only (no env values)
+            if format == "json" {
+                let result = CheckResult {
+                    valid: true,
+                    stats: CheckStats {
+                        total_variables: 0,
+                        schema_variables: schema.len(),
+                        errors_count: 0,
+                        warnings_count: 0,
+                        secret_warnings_count: 0,
+                    },
+                    errors: vec![],
+                    warnings: vec![],
+                    secret_warnings: vec![],
+                };
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else {
+                println!("zenv: OK (schema validated, no .env file)");
+                println!("  Schema: {} variables defined", schema.len());
+            }
+            return Ok(());
+        }
         None => return Err(missing_env_error(env_path)),
     };
 
