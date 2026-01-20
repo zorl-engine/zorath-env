@@ -23,6 +23,7 @@ struct CheckResult {
     valid: bool,
     errors: Vec<CheckIssue>,
     warnings: Vec<CheckIssue>,
+    duplicate_warnings: Vec<DuplicateWarning>,
     secret_warnings: Vec<SecretWarning>,
     stats: CheckStats,
 }
@@ -32,6 +33,13 @@ struct CheckIssue {
     key: String,
     message: String,
     issue_type: String,
+}
+
+#[derive(Serialize)]
+struct DuplicateWarning {
+    key: String,
+    line: usize,
+    previous_line: usize,
 }
 
 #[derive(Serialize)]
@@ -47,6 +55,7 @@ struct CheckStats {
     schema_variables: usize,
     errors_count: usize,
     warnings_count: usize,
+    duplicate_warnings_count: usize,
     secret_warnings_count: usize,
 }
 
@@ -313,14 +322,14 @@ fn run_once(
     let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
 
     let resolved_path = resolve_env_file(env_path);
-    let (env_map, raw_content): (HashMap<String, String>, Option<String>) = match &resolved_path {
+    let (env_map, raw_content, duplicates): (HashMap<String, String>, Option<String>, Vec<envfile::DuplicateKey>) = match &resolved_path {
         Some(resolved) => {
             if resolved != env_path && format != "json" {
                 eprintln!("Note: Using {} (fallback)\n", resolved);
             }
             let content = fs::read_to_string(resolved).map_err(|e| e.to_string())?;
-            let map = envfile::parse_env_file(resolved).map_err(|e| e.to_string())?;
-            (map, Some(content))
+            let parse_result = envfile::parse_env_file_detailed(resolved).map_err(|e| e.to_string())?;
+            (parse_result.values, Some(content), parse_result.duplicates)
         }
         None if allow_missing_env => {
             // When env file is missing and flag is set, validate schema only (no env values)
@@ -332,10 +341,12 @@ fn run_once(
                         schema_variables: schema.len(),
                         errors_count: 0,
                         warnings_count: 0,
+                        duplicate_warnings_count: 0,
                         secret_warnings_count: 0,
                     },
                     errors: vec![],
                     warnings: vec![],
+                    duplicate_warnings: vec![],
                     secret_warnings: vec![],
                 };
                 println!("{}", serde_json::to_string_pretty(&result).unwrap());
@@ -377,6 +388,7 @@ fn run_once(
 
     let has_errors = !errors.is_empty();
     let has_schema_warnings = !schema_warnings.is_empty();
+    let has_duplicate_warnings = !duplicates.is_empty();
     let has_secret_warnings = !secret_warnings.is_empty();
 
     // JSON output mode
@@ -389,6 +401,14 @@ fn run_once(
         let check_warnings: Vec<CheckIssue> = schema_warnings.iter().map(|w| {
             let (_, message, issue_type) = parse_error_message(&w.message);
             CheckIssue { key: w.key.clone(), message, issue_type }
+        }).collect();
+
+        let check_duplicate_warnings: Vec<DuplicateWarning> = duplicates.iter().map(|d| {
+            DuplicateWarning {
+                key: d.key.clone(),
+                line: d.line,
+                previous_line: d.previous_line,
+            }
         }).collect();
 
         let check_secret_warnings: Vec<SecretWarning> = secret_warnings.iter().map(|w| {
@@ -406,10 +426,12 @@ fn run_once(
                 schema_variables: schema.len(),
                 errors_count: check_errors.len(),
                 warnings_count: check_warnings.len(),
+                duplicate_warnings_count: check_duplicate_warnings.len(),
                 secret_warnings_count: check_secret_warnings.len(),
             },
             errors: check_errors,
             warnings: check_warnings,
+            duplicate_warnings: check_duplicate_warnings,
             secret_warnings: check_secret_warnings,
         };
 
@@ -469,12 +491,24 @@ fn run_once(
         eprintln!("Use `zenv example --schema {}` to generate safe placeholders.", schema_path);
     }
 
+    // Show duplicate key warnings
+    if has_duplicate_warnings {
+        if has_errors || has_schema_warnings || has_secret_warnings {
+            eprintln!();
+        }
+        eprintln!("Warning: Duplicate keys detected:\n");
+        for dup in &duplicates {
+            eprintln!("- {} (line {}) overwrites previous definition at line {}", dup.key, dup.line, dup.previous_line);
+        }
+        eprintln!("\nDuplicate keys can cause silent overwrites. Consider removing duplicates.");
+    }
+
     if has_errors {
         return Err("validation failed".into());
     }
 
     // Build success message
-    let warning_count = schema_warnings.len() + secret_warnings.len();
+    let warning_count = schema_warnings.len() + secret_warnings.len() + duplicates.len();
     if warning_count > 0 {
         println!("\nzenv: OK (with {} warning(s))", warning_count);
     } else {

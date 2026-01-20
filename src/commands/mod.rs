@@ -9,4 +9,5 @@ pub mod export;
 pub mod fix;
 pub mod init;
 pub mod scan;
+pub mod template;
 pub mod version;

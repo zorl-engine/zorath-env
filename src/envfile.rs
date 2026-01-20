@@ -11,6 +11,21 @@ pub enum EnvError {
     CircularRef(String),
 }
 
+/// Information about a duplicate key found during parsing
+#[derive(Debug, Clone)]
+pub struct DuplicateKey {
+    pub key: String,
+    pub line: usize,
+    pub previous_line: usize,
+}
+
+/// Result of parsing an env file with detailed information
+#[derive(Debug)]
+pub struct ParseResult {
+    pub values: HashMap<String, String>,
+    pub duplicates: Vec<DuplicateKey>,
+}
+
 /// .env parser with multiline and escape support:
 /// - ignores blank lines and comments starting with '#'
 /// - parses KEY=VALUE
@@ -20,6 +35,12 @@ pub enum EnvError {
 pub fn parse_env_file(path: &str) -> Result<HashMap<String, String>, EnvError> {
     let content = fs::read_to_string(path).map_err(|e| EnvError::Read(e.to_string()))?;
     Ok(parse_env_str(&content))
+}
+
+/// Parse env file and return detailed results including duplicate key information
+pub fn parse_env_file_detailed(path: &str) -> Result<ParseResult, EnvError> {
+    let content = fs::read_to_string(path).map_err(|e| EnvError::Read(e.to_string()))?;
+    Ok(parse_env_str_detailed(&content))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -34,7 +55,229 @@ enum ParseState {
 }
 
 pub fn parse_env_str(content: &str) -> HashMap<String, String> {
-    parse_env_str_with_warnings(content, true)
+    parse_env_str_detailed(content).values
+}
+
+/// Parse .env content and return detailed results including duplicate key information
+pub fn parse_env_str_detailed(content: &str) -> ParseResult {
+    let mut map = HashMap::new();
+    let mut key_lines: HashMap<String, usize> = HashMap::new();
+    let mut duplicates = Vec::new();
+    let mut state = ParseState::LineStart;
+    let mut current_key = String::new();
+    let mut current_value = String::new();
+    let mut chars = content.chars().peekable();
+    let mut line_number: usize = 1;
+    let mut key_start_line: usize = 1;
+
+    // Helper to insert and track duplicates
+    let insert_tracking = |map: &mut HashMap<String, String>,
+                               key_lines: &mut HashMap<String, usize>,
+                               duplicates: &mut Vec<DuplicateKey>,
+                               key: String,
+                               value: String,
+                               line: usize| {
+        if let Some(&prev_line) = key_lines.get(&key) {
+            duplicates.push(DuplicateKey {
+                key: key.clone(),
+                line,
+                previous_line: prev_line,
+            });
+        }
+        key_lines.insert(key.clone(), line);
+        map.insert(key, value);
+    };
+
+    while let Some(ch) = chars.next() {
+        if ch == '\n' {
+            line_number += 1;
+        }
+
+        match state {
+            ParseState::LineStart => {
+                if ch == '#' {
+                    while let Some(&c) = chars.peek() {
+                        chars.next();
+                        if c == '\n' {
+                            line_number += 1;
+                            break;
+                        }
+                    }
+                } else if ch == '\n' || ch == '\r' {
+                    // Empty line
+                } else if ch.is_whitespace() {
+                    // Skip leading whitespace
+                } else if ch == 'e' && chars.peek() == Some(&'x') {
+                    let rest: String = chars.clone().take(5).collect();
+                    if rest == "xport" {
+                        for _ in 0..5 { chars.next(); }
+                        if chars.peek() == Some(&' ') {
+                            chars.next();
+                        }
+                        state = ParseState::LineStart;
+                    } else {
+                        current_key.push(ch);
+                        state = ParseState::InKey;
+                    }
+                } else {
+                    current_key.push(ch);
+                    key_start_line = line_number;
+                    state = ParseState::InKey;
+                }
+            }
+
+            ParseState::InKey => {
+                if ch == '=' {
+                    state = ParseState::AfterEquals;
+                } else if ch == '\n' || ch == '\r' {
+                    current_key.clear();
+                    state = ParseState::LineStart;
+                } else if ch.is_whitespace() {
+                    // Whitespace before =
+                } else {
+                    current_key.push(ch);
+                }
+            }
+
+            ParseState::AfterEquals => {
+                if ch == '"' {
+                    state = ParseState::InDoubleQuoted;
+                } else if ch == '\'' {
+                    state = ParseState::InSingleQuoted;
+                } else if ch == '\n' || ch == '\r' {
+                    let key = current_key.trim().to_string();
+                    if !key.is_empty() {
+                        insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, String::new(), key_start_line);
+                    }
+                    current_key.clear();
+                    state = ParseState::LineStart;
+                } else if ch.is_whitespace() {
+                    // Skip whitespace after =
+                } else {
+                    current_value.push(ch);
+                    state = ParseState::InUnquotedValue;
+                }
+            }
+
+            ParseState::InUnquotedValue => {
+                if ch == '\n' || ch == '\r' {
+                    let key = current_key.trim().to_string();
+                    let val = current_value.trim().to_string();
+                    if !key.is_empty() {
+                        insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, val, key_start_line);
+                    }
+                    current_key.clear();
+                    current_value.clear();
+                    state = ParseState::LineStart;
+                } else if ch == '#' {
+                    let key = current_key.trim().to_string();
+                    let val = current_value.trim().to_string();
+                    if !key.is_empty() {
+                        insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, val, key_start_line);
+                    }
+                    current_key.clear();
+                    current_value.clear();
+                    while let Some(&c) = chars.peek() {
+                        chars.next();
+                        if c == '\n' {
+                            line_number += 1;
+                            break;
+                        }
+                    }
+                    state = ParseState::LineStart;
+                } else {
+                    current_value.push(ch);
+                }
+            }
+
+            ParseState::InDoubleQuoted => {
+                if ch == '\\' {
+                    state = ParseState::InDoubleQuotedEscape;
+                } else if ch == '"' {
+                    let key = current_key.trim().to_string();
+                    if !key.is_empty() {
+                        insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, current_value.clone(), key_start_line);
+                    }
+                    current_key.clear();
+                    current_value.clear();
+                    while let Some(&c) = chars.peek() {
+                        if c == '\n' || c == '\r' { break; }
+                        chars.next();
+                    }
+                    state = ParseState::LineStart;
+                } else {
+                    current_value.push(ch);
+                }
+            }
+
+            ParseState::InDoubleQuotedEscape => {
+                match ch {
+                    'n' => current_value.push('\n'),
+                    'r' => current_value.push('\r'),
+                    't' => current_value.push('\t'),
+                    '\\' => current_value.push('\\'),
+                    '"' => current_value.push('"'),
+                    '\n' | '\r' => {
+                        if ch == '\r' && chars.peek() == Some(&'\n') {
+                            chars.next();
+                        }
+                    }
+                    _ => {
+                        current_value.push('\\');
+                        current_value.push(ch);
+                    }
+                }
+                state = ParseState::InDoubleQuoted;
+            }
+
+            ParseState::InSingleQuoted => {
+                if ch == '\'' {
+                    let key = current_key.trim().to_string();
+                    if !key.is_empty() {
+                        insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, current_value.clone(), key_start_line);
+                    }
+                    current_key.clear();
+                    current_value.clear();
+                    while let Some(&c) = chars.peek() {
+                        if c == '\n' || c == '\r' { break; }
+                        chars.next();
+                    }
+                    state = ParseState::LineStart;
+                } else {
+                    current_value.push(ch);
+                }
+            }
+        }
+    }
+
+    // Handle final value
+    match state {
+        ParseState::InUnquotedValue => {
+            let key = current_key.trim().to_string();
+            let val = current_value.trim().to_string();
+            if !key.is_empty() {
+                insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, val, key_start_line);
+            }
+        }
+        ParseState::InDoubleQuoted | ParseState::InSingleQuoted => {
+            let key = current_key.trim().to_string();
+            if !key.is_empty() {
+                insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, current_value, key_start_line);
+            }
+        }
+        ParseState::AfterEquals => {
+            let key = current_key.trim().to_string();
+            if !key.is_empty() {
+                insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, String::new(), key_start_line);
+            }
+        }
+        _ => {}
+    }
+
+    ParseResult {
+        values: map,
+        duplicates,
+    }
 }
 
 /// Parse .env content with optional duplicate key warnings
@@ -709,5 +952,44 @@ mod tests {
         let input = "KEY=unquoted\nKEY=\"quoted\"";
         let result = parse_env_str_with_warnings(input, false);
         assert_eq!(result.get("KEY"), Some(&"quoted".to_string()));
+    }
+
+    // Detailed parsing tests (parse_env_str_detailed)
+    #[test]
+    fn test_detailed_parse_no_duplicates() {
+        let input = "FOO=bar\nBAZ=qux";
+        let result = parse_env_str_detailed(input);
+        assert_eq!(result.values.len(), 2);
+        assert!(result.duplicates.is_empty());
+    }
+
+    #[test]
+    fn test_detailed_parse_detects_duplicate() {
+        let input = "FOO=first\nFOO=second";
+        let result = parse_env_str_detailed(input);
+        assert_eq!(result.values.get("FOO"), Some(&"second".to_string()));
+        assert_eq!(result.duplicates.len(), 1);
+        assert_eq!(result.duplicates[0].key, "FOO");
+        assert_eq!(result.duplicates[0].previous_line, 1);
+        assert_eq!(result.duplicates[0].line, 2);
+    }
+
+    #[test]
+    fn test_detailed_parse_multiple_duplicates() {
+        let input = "A=1\nA=2\nA=3\nB=x\nB=y";
+        let result = parse_env_str_detailed(input);
+        assert_eq!(result.values.len(), 2);
+        // A duplicated twice (line 2 and 3), B duplicated once (line 5)
+        assert_eq!(result.duplicates.len(), 3);
+    }
+
+    #[test]
+    fn test_detailed_parse_tracks_line_numbers() {
+        let input = "# comment\nFOO=first\n\nBAR=x\nFOO=second";
+        let result = parse_env_str_detailed(input);
+        assert_eq!(result.duplicates.len(), 1);
+        assert_eq!(result.duplicates[0].key, "FOO");
+        assert_eq!(result.duplicates[0].previous_line, 2);
+        assert_eq!(result.duplicates[0].line, 5);
     }
 }
