@@ -119,8 +119,8 @@ runs:
       run: |
         set +e
 
-        # Build command
-        CMD="zenv check --schema '${{ inputs.schema }}' --env '${{ inputs.env-file }}'"
+        # Build command with proper quoting
+        CMD="zenv check --schema \"${{ inputs.schema }}\" --env \"${{ inputs.env-file }}\""
         if [ "${{ inputs.allow-missing-env }}" = "true" ]; then
           CMD="$CMD --allow-missing-env"
         fi
