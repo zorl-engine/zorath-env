@@ -1,8 +1,8 @@
 [package]
 name = "zorath-env"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
-description = "Fast CLI for .env validation against JSON schemas. Type checking, secret detection (AWS, Stripe, GitHub, Google, npm, and more), watch mode, remote schemas, env diff, docs generation. CI-friendly. Language-agnostic single binary."
+description = "Fast CLI for .env validation against JSON/YAML schemas. 14 types, secret detection, watch mode, remote schemas, export to shell/docker/k8s/json, health diagnostics, code scanning, auto-fix. CI-friendly. Language-agnostic single binary."
 license = "MIT"
 repository = "https://github.com/zorl-engine/zorath-env"
 homepage = "https://zorl.cloud/zenv"
@@ -20,12 +20,18 @@ clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 regex = "1.10"
-thiserror = "1.0"
+thiserror = "2.0"
 url = "2.5"
-ureq = { version = "2.12", features = ["tls"] }
-dirs = "5.0"
-notify = "6.1"
+ureq = "3.1"
+dirs = "6.0"
+notify = "8.2"
+ignore = "0.4"
+sha2 = "0.10"
+rustls = "0.23"
+rustls-pemfile = "2.2"
+webpki-roots = "0.26"
 
 [dev-dependencies]
 tempfile = "3.10"

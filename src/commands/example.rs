@@ -2,8 +2,20 @@ use crate::schema::{load_schema_with_options, LoadOptions, VarSpec, VarType};
 use std::fs;
 
 /// Generate .env.example from schema
-pub fn run(schema_path: &str, output_path: Option<&str>, include_defaults: bool, no_cache: bool) -> Result<(), String> {
-    let options = LoadOptions { no_cache };
+pub fn run(
+    schema_path: &str,
+    output_path: Option<&str>,
+    include_defaults: bool,
+    no_cache: bool,
+    verify_hash: Option<&str>,
+    ca_cert: Option<&str>,
+) -> Result<(), String> {
+    let options = LoadOptions {
+        no_cache,
+        verify_hash: verify_hash.map(|s| s.to_string()),
+        ca_cert: ca_cert.map(|s| s.to_string()),
+        rate_limit_seconds: None,
+    };
     let schema = load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
 
     // Sort keys alphabetically for consistent output
@@ -56,6 +68,14 @@ fn generate_var_comments(_key: &str, spec: &VarSpec) -> String {
         VarType::Bool => "bool",
         VarType::Url => "url",
         VarType::Enum => "enum",
+        VarType::Uuid => "uuid",
+        VarType::Email => "email",
+        VarType::Ipv4 => "ipv4",
+        VarType::Ipv6 => "ipv6",
+        VarType::Semver => "semver",
+        VarType::Port => "port",
+        VarType::Date => "date",
+        VarType::Hostname => "hostname",
     };
     let required_str = if spec.required { "required" } else { "optional" };
     comments.push_str(&format!("# Type: {} ({})\n", type_str, required_str));
@@ -192,6 +212,14 @@ fn generate_placeholder(key: &str, spec: &VarSpec) -> String {
                 .and_then(|v| v.first().cloned())
                 .unwrap_or_default()
         }
+        VarType::Uuid => "00000000-0000-0000-0000-000000000000".to_string(),
+        VarType::Email => "user@example.com".to_string(),
+        VarType::Ipv4 => "127.0.0.1".to_string(),
+        VarType::Ipv6 => "::1".to_string(),
+        VarType::Semver => "1.0.0".to_string(),
+        VarType::Port => "3000".to_string(),
+        VarType::Date => "2024-01-01".to_string(),
+        VarType::Hostname => "localhost".to_string(),
     }
 }
 
@@ -209,8 +237,7 @@ mod tests {
             required: true,
             description: Some("A test variable".to_string()),
             values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         };
         let comments = generate_var_comments("TEST", &spec);
         assert!(comments.contains("# A test variable"));
@@ -221,11 +248,7 @@ mod tests {
     fn test_generate_var_comments_optional() {
         let spec = VarSpec {
             var_type: VarType::Int,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         };
         let comments = generate_var_comments("TEST", &spec);
         assert!(comments.contains("# Type: int (optional)"));
@@ -242,8 +265,7 @@ mod tests {
                 "staging".to_string(),
                 "production".to_string(),
             ]),
-            default: None,
-            validate: None,
+            ..Default::default()
         };
         let comments = generate_var_comments("NODE_ENV", &spec);
         assert!(comments.contains("# Values: development, staging, production"));
@@ -257,7 +279,7 @@ mod tests {
             description: None,
             values: None,
             default: Some(serde_json::json!(3000)),
-            validate: None,
+            ..Default::default()
         };
         let comments = generate_var_comments("PORT", &spec);
         assert!(comments.contains("# Default: 3000"));
@@ -276,6 +298,7 @@ mod tests {
                 max: Some(65535),
                 ..Default::default()
             }),
+            ..Default::default()
         };
         let comments = generate_var_comments("PORT", &spec);
         assert!(comments.contains("# Validation: min=1024, max=65535"));
@@ -294,6 +317,7 @@ mod tests {
                 pattern: Some("^sk_".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         };
         let comments = generate_var_comments("API_KEY", &spec);
         assert!(comments.contains("min_length=32"));
@@ -308,7 +332,7 @@ mod tests {
             description: None,
             values: None,
             default: Some(serde_json::json!("test")),
-            validate: None,
+            ..Default::default()
         };
         let line = generate_var_line("FOO", &spec, false);
         assert_eq!(line, "FOO=");
@@ -322,7 +346,7 @@ mod tests {
             description: None,
             values: None,
             default: Some(serde_json::json!(3000)),
-            validate: None,
+            ..Default::default()
         };
         let line = generate_var_line("PORT", &spec, true);
         assert_eq!(line, "PORT=3000");
@@ -336,7 +360,7 @@ mod tests {
             description: None,
             values: None,
             default: Some(serde_json::json!("development")),
-            validate: None,
+            ..Default::default()
         };
         let line = generate_var_line("NODE_ENV", &spec, true);
         assert_eq!(line, "NODE_ENV=development");
@@ -350,7 +374,7 @@ mod tests {
             description: None,
             values: None,
             default: Some(serde_json::json!(true)),
-            validate: None,
+            ..Default::default()
         };
         let line = generate_var_line("DEBUG", &spec, true);
         assert_eq!(line, "DEBUG=true");
@@ -401,6 +425,8 @@ mod tests {
             Some(output_path.to_str().unwrap()),
             true,
             false,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -428,6 +454,8 @@ mod tests {
             Some(output_path.to_str().unwrap()),
             false,
             false,
+            None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -458,6 +486,8 @@ mod tests {
             Some(output_path.to_str().unwrap()),
             false,
             false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -494,6 +524,8 @@ mod tests {
             Some(output_path.to_str().unwrap()),
             false,
             false,
+            None,
+            None,
         )
         .unwrap();
 
@@ -508,7 +540,7 @@ mod tests {
 
     #[test]
     fn test_invalid_schema_path() {
-        let result = run("/nonexistent/path/schema.json", None, false, false);
+        let result = run("/nonexistent/path/schema.json", None, false, false, None, None);
         assert!(result.is_err());
     }
 }

@@ -5,14 +5,14 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::remote::{self, RemoteError};
+use crate::remote::{self, RemoteError, SecurityOptions};
 
 #[derive(Error, Debug)]
 pub enum SchemaError {
     #[error("failed to read schema file: {0}")]
     Read(String),
-    #[error("invalid schema json: {0}")]
-    Parse(String),
+    #[error("invalid schema {0}: {1}")]
+    Parse(String, String),
     #[error("circular inheritance detected: {0}")]
     CircularInheritance(String),
     #[error("inheritance depth exceeded (max 10)")]
@@ -21,15 +21,51 @@ pub enum SchemaError {
     Remote(#[from] RemoteError),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Supported schema file formats
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SchemaFormat {
+    Json,
+    Yaml,
+}
+
+impl SchemaFormat {
+    /// Detect format from file path extension
+    pub fn from_path(path: &str) -> Self {
+        let lower = path.to_lowercase();
+        if lower.ends_with(".yaml") || lower.ends_with(".yml") {
+            SchemaFormat::Yaml
+        } else {
+            SchemaFormat::Json // Default to JSON for backwards compatibility
+        }
+    }
+
+    /// Get format name for error messages
+    pub fn name(&self) -> &'static str {
+        match self {
+            SchemaFormat::Json => "JSON",
+            SchemaFormat::Yaml => "YAML",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VarType {
+    #[default]
     String,
     Int,
     Float,
     Bool,
     Url,
     Enum,
+    Uuid,
+    Email,
+    Ipv4,
+    Ipv6,
+    Semver,
+    Port,
+    Date,
+    Hostname,
 }
 
 /// Custom validation rules for environment variables
@@ -64,9 +100,24 @@ pub struct ValidationRule {
     pub pattern: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Severity level for validation failures
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    /// Validation failure causes exit code 1 (default)
+    #[default]
+    Error,
+    /// Validation failure is reported but doesn't cause exit code 1
+    Warning,
+}
+
+fn is_default_severity(severity: &Severity) -> bool {
+    *severity == Severity::Error
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VarSpec {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     pub var_type: VarType,
 
     #[serde(default)]
@@ -84,6 +135,15 @@ pub struct VarSpec {
     /// Custom validation rules
     #[serde(default)]
     pub validate: Option<ValidationRule>,
+
+    /// Secret detection control: false = skip secret check (known safe value)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<bool>,
+
+    /// Severity level: error (default) or warning
+    /// Warning-level issues don't cause exit code 1
+    #[serde(default, skip_serializing_if = "is_default_severity")]
+    pub severity: Severity,
 }
 
 pub type Schema = HashMap<String, VarSpec>;
@@ -105,9 +165,27 @@ pub struct SchemaFile {
 pub struct LoadOptions {
     /// Skip cache for remote schemas
     pub no_cache: bool,
+    /// Expected SHA-256 hash for remote schema verification
+    pub verify_hash: Option<String>,
+    /// Custom CA certificate path for enterprise TLS
+    pub ca_cert: Option<String>,
+    /// Rate limit in seconds between remote fetches (0 to disable)
+    pub rate_limit_seconds: Option<u64>,
 }
 
-/// Load schema from file or URL, resolving inheritance chain
+impl LoadOptions {
+    /// Convert LoadOptions to SecurityOptions for remote fetching
+    pub fn to_security_options(&self) -> SecurityOptions {
+        SecurityOptions::new()
+            .with_hash(self.verify_hash.clone())
+            .with_ca_cert(self.ca_cert.clone())
+            .with_rate_limit(self.rate_limit_seconds.unwrap_or(remote::DEFAULT_RATE_LIMIT_SECS))
+    }
+}
+
+/// Load schema from file or URL, resolving inheritance chain.
+/// Convenience wrapper for `load_schema_with_options` with default options.
+/// Kept as public API for library consumers who don't need custom options.
 #[allow(dead_code)]
 pub fn load_schema(path: &str) -> Result<Schema, SchemaError> {
     load_schema_with_options(path, &LoadOptions::default())
@@ -116,6 +194,20 @@ pub fn load_schema(path: &str) -> Result<Schema, SchemaError> {
 /// Load schema with options (e.g., no_cache for remote schemas)
 pub fn load_schema_with_options(path: &str, options: &LoadOptions) -> Result<Schema, SchemaError> {
     load_schema_with_chain(path, &mut Vec::new(), options)
+}
+
+/// Parse schema content based on format (JSON or YAML)
+fn parse_schema_content(content: &str, format: SchemaFormat) -> Result<SchemaFile, SchemaError> {
+    match format {
+        SchemaFormat::Json => {
+            serde_json::from_str(content)
+                .map_err(|e| SchemaError::Parse(format.name().to_string(), e.to_string()))
+        }
+        SchemaFormat::Yaml => {
+            serde_yaml::from_str(content)
+                .map_err(|e| SchemaError::Parse(format.name().to_string(), e.to_string()))
+        }
+    }
 }
 
 /// Internal: Load schema with circular reference detection
@@ -147,13 +239,14 @@ fn load_schema_with_chain(
 
     // Read schema content (from file or URL)
     let content = if remote::is_remote_url(path) {
-        remote::fetch_remote_schema(path, options.no_cache)?
+        remote::fetch_remote_schema_secure(path, options.no_cache, &options.to_security_options())?
     } else {
         fs::read_to_string(path).map_err(|e| SchemaError::Read(e.to_string()))?
     };
 
-    let schema_file: SchemaFile =
-        serde_json::from_str(&content).map_err(|e| SchemaError::Parse(e.to_string()))?;
+    // Detect format and parse
+    let format = SchemaFormat::from_path(path);
+    let schema_file: SchemaFile = parse_schema_content(&content, format)?;
 
     // Start with parent schema if extends is specified
     let mut result = if let Some(ref parent_path) = schema_file.extends {
@@ -187,9 +280,20 @@ fn resolve_relative_path(base_path: &str, relative_path: &str) -> String {
     }
 }
 
+/// Save schema to file (format auto-detected from path extension)
 pub fn save_schema(path: &str, schema: &Schema) -> Result<(), SchemaError> {
-    let json = serde_json::to_string_pretty(schema).map_err(|e| SchemaError::Parse(e.to_string()))?;
-    fs::write(path, json).map_err(|e| SchemaError::Read(e.to_string()))
+    let format = SchemaFormat::from_path(path);
+    let content = match format {
+        SchemaFormat::Json => {
+            serde_json::to_string_pretty(schema)
+                .map_err(|e| SchemaError::Parse(format.name().to_string(), e.to_string()))?
+        }
+        SchemaFormat::Yaml => {
+            serde_yaml::to_string(schema)
+                .map_err(|e| SchemaError::Parse(format.name().to_string(), e.to_string()))?
+        }
+    };
+    fs::write(path, content).map_err(|e| SchemaError::Read(e.to_string()))
 }
 
 #[cfg(test)]
@@ -442,5 +546,217 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, SchemaError::CircularInheritance(_)));
+    }
+
+    // YAML schema format tests
+    #[test]
+    fn test_schema_format_detection_json() {
+        assert_eq!(SchemaFormat::from_path("schema.json"), SchemaFormat::Json);
+        assert_eq!(SchemaFormat::from_path("path/to/schema.JSON"), SchemaFormat::Json);
+        assert_eq!(SchemaFormat::from_path("env.schema.json"), SchemaFormat::Json);
+    }
+
+    #[test]
+    fn test_schema_format_detection_yaml() {
+        assert_eq!(SchemaFormat::from_path("schema.yaml"), SchemaFormat::Yaml);
+        assert_eq!(SchemaFormat::from_path("schema.yml"), SchemaFormat::Yaml);
+        assert_eq!(SchemaFormat::from_path("path/to/schema.YAML"), SchemaFormat::Yaml);
+        assert_eq!(SchemaFormat::from_path("env.schema.yml"), SchemaFormat::Yaml);
+    }
+
+    #[test]
+    fn test_schema_format_detection_default() {
+        // Unknown extensions default to JSON
+        assert_eq!(SchemaFormat::from_path("schema"), SchemaFormat::Json);
+        assert_eq!(SchemaFormat::from_path("schema.txt"), SchemaFormat::Json);
+    }
+
+    #[test]
+    fn test_parse_yaml_schema() {
+        let yaml = r#"
+FOO:
+  type: string
+  required: true
+  description: A test variable
+BAR:
+  type: int
+  default: 3000
+"#;
+        let result = parse_schema_content(yaml, SchemaFormat::Yaml);
+        assert!(result.is_ok());
+        let schema_file = result.unwrap();
+        assert!(schema_file.vars.contains_key("FOO"));
+        assert!(schema_file.vars.contains_key("BAR"));
+        let foo = schema_file.vars.get("FOO").unwrap();
+        assert!(foo.required);
+        assert_eq!(foo.description, Some("A test variable".to_string()));
+    }
+
+    #[test]
+    fn test_parse_yaml_schema_with_extends() {
+        let yaml = r#"
+extends: base.schema.yaml
+PORT:
+  type: int
+  required: true
+"#;
+        let result = parse_schema_content(yaml, SchemaFormat::Yaml);
+        assert!(result.is_ok());
+        let schema_file = result.unwrap();
+        assert_eq!(schema_file.extends, Some("base.schema.yaml".to_string()));
+        assert!(schema_file.vars.contains_key("PORT"));
+    }
+
+    #[test]
+    fn test_parse_yaml_schema_with_enum() {
+        let yaml = r#"
+NODE_ENV:
+  type: enum
+  values:
+    - development
+    - staging
+    - production
+  required: true
+"#;
+        let result = parse_schema_content(yaml, SchemaFormat::Yaml);
+        assert!(result.is_ok());
+        let schema_file = result.unwrap();
+        let env = schema_file.vars.get("NODE_ENV").unwrap();
+        assert!(matches!(env.var_type, VarType::Enum));
+        assert_eq!(env.values, Some(vec!["development".to_string(), "staging".to_string(), "production".to_string()]));
+    }
+
+    #[test]
+    fn test_parse_yaml_invalid_syntax() {
+        let yaml = r#"
+FOO:
+  type: string
+  required: [invalid
+"#;
+        let result = parse_schema_content(yaml, SchemaFormat::Yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_yaml_schema_from_file() {
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let yaml_path = dir.path().join("schema.yaml");
+        let mut file = fs::File::create(&yaml_path).unwrap();
+        writeln!(file, "API_KEY:\n  type: string\n  required: true").unwrap();
+
+        let schema = load_schema(yaml_path.to_str().unwrap()).unwrap();
+        assert!(schema.contains_key("API_KEY"));
+        assert!(schema.get("API_KEY").unwrap().required);
+    }
+
+    #[test]
+    fn test_load_yml_extension() {
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let yml_path = dir.path().join("schema.yml");
+        let mut file = fs::File::create(&yml_path).unwrap();
+        writeln!(file, "DEBUG:\n  type: bool\n  default: false").unwrap();
+
+        let schema = load_schema(yml_path.to_str().unwrap()).unwrap();
+        assert!(schema.contains_key("DEBUG"));
+    }
+
+    #[test]
+    fn test_yaml_extends_json() {
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+
+        // JSON base schema
+        let json_path = dir.path().join("base.schema.json");
+        let mut json_file = fs::File::create(&json_path).unwrap();
+        writeln!(json_file, r#"{{"BASE_VAR": {{"type": "string"}}}}"#).unwrap();
+
+        // YAML child extends JSON
+        let yaml_path = dir.path().join("child.schema.yaml");
+        let mut yaml_file = fs::File::create(&yaml_path).unwrap();
+        writeln!(yaml_file, "extends: base.schema.json\nCHILD_VAR:\n  type: int").unwrap();
+
+        let schema = load_schema(yaml_path.to_str().unwrap()).unwrap();
+        assert!(schema.contains_key("BASE_VAR"));
+        assert!(schema.contains_key("CHILD_VAR"));
+    }
+
+    #[test]
+    fn test_json_extends_yaml() {
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+
+        // YAML base schema
+        let yaml_path = dir.path().join("base.schema.yaml");
+        let mut yaml_file = fs::File::create(&yaml_path).unwrap();
+        writeln!(yaml_file, "BASE_VAR:\n  type: string").unwrap();
+
+        // JSON child extends YAML
+        let json_path = dir.path().join("child.schema.json");
+        let mut json_file = fs::File::create(&json_path).unwrap();
+        writeln!(json_file, r#"{{"extends": "base.schema.yaml", "CHILD_VAR": {{"type": "int"}}}}"#).unwrap();
+
+        let schema = load_schema(json_path.to_str().unwrap()).unwrap();
+        assert!(schema.contains_key("BASE_VAR"));
+        assert!(schema.contains_key("CHILD_VAR"));
+    }
+
+    #[test]
+    fn test_save_schema_yaml() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let yaml_path = dir.path().join("output.yaml");
+
+        let mut schema = Schema::new();
+        schema.insert("TEST_VAR".to_string(), VarSpec {
+            var_type: VarType::String,
+            required: true,
+            ..Default::default()
+        });
+
+        save_schema(yaml_path.to_str().unwrap(), &schema).unwrap();
+
+        // Verify it can be read back
+        let loaded = load_schema(yaml_path.to_str().unwrap()).unwrap();
+        assert!(loaded.contains_key("TEST_VAR"));
+    }
+
+    #[test]
+    fn test_yaml_with_validation_rules() {
+        let yaml = r#"
+PORT:
+  type: int
+  validate:
+    min: 1024
+    max: 65535
+API_KEY:
+  type: string
+  validate:
+    min_length: 32
+    pattern: "^sk_"
+"#;
+        let result = parse_schema_content(yaml, SchemaFormat::Yaml);
+        assert!(result.is_ok());
+        let schema_file = result.unwrap();
+
+        let port = schema_file.vars.get("PORT").unwrap();
+        let port_validate = port.validate.as_ref().unwrap();
+        assert_eq!(port_validate.min, Some(1024));
+        assert_eq!(port_validate.max, Some(65535));
+
+        let api_key = schema_file.vars.get("API_KEY").unwrap();
+        let key_validate = api_key.validate.as_ref().unwrap();
+        assert_eq!(key_validate.min_length, Some(32));
+        assert_eq!(key_validate.pattern, Some("^sk_".to_string()));
     }
 }

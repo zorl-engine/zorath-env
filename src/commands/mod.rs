@@ -1,7 +1,12 @@
+pub mod cache;
 pub mod check;
 pub mod completions;
 pub mod diff;
 pub mod docs;
+pub mod doctor;
 pub mod example;
+pub mod export;
+pub mod fix;
 pub mod init;
+pub mod scan;
 pub mod version;

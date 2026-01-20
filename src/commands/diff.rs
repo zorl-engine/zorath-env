@@ -49,6 +49,8 @@ pub fn run(
     schema_path: Option<&str>,
     format: &str,
     no_cache: bool,
+    verify_hash: Option<&str>,
+    ca_cert: Option<&str>,
 ) -> Result<(), String> {
     // Parse both env files
     let map_a = envfile::parse_env_file(env_a).map_err(|e| format!("Error reading {}: {}", env_a, e))?;
@@ -78,7 +80,7 @@ pub fn run(
 
     // Handle JSON output format
     if format == "json" {
-        return output_json(env_a, env_b, &map_a, &map_b, &only_in_a, &only_in_b, &different_values, schema_path, no_cache);
+        return output_json(env_a, env_b, &map_a, &map_b, &only_in_a, &only_in_b, &different_values, schema_path, no_cache, verify_hash, ca_cert);
     }
 
     if format != "text" {
@@ -125,7 +127,12 @@ pub fn run(
 
     // Schema compliance check if schema provided
     if let Some(schema_path) = schema_path {
-        let options = LoadOptions { no_cache };
+        let options = LoadOptions {
+            no_cache,
+            verify_hash: verify_hash.map(|s| s.to_string()),
+            ca_cert: ca_cert.map(|s| s.to_string()),
+            rate_limit_seconds: None,
+        };
         match schema::load_schema_with_options(schema_path, &options) {
             Ok(schema) => {
                 println!("Schema compliance ({}):", schema_path);
@@ -234,12 +241,19 @@ fn output_json(
     different_values: &[(&String, &String, &String)],
     schema_path: Option<&str>,
     no_cache: bool,
+    verify_hash: Option<&str>,
+    ca_cert: Option<&str>,
 ) -> Result<(), String> {
     let has_diff = !only_in_a.is_empty() || !only_in_b.is_empty() || !different_values.is_empty();
 
     // Build schema compliance if schema provided
     let schema_compliance = if let Some(schema_path) = schema_path {
-        let options = LoadOptions { no_cache };
+        let options = LoadOptions {
+            no_cache,
+            verify_hash: verify_hash.map(|s| s.to_string()),
+            ca_cert: ca_cert.map(|s| s.to_string()),
+            rate_limit_seconds: None,
+        };
         match schema::load_schema_with_options(schema_path, &options) {
             Ok(schema) => {
                 Some(SchemaCompliance {
@@ -318,7 +332,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar\nBAZ=qux");
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
 
-        let result = run(&env_a, &env_b, None, "text", false);
+        let result = run(&env_a, &env_b, None, "text", false, None, None);
         assert!(result.is_ok());
     }
 
@@ -328,7 +342,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar\nONLY_A=value");
         let env_b = create_temp_env(&dir, "b.env", "FOO=different\nONLY_B=value");
 
-        let result = run(&env_a, &env_b, None, "text", false);
+        let result = run(&env_a, &env_b, None, "text", false, None, None);
         assert!(result.is_ok());
     }
 
@@ -339,13 +353,13 @@ mod tests {
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
         let schema = create_temp_env(&dir, "schema.json", r#"{"FOO": {"type": "string", "required": true}}"#);
 
-        let result = run(&env_a, &env_b, Some(&schema), "text", false);
+        let result = run(&env_a, &env_b, Some(&schema), "text", false, None, None);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_diff_missing_file() {
-        let result = run("nonexistent_a.env", "nonexistent_b.env", None, "text", false);
+        let result = run("nonexistent_a.env", "nonexistent_b.env", None, "text", false, None, None);
         assert!(result.is_err());
     }
 
@@ -355,7 +369,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar\nONLY_A=value");
         let env_b = create_temp_env(&dir, "b.env", "FOO=different\nONLY_B=value");
 
-        let result = run(&env_a, &env_b, None, "json", false);
+        let result = run(&env_a, &env_b, None, "json", false, None, None);
         assert!(result.is_ok());
     }
 
@@ -366,7 +380,7 @@ mod tests {
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
         let schema = create_temp_env(&dir, "schema.json", r#"{"FOO": {"type": "string", "required": true}}"#);
 
-        let result = run(&env_a, &env_b, Some(&schema), "json", false);
+        let result = run(&env_a, &env_b, Some(&schema), "json", false, None, None);
         assert!(result.is_ok());
     }
 
@@ -376,7 +390,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar");
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar");
 
-        let result = run(&env_a, &env_b, None, "xml", false);
+        let result = run(&env_a, &env_b, None, "xml", false, None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown format"));
     }

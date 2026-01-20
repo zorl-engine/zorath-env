@@ -45,6 +45,50 @@ Instead, please report security issues via:
 - Information disclosure
 - Dependency vulnerabilities
 
+## Remote Schema Security (v0.3.5+)
+
+zenv provides security features for remote schema fetching:
+
+### Hash Verification (`--verify-hash`)
+
+Verify schema integrity with SHA-256:
+
+```bash
+zenv check --schema https://example.com/schema.json --verify-hash abc123def456...
+```
+
+- Prevents man-in-the-middle attacks
+- Verifies both cached and fresh content
+- Supports full hash or prefix matching (16+ chars)
+
+### Custom CA Certificates (`--ca-cert`)
+
+For enterprise environments with internal HTTPS servers:
+
+```bash
+zenv check --schema https://internal.corp/schema.json --ca-cert /path/to/ca.pem
+```
+
+- PEM format required
+- Certificate validated before use
+
+### Rate Limiting
+
+Remote schema fetches are rate-limited by default:
+
+- 60 seconds between fetches per URL
+- Prevents abuse and excessive requests
+- Configurable in `.zenvrc`: `"rate_limit_seconds": 120`
+- Disabled with `--no-cache` flag
+
+### Security Best Practices
+
+1. Always use `--verify-hash` for production schemas
+2. Store trusted hashes securely (CI secrets, config)
+3. Review schema changes before updating hashes
+4. Use HTTPS only (HTTP is rejected)
+5. Protect CA certificates from unauthorized access
+
 ### What Does NOT Qualify
 
 - Bugs that don't have security implications

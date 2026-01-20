@@ -62,7 +62,7 @@ cargo run -- init
 cargo test
 ```
 
-All 189 tests should pass.
+All 332 tests should pass.
 
 ### Check Code Quality
 
@@ -170,18 +170,26 @@ mod tests {
 ```
 src/
   main.rs          # CLI entry point
-  schema.rs        # Schema parsing and types
+  schema.rs        # Schema parsing and types (JSON + YAML)
   envfile.rs       # .env file parsing
   remote.rs        # Remote schema fetching and caching
   secrets.rs       # Secret detection patterns
+  config.rs        # .zenvrc config file support
+  suggestions.rs   # "Did you mean?" suggestions
+  presets.rs       # Framework presets (nextjs, rails, etc.)
   commands/
     mod.rs         # Command module
+    cache.rs       # zenv cache command
     check.rs       # zenv check command
     completions.rs # zenv completions command
     diff.rs        # zenv diff command
     docs.rs        # zenv docs command
+    doctor.rs      # zenv doctor command
     example.rs     # zenv example command
+    export.rs      # zenv export command
+    fix.rs         # zenv fix command
     init.rs        # zenv init command
+    scan.rs        # zenv scan command
     version.rs     # zenv version command
 ```
 

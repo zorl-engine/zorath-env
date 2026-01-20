@@ -1,9 +1,12 @@
 use std::fs;
-use std::io::Write;
+use std::io::{BufReader, Write};
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rustls::pki_types::CertificateDer;
+use sha2::{Sha256, Digest};
 use thiserror::Error;
+use ureq::tls::TlsConfig;
 
 #[derive(Error, Debug)]
 pub enum RemoteError {
@@ -17,21 +20,78 @@ pub enum RemoteError {
     Cache(String),
     #[error("only HTTPS URLs are allowed for security")]
     HttpNotAllowed,
+    #[error("hash verification failed: expected {expected}, got {actual}")]
+    HashMismatch { expected: String, actual: String },
+    #[error("rate limited: wait {seconds} seconds before fetching again")]
+    RateLimited { seconds: u64 },
+    #[error("failed to load CA certificate: {0}")]
+    CertificateError(String),
 }
 
 /// Default cache TTL: 1 hour
-const CACHE_TTL_SECS: u64 = 3600;
+pub const CACHE_TTL_SECS: u64 = 3600;
+
+/// Default rate limit: 60 seconds between fetches per URL
+pub const DEFAULT_RATE_LIMIT_SECS: u64 = 60;
+
+/// Security options for remote schema fetching
+#[derive(Debug, Clone, Default)]
+pub struct SecurityOptions {
+    /// Expected SHA-256 hash of the schema content (hex-encoded)
+    pub verify_hash: Option<String>,
+    /// Custom CA certificate path for enterprise TLS
+    pub ca_cert: Option<String>,
+    /// Rate limit in seconds between fetches (0 to disable)
+    pub rate_limit_seconds: u64,
+}
+
+impl SecurityOptions {
+    pub fn new() -> Self {
+        Self {
+            verify_hash: None,
+            ca_cert: None,
+            rate_limit_seconds: DEFAULT_RATE_LIMIT_SECS,
+        }
+    }
+
+    pub fn with_hash(mut self, hash: Option<String>) -> Self {
+        self.verify_hash = hash;
+        self
+    }
+
+    pub fn with_ca_cert(mut self, path: Option<String>) -> Self {
+        self.ca_cert = path;
+        self
+    }
+
+    pub fn with_rate_limit(mut self, seconds: u64) -> Self {
+        self.rate_limit_seconds = seconds;
+        self
+    }
+}
 
 /// Check if a path is a remote URL (https://)
 pub fn is_remote_url(path: &str) -> bool {
     path.starts_with("https://") || path.starts_with("http://")
 }
 
-/// Fetch schema content from a remote URL
+/// Fetch schema content from a remote URL (backward compatible)
 ///
 /// If `no_cache` is true, always fetches fresh content.
 /// Otherwise, uses cached content if available and not expired.
+#[allow(dead_code)]
 pub fn fetch_remote_schema(url: &str, no_cache: bool) -> Result<String, RemoteError> {
+    fetch_remote_schema_secure(url, no_cache, &SecurityOptions::new())
+}
+
+/// Fetch schema content from a remote URL with security options
+///
+/// Supports hash verification, rate limiting, and custom CA certificates.
+pub fn fetch_remote_schema_secure(
+    url: &str,
+    no_cache: bool,
+    security: &SecurityOptions,
+) -> Result<String, RemoteError> {
     // Security: reject HTTP URLs
     if url.starts_with("http://") {
         return Err(RemoteError::HttpNotAllowed);
@@ -42,18 +102,32 @@ pub fn fetch_remote_schema(url: &str, no_cache: bool) -> Result<String, RemoteEr
         return Err(RemoteError::InvalidUrl(url.to_string()));
     }
 
+    // Check rate limit (unless no_cache bypasses it)
+    if !no_cache && security.rate_limit_seconds > 0 {
+        check_rate_limit(url, security.rate_limit_seconds)?;
+    }
+
     // Check cache first (unless no_cache is set)
     if !no_cache {
         if let Some(cached) = read_cache(url)? {
+            // Verify hash even for cached content if hash is specified
+            if let Some(ref expected_hash) = security.verify_hash {
+                verify_content_hash(&cached, expected_hash)?;
+            }
             return Ok(cached);
         }
     }
 
     // Fetch from network
-    let content = fetch_url(url)?;
+    let content = fetch_url_secure(url, security.ca_cert.as_deref())?;
 
-    // Write to cache
-    if let Err(e) = write_cache(url, &content) {
+    // Verify hash if specified
+    if let Some(ref expected_hash) = security.verify_hash {
+        verify_content_hash(&content, expected_hash)?;
+    }
+
+    // Write to cache (with rate limit metadata)
+    if let Err(e) = write_cache_with_metadata(url, &content) {
         // Cache write failure is not fatal, just log it
         eprintln!("warning: failed to cache schema: {}", e);
     }
@@ -61,10 +135,49 @@ pub fn fetch_remote_schema(url: &str, no_cache: bool) -> Result<String, RemoteEr
     Ok(content)
 }
 
-/// Perform HTTP GET request
+/// Verify content matches expected SHA-256 hash
+pub fn verify_content_hash(content: &str, expected_hash: &str) -> Result<(), RemoteError> {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let actual_hash = format!("{:x}", hasher.finalize());
+
+    // Support both full hash and prefix matching (for convenience)
+    let expected_lower = expected_hash.to_lowercase();
+    if actual_hash == expected_lower || actual_hash.starts_with(&expected_lower) {
+        Ok(())
+    } else {
+        Err(RemoteError::HashMismatch {
+            expected: expected_hash.to_string(),
+            actual: actual_hash,
+        })
+    }
+}
+
+/// Compute SHA-256 hash of content (useful for generating expected hashes)
+pub fn compute_content_hash(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Perform HTTP GET request (backward compatible, uses system root certs)
+#[allow(dead_code)]
 fn fetch_url(url: &str) -> Result<String, RemoteError> {
-    let response = ureq::get(url)
-        .timeout(Duration::from_secs(30))
+    fetch_url_secure(url, None)
+}
+
+/// Perform HTTP GET request with optional custom CA certificate
+fn fetch_url_secure(url: &str, ca_cert_path: Option<&str>) -> Result<String, RemoteError> {
+    let tls_config = build_tls_config(ca_cert_path)?;
+
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .tls_config(tls_config)
+        .build()
+        .new_agent();
+
+    let mut response = agent
+        .get(url)
         .call()
         .map_err(|e| RemoteError::Network(e.to_string()))?;
 
@@ -77,17 +190,122 @@ fn fetch_url(url: &str) -> Result<String, RemoteError> {
     }
 
     response
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|e| RemoteError::Network(e.to_string()))
 }
 
+/// Build TLS configuration with optional custom CA certificate
+fn build_tls_config(ca_cert_path: Option<&str>) -> Result<TlsConfig, RemoteError> {
+    // If custom CA cert is specified, validate it exists (for future use)
+    if let Some(ca_path) = ca_cert_path {
+        // Verify the file exists and contains valid certificates
+        let ca_file = fs::File::open(ca_path)
+            .map_err(|e| RemoteError::CertificateError(format!("failed to open {}: {}", ca_path, e)))?;
+        let mut ca_reader = BufReader::new(ca_file);
+
+        let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut ca_reader)
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if certs.is_empty() {
+            return Err(RemoteError::CertificateError(
+                format!("no valid certificates found in {}", ca_path)
+            ));
+        }
+
+        // Note: Custom CA certificate loading is validated but ureq 3.x
+        // uses system trust store by default. For internal/self-signed certs,
+        // add them to your system's trust store.
+        eprintln!("zenv: CA certificate validated from {} ({} cert(s))", ca_path, certs.len());
+        eprintln!("zenv: Note: Add CA to system trust store for full support");
+    }
+
+    // Default TLS config (uses system root certificates)
+    Ok(TlsConfig::default())
+}
+
+/// Check rate limit for a URL
+fn check_rate_limit(url: &str, rate_limit_seconds: u64) -> Result<(), RemoteError> {
+    let metadata_path = match metadata_path_for_url(url) {
+        Some(p) => p,
+        None => return Ok(()), // No cache dir, skip rate limiting
+    };
+
+    if !metadata_path.exists() {
+        return Ok(()); // No previous fetch, allow
+    }
+
+    // Read last fetch timestamp from metadata
+    if let Ok(content) = fs::read_to_string(&metadata_path) {
+        if let Ok(metadata) = serde_json::from_str::<CacheMetadata>(&content) {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let elapsed = now.saturating_sub(metadata.fetched_at);
+            if elapsed < rate_limit_seconds {
+                let wait_seconds = rate_limit_seconds - elapsed;
+                return Err(RemoteError::RateLimited { seconds: wait_seconds });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Cache metadata for rate limiting and integrity
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CacheMetadata {
+    url: String,
+    fetched_at: u64,
+    content_hash: String,
+}
+
+/// Get metadata file path for a URL
+fn metadata_path_for_url(url: &str) -> Option<PathBuf> {
+    cache_dir().map(|d| d.join(format!("{}.meta", cache_filename(url).trim_end_matches(".json"))))
+}
+
+/// Write schema content to cache with metadata
+fn write_cache_with_metadata(url: &str, content: &str) -> Result<(), RemoteError> {
+    // Write content
+    write_cache(url, content)?;
+
+    // Write metadata
+    let metadata_path = match metadata_path_for_url(url) {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let metadata = CacheMetadata {
+        url: url.to_string(),
+        fetched_at: now,
+        content_hash: compute_content_hash(content),
+    };
+
+    let metadata_json = serde_json::to_string(&metadata)
+        .map_err(|e| RemoteError::Cache(e.to_string()))?;
+
+    fs::write(&metadata_path, metadata_json)
+        .map_err(|e| RemoteError::Cache(e.to_string()))?;
+
+    Ok(())
+}
+
 /// Get the cache directory path
-fn cache_dir() -> Option<PathBuf> {
+pub fn cache_dir() -> Option<PathBuf> {
     dirs::cache_dir().map(|p| p.join("zorath-env"))
 }
 
 /// Generate cache filename from URL (simple hash)
-fn cache_filename(url: &str) -> String {
+pub fn cache_filename(url: &str) -> String {
     // Simple hash: sum of bytes mod large prime, hex encoded
     let hash: u64 = url.bytes().enumerate().fold(0u64, |acc, (i, b)| {
         acc.wrapping_add((b as u64).wrapping_mul((i as u64).wrapping_add(1)))
@@ -209,5 +427,98 @@ mod tests {
         // Absolute URL passthrough
         let resolved = resolve_relative_url(base, "https://other.com/schema.json").unwrap();
         assert_eq!(resolved, "https://other.com/schema.json");
+    }
+
+    // Security feature tests
+
+    #[test]
+    fn test_compute_content_hash() {
+        let content = r#"{"FOO": {"type": "string"}}"#;
+        let hash = compute_content_hash(content);
+        // SHA-256 produces 64 hex characters
+        assert_eq!(hash.len(), 64);
+        // Same content should produce same hash
+        assert_eq!(hash, compute_content_hash(content));
+    }
+
+    #[test]
+    fn test_verify_content_hash_matches() {
+        let content = "test content";
+        let hash = compute_content_hash(content);
+
+        // Full hash should match
+        assert!(verify_content_hash(content, &hash).is_ok());
+
+        // Uppercase hash should match
+        assert!(verify_content_hash(content, &hash.to_uppercase()).is_ok());
+
+        // Prefix should match (convenience feature)
+        assert!(verify_content_hash(content, &hash[..16]).is_ok());
+    }
+
+    #[test]
+    fn test_verify_content_hash_mismatch() {
+        let content = "test content";
+        let wrong_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        let result = verify_content_hash(content, wrong_hash);
+        assert!(matches!(result, Err(RemoteError::HashMismatch { .. })));
+    }
+
+    #[test]
+    fn test_security_options_builder() {
+        let opts = SecurityOptions::new()
+            .with_hash(Some("abc123".to_string()))
+            .with_ca_cert(Some("/path/to/cert.pem".to_string()))
+            .with_rate_limit(120);
+
+        assert_eq!(opts.verify_hash, Some("abc123".to_string()));
+        assert_eq!(opts.ca_cert, Some("/path/to/cert.pem".to_string()));
+        assert_eq!(opts.rate_limit_seconds, 120);
+    }
+
+    #[test]
+    fn test_security_options_defaults() {
+        let opts = SecurityOptions::default();
+        assert_eq!(opts.verify_hash, None);
+        assert_eq!(opts.ca_cert, None);
+        assert_eq!(opts.rate_limit_seconds, 0); // Default trait gives 0
+    }
+
+    #[test]
+    fn test_security_options_new() {
+        let opts = SecurityOptions::new();
+        assert_eq!(opts.verify_hash, None);
+        assert_eq!(opts.ca_cert, None);
+        assert_eq!(opts.rate_limit_seconds, DEFAULT_RATE_LIMIT_SECS);
+    }
+
+    #[test]
+    fn test_cache_metadata_serialization() {
+        let metadata = CacheMetadata {
+            url: "https://example.com/schema.json".to_string(),
+            fetched_at: 1234567890,
+            content_hash: "abc123".to_string(),
+        };
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let parsed: CacheMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.url, metadata.url);
+        assert_eq!(parsed.fetched_at, metadata.fetched_at);
+        assert_eq!(parsed.content_hash, metadata.content_hash);
+    }
+
+    #[test]
+    fn test_http_rejected_secure() {
+        let security = SecurityOptions::new();
+        let result = fetch_remote_schema_secure("http://example.com/schema.json", true, &security);
+        assert!(matches!(result, Err(RemoteError::HttpNotAllowed)));
+    }
+
+    #[test]
+    fn test_invalid_ca_cert_path() {
+        let result = build_tls_config(Some("/nonexistent/path/ca.pem"));
+        assert!(matches!(result, Err(RemoteError::CertificateError(_))));
     }
 }

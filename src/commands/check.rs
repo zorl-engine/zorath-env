@@ -3,16 +3,203 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use serde::Serialize;
 use url::Url;
 
 use regex::Regex;
 
 use crate::envfile;
-use crate::schema::{self, LoadOptions, Schema, VarSpec, VarType};
+use crate::schema::{self, LoadOptions, Schema, Severity, VarSpec, VarType};
 use crate::secrets;
+use crate::suggestions;
+
+/// JSON output structure for check command
+#[derive(Serialize)]
+struct CheckResult {
+    valid: bool,
+    errors: Vec<CheckIssue>,
+    warnings: Vec<CheckIssue>,
+    secret_warnings: Vec<SecretWarning>,
+    stats: CheckStats,
+}
+
+#[derive(Serialize)]
+struct CheckIssue {
+    key: String,
+    message: String,
+    issue_type: String,
+}
+
+#[derive(Serialize)]
+struct SecretWarning {
+    key: String,
+    message: String,
+    line: usize,
+}
+
+#[derive(Serialize)]
+struct CheckStats {
+    total_variables: usize,
+    schema_variables: usize,
+    errors_count: usize,
+    warnings_count: usize,
+    secret_warnings_count: usize,
+}
+
+/// A validation issue with its severity
+struct ValidationIssue {
+    key: String,
+    message: String,
+    severity: Severity,
+}
+
+/// Convert validation errors to issues with severity from schema
+fn errors_to_issues(errors: Vec<String>, schema: &Schema) -> Vec<ValidationIssue> {
+    errors.into_iter().map(|e| {
+        let parts: Vec<&str> = e.splitn(2, ": ").collect();
+        let key = parts.first().unwrap_or(&"").to_string();
+
+        // Get severity from schema, default to Error
+        let severity = schema.get(&key)
+            .map(|spec| spec.severity)
+            .unwrap_or(Severity::Error);
+
+        ValidationIssue {
+            key,
+            message: e,
+            severity,
+        }
+    }).collect()
+}
+
+// Pre-compiled regex patterns for built-in types (cached with OnceLock)
+fn uuid_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap()
+    })
+}
+
+fn email_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        // RFC 5322 simplified - covers most common email formats
+        Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$").unwrap()
+    })
+}
+
+fn ipv4_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$").unwrap()
+    })
+}
+
+fn semver_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        // Matches: 1.0.0, 2.1.3-beta.1, 1.0.0+build.123, 1.0.0-alpha+001
+        Regex::new(r"^\d+\.\d+\.\d+(-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?(\+[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?$").unwrap()
+    })
+}
+
+fn ipv6_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        // Simplified IPv6 validation - 8 groups of 1-4 hex digits separated by colons
+        // Also supports :: for consecutive zero groups
+        Regex::new(r"^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^(([0-9a-fA-F]{1,4}:)*)?::(([0-9a-fA-F]{1,4}:)*[0-9a-fA-F]{1,4})?$").unwrap()
+    })
+}
+
+fn date_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        // ISO 8601 date format: YYYY-MM-DD
+        Regex::new(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$").unwrap()
+    })
+}
+
+fn hostname_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        // RFC 1123 hostname: labels separated by dots, each 1-63 chars, total max 253
+        // Labels: alphanumeric, can contain hyphens (not at start/end)
+        Regex::new(r"^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$").unwrap()
+    })
+}
+
+// Cache for user-defined regex patterns (from schema validate.pattern)
+use std::cell::RefCell;
+thread_local! {
+    static PATTERN_CACHE: RefCell<HashMap<String, Result<Regex, String>>> = RefCell::new(HashMap::new());
+}
+
+/// Get or compile a regex pattern with caching
+fn get_cached_regex(pattern: &str) -> Result<Regex, String> {
+    PATTERN_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(result) = cache.get(pattern) {
+            return result.clone();
+        }
+        let result = Regex::new(pattern).map_err(|e| e.to_string());
+        cache.insert(pattern.to_string(), result.clone());
+        result
+    })
+}
+
+/// Validate IPv4 octets are in valid range (0-255)
+fn is_valid_ipv4(value: &str) -> bool {
+    if let Some(caps) = ipv4_regex().captures(value) {
+        for i in 1..=4 {
+            if let Some(m) = caps.get(i) {
+                if let Ok(octet) = m.as_str().parse::<u16>() {
+                    if octet > 255 {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Check if a key name indicates it contains sensitive data
+fn is_sensitive_key(key: &str) -> bool {
+    let lower = key.to_lowercase();
+    let sensitive_patterns = [
+        "password", "passwd", "secret", "token", "api_key", "apikey",
+        "private_key", "privatekey", "auth", "credential", "jwt",
+        "bearer", "access_key", "accesskey", "secret_key", "secretkey",
+        "encryption_key", "encryptionkey", "signing_key", "signingkey",
+    ];
+
+    for pattern in sensitive_patterns {
+        if lower.contains(pattern) {
+            return true;
+        }
+    }
+
+    // Also check for common suffixes
+    lower.ends_with("_key") || lower.ends_with("_token") || lower.ends_with("_secret")
+}
+
+/// Mask a value if the key is sensitive, otherwise return truncated value
+fn mask_value(key: &str, value: &str) -> String {
+    if is_sensitive_key(key) {
+        "***MASKED***".to_string()
+    } else {
+        truncate_value(value)
+    }
+}
 
 /// State tracked between watch iterations for delta detection
 struct WatchState {
@@ -90,11 +277,17 @@ pub fn run(
     detect_secrets: bool,
     no_cache: bool,
     watch: bool,
+    format: &str,
+    verify_hash: Option<&str>,
+    ca_cert: Option<&str>,
 ) -> Result<(), String> {
     if watch {
-        run_watch_mode(env_path, schema_path, allow_missing_env, detect_secrets, no_cache)
+        if format == "json" {
+            return Err("JSON format is not supported in watch mode".into());
+        }
+        run_watch_mode(env_path, schema_path, allow_missing_env, detect_secrets, no_cache, verify_hash, ca_cert)
     } else {
-        run_once(env_path, schema_path, allow_missing_env, detect_secrets, no_cache)
+        run_once(env_path, schema_path, allow_missing_env, detect_secrets, no_cache, format, verify_hash, ca_cert)
     }
 }
 
@@ -105,14 +298,22 @@ fn run_once(
     allow_missing_env: bool,
     detect_secrets: bool,
     no_cache: bool,
+    format: &str,
+    verify_hash: Option<&str>,
+    ca_cert: Option<&str>,
 ) -> Result<(), String> {
-    let options = LoadOptions { no_cache };
+    let options = LoadOptions {
+        no_cache,
+        verify_hash: verify_hash.map(|s| s.to_string()),
+        ca_cert: ca_cert.map(|s| s.to_string()),
+        rate_limit_seconds: None,
+    };
     let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
 
     let resolved_path = resolve_env_file(env_path);
     let (env_map, raw_content): (HashMap<String, String>, Option<String>) = match &resolved_path {
         Some(resolved) => {
-            if resolved != env_path {
+            if resolved != env_path && format != "json" {
                 eprintln!("Note: Using {} (fallback)\n", resolved);
             }
             let content = fs::read_to_string(resolved).map_err(|e| e.to_string())?;
@@ -126,12 +327,23 @@ fn run_once(
     // Interpolate variable references (${VAR} and $VAR)
     let env_map = envfile::interpolate_env(env_map).map_err(|e| e.to_string())?;
 
-    let errors = validate(&schema, &env_map);
+    let raw_errors = validate(&schema, &env_map);
+
+    // Convert to issues with severity
+    let issues = errors_to_issues(raw_errors, &schema);
+
+    // Separate errors (exit code 1) from warnings (reported but don't fail)
+    let errors: Vec<&ValidationIssue> = issues.iter()
+        .filter(|i| i.severity == Severity::Error)
+        .collect();
+    let schema_warnings: Vec<&ValidationIssue> = issues.iter()
+        .filter(|i| i.severity == Severity::Warning)
+        .collect();
 
     // Check for secrets if flag is set
     let secret_warnings = if detect_secrets {
         if let Some(content) = &raw_content {
-            secrets::detect_secrets(&env_map, content)
+            secrets::detect_secrets(&env_map, content, Some(&schema))
         } else {
             Vec::new()
         }
@@ -140,18 +352,62 @@ fn run_once(
     };
 
     let has_errors = !errors.is_empty();
-    let has_warnings = !secret_warnings.is_empty();
+    let has_schema_warnings = !schema_warnings.is_empty();
+    let has_secret_warnings = !secret_warnings.is_empty();
 
+    // JSON output mode
+    if format == "json" {
+        let check_errors: Vec<CheckIssue> = errors.iter().map(|e| {
+            let (_, message, issue_type) = parse_error_message(&e.message);
+            CheckIssue { key: e.key.clone(), message, issue_type }
+        }).collect();
+
+        let check_warnings: Vec<CheckIssue> = schema_warnings.iter().map(|w| {
+            let (_, message, issue_type) = parse_error_message(&w.message);
+            CheckIssue { key: w.key.clone(), message, issue_type }
+        }).collect();
+
+        let check_secret_warnings: Vec<SecretWarning> = secret_warnings.iter().map(|w| {
+            SecretWarning {
+                key: w.key.clone(),
+                message: w.reason.clone(),
+                line: w.line,
+            }
+        }).collect();
+
+        let result = CheckResult {
+            valid: !has_errors,
+            stats: CheckStats {
+                total_variables: env_map.len(),
+                schema_variables: schema.len(),
+                errors_count: check_errors.len(),
+                warnings_count: check_warnings.len(),
+                secret_warnings_count: check_secret_warnings.len(),
+            },
+            errors: check_errors,
+            warnings: check_warnings,
+            secret_warnings: check_secret_warnings,
+        };
+
+        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+
+        if has_errors {
+            return Err("validation failed".into());
+        }
+        return Ok(());
+    }
+
+    // Text output mode (default)
     if has_errors {
         // Count unknown keys for the tip
         let unknown_count = errors
             .iter()
-            .filter(|e| e.contains("not in schema"))
+            .filter(|e| e.message.contains("not in schema"))
             .count();
 
         eprintln!("Error: zenv check failed:\n");
         for e in &errors {
-            eprintln!("- {e}");
+            eprintln!("- {}", e.message);
         }
 
         // Suggest how to fix unknown keys
@@ -162,8 +418,19 @@ fn run_once(
         }
     }
 
-    if has_warnings {
+    // Show schema warnings (severity: warning)
+    if has_schema_warnings {
         if has_errors {
+            eprintln!();
+        }
+        eprintln!("Warning: Schema validation warnings:\n");
+        for w in &schema_warnings {
+            eprintln!("- {}", w.message);
+        }
+    }
+
+    if has_secret_warnings {
+        if has_errors || has_schema_warnings {
             eprintln!();
         }
         eprintln!("Warning: Potential secrets detected:\n");
@@ -182,12 +449,45 @@ fn run_once(
         return Err("validation failed".into());
     }
 
-    if has_warnings {
-        println!("\nzenv: OK (with {} secret warning(s))", secret_warnings.len());
+    // Build success message
+    let warning_count = schema_warnings.len() + secret_warnings.len();
+    if warning_count > 0 {
+        println!("\nzenv: OK (with {} warning(s))", warning_count);
     } else {
         println!("zenv: OK");
     }
     Ok(())
+}
+
+/// Parse an error message into structured components
+fn parse_error_message(error: &str) -> (String, String, String) {
+    // Format: "KEY: message" or "KEY: message\n  suggestion"
+    let parts: Vec<&str> = error.splitn(2, ": ").collect();
+    if parts.len() == 2 {
+        let key = parts[0].to_string();
+        let message = parts[1].lines().next().unwrap_or(parts[1]).to_string();
+
+        // Determine error type from message content
+        let error_type = if message.contains("missing (required)") {
+            "missing_required"
+        } else if message.contains("not in schema") {
+            "unknown_key"
+        } else if message.contains("expected") {
+            "type_mismatch"
+        } else if message.contains("less than minimum") || message.contains("exceeds maximum") {
+            "validation_rule"
+        } else if message.contains("does not match pattern") {
+            "pattern_mismatch"
+        } else if message.contains("length") {
+            "length_violation"
+        } else {
+            "validation_error"
+        };
+
+        (key, message, error_type.to_string())
+    } else {
+        ("unknown".to_string(), error.to_string(), "validation_error".to_string())
+    }
 }
 
 /// Run validation in watch mode with intelligent delta detection
@@ -197,6 +497,8 @@ fn run_watch_mode(
     allow_missing_env: bool,
     detect_secrets: bool,
     no_cache: bool,
+    verify_hash: Option<&str>,
+    ca_cert: Option<&str>,
 ) -> Result<(), String> {
     // Check if schema is a remote URL - can't watch remote schemas
     let is_remote_schema = schema_path.starts_with("http://") || schema_path.starts_with("https://");
@@ -233,7 +535,12 @@ fn run_watch_mode(
     }
 
     // Load schema for initial validation
-    let options = LoadOptions { no_cache };
+    let options = LoadOptions {
+        no_cache,
+        verify_hash: verify_hash.map(|s| s.to_string()),
+        ca_cert: ca_cert.map(|s| s.to_string()),
+        rate_limit_seconds: None,
+    };
     let schema = schema::load_schema_with_options(schema_path, &options)
         .map_err(|e| format!("Schema error: {}", e))?;
 
@@ -442,7 +749,7 @@ fn run_initial_validation(
     // Check for secrets
     let secret_warnings = if detect_secrets {
         if let Some(content) = &raw_content {
-            secrets::detect_secrets(&env_map, content)
+            secrets::detect_secrets(&env_map, content, Some(schema))
         } else {
             Vec::new()
         }
@@ -608,7 +915,7 @@ fn print_delta_validation(
             .map(|c| c.key.clone())
             .collect();
 
-        let secret_warnings = secrets::detect_secrets(env_map, raw_content);
+        let secret_warnings = secrets::detect_secrets(env_map, raw_content, Some(schema));
         for warning in secret_warnings {
             if changed_keys.contains(&warning.key) {
                 eprintln!("[{}] ! {}: potential secret detected", timestamp, warning.key);
@@ -621,7 +928,7 @@ fn print_delta_validation(
 }
 
 /// Validate a single key-value pair against its spec
-fn validate_single_key(_key: &str, value: &str, spec: &VarSpec) -> Result<String, String> {
+fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String, String> {
     match spec.var_type {
         VarType::String => {
             if let Some(ref rules) = spec.validate {
@@ -636,7 +943,7 @@ fn validate_single_key(_key: &str, value: &str, spec: &VarSpec) -> Result<String
                     }
                 }
                 if let Some(ref pattern) = rules.pattern {
-                    match Regex::new(pattern) {
+                    match get_cached_regex(pattern) {
                         Ok(re) => {
                             if !re.is_match(value) {
                                 return Err(format!("does not match pattern '{}'", pattern));
@@ -667,7 +974,7 @@ fn validate_single_key(_key: &str, value: &str, spec: &VarSpec) -> Result<String
                     }
                     Ok(format!("int: {}", n))
                 }
-                Err(_) => Err(format!("expected int, got '{}'", truncate_value(value))),
+                Err(_) => Err(format!("expected int, got '{}'", mask_value(key, value))),
             }
         }
         VarType::Float => {
@@ -687,7 +994,7 @@ fn validate_single_key(_key: &str, value: &str, spec: &VarSpec) -> Result<String
                     }
                     Ok(format!("float: {}", n))
                 }
-                Err(_) => Err(format!("expected float, got '{}'", truncate_value(value))),
+                Err(_) => Err(format!("expected float, got '{}'", mask_value(key, value))),
             }
         }
         VarType::Bool => {
@@ -695,14 +1002,14 @@ fn validate_single_key(_key: &str, value: &str, spec: &VarSpec) -> Result<String
             if matches!(v.as_str(), "true" | "false" | "1" | "0" | "yes" | "no") {
                 Ok(format!("bool: {}", v))
             } else {
-                Err(format!("expected bool, got '{}'", truncate_value(value)))
+                Err(format!("expected bool, got '{}'", mask_value(key, value)))
             }
         }
         VarType::Url => {
             if Url::parse(value).is_ok() {
                 Ok("url".to_string())
             } else {
-                Err(format!("expected url, got '{}'", truncate_value(value)))
+                Err(format!("expected url, got '{}'", mask_value(key, value)))
             }
         }
         VarType::Enum => {
@@ -715,6 +1022,62 @@ fn validate_single_key(_key: &str, value: &str, spec: &VarSpec) -> Result<String
                     }
                 }
                 None => Err("enum type missing 'values' in schema".to_string()),
+            }
+        }
+        VarType::Uuid => {
+            if uuid_regex().is_match(value) {
+                Ok("uuid".to_string())
+            } else {
+                Err(format!("expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'", mask_value(key, value)))
+            }
+        }
+        VarType::Email => {
+            if email_regex().is_match(value) {
+                Ok("email".to_string())
+            } else {
+                Err(format!("expected email (user@domain.tld), got '{}'", mask_value(key, value)))
+            }
+        }
+        VarType::Ipv4 => {
+            if is_valid_ipv4(value) {
+                Ok("ipv4".to_string())
+            } else {
+                Err(format!("expected ipv4 (x.x.x.x where x is 0-255), got '{}'", mask_value(key, value)))
+            }
+        }
+        VarType::Semver => {
+            if semver_regex().is_match(value) {
+                Ok("semver".to_string())
+            } else {
+                Err(format!("expected semver (x.y.z[-prerelease][+build]), got '{}'", mask_value(key, value)))
+            }
+        }
+        VarType::Ipv6 => {
+            if ipv6_regex().is_match(value) {
+                Ok("ipv6".to_string())
+            } else {
+                Err(format!("expected ipv6 address, got '{}'", mask_value(key, value)))
+            }
+        }
+        VarType::Port => {
+            match value.parse::<u16>() {
+                Ok(port) if port >= 1 => Ok(format!("port: {}", port)),
+                Ok(_) => Err("port must be between 1 and 65535".to_string()),
+                Err(_) => Err(format!("expected port (1-65535), got '{}'", mask_value(key, value))),
+            }
+        }
+        VarType::Date => {
+            if date_regex().is_match(value) {
+                Ok("date".to_string())
+            } else {
+                Err(format!("expected date (YYYY-MM-DD), got '{}'", mask_value(key, value)))
+            }
+        }
+        VarType::Hostname => {
+            if value.len() <= 253 && hostname_regex().is_match(value) {
+                Ok("hostname".to_string())
+            } else {
+                Err(format!("expected hostname (RFC 1123), got '{}'", mask_value(key, value)))
             }
         }
     }
@@ -848,7 +1211,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                         }
                     }
                     if let Some(ref pattern) = rules.pattern {
-                        match Regex::new(pattern) {
+                        match get_cached_regex(pattern) {
                             Ok(re) => {
                                 if !re.is_match(value) {
                                     errors.push(format!("{key}: value '{value}' does not match pattern '{pattern}'"));
@@ -865,7 +1228,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
             VarType::Int => {
                 match value.parse::<i64>() {
                     Err(_) => {
-                        errors.push(format!("{key}: expected int, got '{value}'"));
+                        errors.push(format!("{key}: expected int, got '{}'", mask_value(key, value)));
                     }
                     Ok(n) => {
                         // Apply int validation rules
@@ -888,7 +1251,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
             VarType::Float => {
                 match value.parse::<f64>() {
                     Err(_) => {
-                        errors.push(format!("{key}: expected float, got '{value}'"));
+                        errors.push(format!("{key}: expected float, got '{}'", mask_value(key, value)));
                     }
                     Ok(n) => {
                         // Apply float validation rules
@@ -912,13 +1275,13 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 let v = value.to_lowercase();
                 let ok = matches!(v.as_str(), "true" | "false" | "1" | "0" | "yes" | "no");
                 if !ok {
-                    errors.push(format!("{key}: expected bool (true/false/1/0/yes/no), got '{value}'"));
+                    errors.push(format!("{key}: expected bool (true/false/1/0/yes/no), got '{}'", mask_value(key, value)));
                 }
             }
 
             VarType::Url => {
                 if Url::parse(value).is_err() {
-                    errors.push(format!("{key}: expected url, got '{value}'"));
+                    errors.push(format!("{key}: expected url, got '{}'", mask_value(key, value)));
                 }
             }
 
@@ -929,9 +1292,68 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                     }
                     Some(allowed) => {
                         if !allowed.iter().any(|v| v == value) {
-                            errors.push(format!("{key}: expected one of {:?}, got '{value}'", allowed));
+                            let mut error_msg = format!("{key}: expected one of {:?}, got '{}'", allowed, mask_value(key, value));
+                            // Add "Did you mean?" suggestion
+                            if let Some(suggestion) = suggestions::suggest_enum_value(value, allowed.iter()) {
+                                error_msg.push_str(&format!("\n  {}", suggestion));
+                            }
+                            errors.push(error_msg);
                         }
                     }
+                }
+            }
+
+            VarType::Uuid => {
+                if !uuid_regex().is_match(value) {
+                    errors.push(format!("{key}: expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'", mask_value(key, value)));
+                }
+            }
+
+            VarType::Email => {
+                if !email_regex().is_match(value) {
+                    errors.push(format!("{key}: expected email (user@domain.tld), got '{}'", mask_value(key, value)));
+                }
+            }
+
+            VarType::Ipv4 => {
+                if !is_valid_ipv4(value) {
+                    errors.push(format!("{key}: expected ipv4 (x.x.x.x where x is 0-255), got '{}'", mask_value(key, value)));
+                }
+            }
+
+            VarType::Semver => {
+                if !semver_regex().is_match(value) {
+                    errors.push(format!("{key}: expected semver (x.y.z[-prerelease][+build]), got '{}'", mask_value(key, value)));
+                }
+            }
+
+            VarType::Ipv6 => {
+                if !ipv6_regex().is_match(value) {
+                    errors.push(format!("{key}: expected ipv6 address, got '{}'", mask_value(key, value)));
+                }
+            }
+
+            VarType::Port => {
+                match value.parse::<u16>() {
+                    Ok(port) if port >= 1 => {}
+                    Ok(_) => {
+                        errors.push(format!("{key}: port must be between 1 and 65535"));
+                    }
+                    Err(_) => {
+                        errors.push(format!("{key}: expected port (1-65535), got '{}'", mask_value(key, value)));
+                    }
+                }
+            }
+
+            VarType::Date => {
+                if !date_regex().is_match(value) {
+                    errors.push(format!("{key}: expected date (YYYY-MM-DD), got '{}'", mask_value(key, value)));
+                }
+            }
+
+            VarType::Hostname => {
+                if value.len() > 253 || !hostname_regex().is_match(value) {
+                    errors.push(format!("{key}: expected hostname (RFC 1123), got '{}'", mask_value(key, value)));
                 }
             }
         }
@@ -940,7 +1362,12 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
     // warn on unknown keys (present in env but not in schema)
     for k in env_map.keys() {
         if !schema.contains_key(k) {
-            errors.push(format!("{k}: not in schema (unknown key)"));
+            let mut error_msg = format!("{k}: not in schema (unknown key)");
+            // Add "Did you mean?" suggestion
+            if let Some(suggestion) = suggestions::suggest_variable_name(k, schema.keys()) {
+                error_msg.push_str(&format!("\n  {}", suggestion));
+            }
+            errors.push(error_msg);
         }
     }
 
@@ -964,10 +1391,7 @@ mod tests {
         VarSpec {
             var_type: VarType::String,
             required,
-            description: None,
-            values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         }
     }
 
@@ -975,54 +1399,36 @@ mod tests {
         VarSpec {
             var_type: VarType::Int,
             required,
-            description: None,
-            values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         }
     }
 
     fn float_spec() -> VarSpec {
         VarSpec {
             var_type: VarType::Float,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         }
     }
 
     fn bool_spec() -> VarSpec {
         VarSpec {
             var_type: VarType::Bool,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         }
     }
 
     fn url_spec() -> VarSpec {
         VarSpec {
             var_type: VarType::Url,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         }
     }
 
     fn enum_spec(values: Vec<&str>) -> VarSpec {
         VarSpec {
             var_type: VarType::Enum,
-            required: false,
-            description: None,
             values: Some(values.into_iter().map(String::from).collect()),
-            default: None,
-            validate: None,
+            ..Default::default()
         }
     }
 
@@ -1212,8 +1618,7 @@ mod tests {
             required: false,
             description: None,
             values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         })]);
         let env = make_env(vec![("ENV", "dev")]);
         let errors = validate(&schema, &env);
@@ -1255,7 +1660,7 @@ mod tests {
             description: None,
             values: None,
             default: Some(serde_json::json!(3000)),
-            validate: None,
+            ..Default::default()
         })]);
         let env = make_env(vec![]);
         let errors = validate(&schema, &env);
@@ -1297,14 +1702,11 @@ mod tests {
     fn test_int_min_valid() {
         let schema = make_schema(vec![("PORT", VarSpec {
             var_type: VarType::Int,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 min: Some(1024),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("PORT", "3000")]);
         let errors = validate(&schema, &env);
@@ -1315,14 +1717,11 @@ mod tests {
     fn test_int_min_invalid() {
         let schema = make_schema(vec![("PORT", VarSpec {
             var_type: VarType::Int,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 min: Some(1024),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("PORT", "80")]);
         let errors = validate(&schema, &env);
@@ -1334,14 +1733,11 @@ mod tests {
     fn test_int_max_valid() {
         let schema = make_schema(vec![("PORT", VarSpec {
             var_type: VarType::Int,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 max: Some(65535),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("PORT", "8080")]);
         let errors = validate(&schema, &env);
@@ -1352,14 +1748,11 @@ mod tests {
     fn test_int_max_invalid() {
         let schema = make_schema(vec![("PORT", VarSpec {
             var_type: VarType::Int,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 max: Some(65535),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("PORT", "70000")]);
         let errors = validate(&schema, &env);
@@ -1371,15 +1764,12 @@ mod tests {
     fn test_int_min_max_range_valid() {
         let schema = make_schema(vec![("PORT", VarSpec {
             var_type: VarType::Int,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 min: Some(1024),
                 max: Some(65535),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("PORT", "8080")]);
         let errors = validate(&schema, &env);
@@ -1392,14 +1782,11 @@ mod tests {
     fn test_float_min_value_valid() {
         let schema = make_schema(vec![("RATE", VarSpec {
             var_type: VarType::Float,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 min_value: Some(0.0),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("RATE", "0.5")]);
         let errors = validate(&schema, &env);
@@ -1410,14 +1797,11 @@ mod tests {
     fn test_float_min_value_invalid() {
         let schema = make_schema(vec![("RATE", VarSpec {
             var_type: VarType::Float,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 min_value: Some(0.0),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("RATE", "-0.5")]);
         let errors = validate(&schema, &env);
@@ -1429,14 +1813,11 @@ mod tests {
     fn test_float_max_value_valid() {
         let schema = make_schema(vec![("RATE", VarSpec {
             var_type: VarType::Float,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 max_value: Some(1.0),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("RATE", "0.75")]);
         let errors = validate(&schema, &env);
@@ -1447,14 +1828,11 @@ mod tests {
     fn test_float_max_value_invalid() {
         let schema = make_schema(vec![("RATE", VarSpec {
             var_type: VarType::Float,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 max_value: Some(1.0),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("RATE", "1.5")]);
         let errors = validate(&schema, &env);
@@ -1468,14 +1846,11 @@ mod tests {
     fn test_string_min_length_valid() {
         let schema = make_schema(vec![("API_KEY", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 min_length: Some(8),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("API_KEY", "abcdefghij")]);
         let errors = validate(&schema, &env);
@@ -1486,14 +1861,11 @@ mod tests {
     fn test_string_min_length_invalid() {
         let schema = make_schema(vec![("API_KEY", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 min_length: Some(8),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("API_KEY", "short")]);
         let errors = validate(&schema, &env);
@@ -1505,14 +1877,11 @@ mod tests {
     fn test_string_max_length_valid() {
         let schema = make_schema(vec![("CODE", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 max_length: Some(10),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("CODE", "ABC123")]);
         let errors = validate(&schema, &env);
@@ -1523,14 +1892,11 @@ mod tests {
     fn test_string_max_length_invalid() {
         let schema = make_schema(vec![("CODE", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 max_length: Some(5),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("CODE", "TOOLONG123")]);
         let errors = validate(&schema, &env);
@@ -1544,14 +1910,11 @@ mod tests {
     fn test_string_pattern_valid() {
         let schema = make_schema(vec![("EMAIL", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 pattern: Some(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("EMAIL", "user@example.com")]);
         let errors = validate(&schema, &env);
@@ -1562,14 +1925,11 @@ mod tests {
     fn test_string_pattern_invalid() {
         let schema = make_schema(vec![("EMAIL", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 pattern: Some(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("EMAIL", "not-an-email")]);
         let errors = validate(&schema, &env);
@@ -1581,14 +1941,11 @@ mod tests {
     fn test_string_pattern_simple_valid() {
         let schema = make_schema(vec![("VERSION", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 pattern: Some(r"^v\d+\.\d+\.\d+$".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("VERSION", "v1.2.3")]);
         let errors = validate(&schema, &env);
@@ -1599,14 +1956,11 @@ mod tests {
     fn test_string_pattern_invalid_regex() {
         let schema = make_schema(vec![("FOO", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 pattern: Some(r"[invalid".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("FOO", "bar")]);
         let errors = validate(&schema, &env);
@@ -1620,16 +1974,13 @@ mod tests {
     fn test_string_length_and_pattern_valid() {
         let schema = make_schema(vec![("UUID", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 min_length: Some(36),
                 max_length: Some(36),
                 pattern: Some(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("UUID", "550e8400-e29b-41d4-a716-446655440000")]);
         let errors = validate(&schema, &env);
@@ -1640,18 +1991,371 @@ mod tests {
     fn test_string_multiple_validation_failures() {
         let schema = make_schema(vec![("CODE", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 min_length: Some(10),
                 pattern: Some(r"^[A-Z]+$".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let env = make_env(vec![("CODE", "abc")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 2); // too short AND wrong pattern
+    }
+
+    // UUID type tests
+
+    fn uuid_spec() -> VarSpec {
+        VarSpec {
+            var_type: VarType::Uuid,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_uuid_type_valid() {
+        let schema = make_schema(vec![("SESSION_ID", uuid_spec())]);
+        let env = make_env(vec![("SESSION_ID", "550e8400-e29b-41d4-a716-446655440000")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_uuid_type_valid_uppercase() {
+        let schema = make_schema(vec![("SESSION_ID", uuid_spec())]);
+        let env = make_env(vec![("SESSION_ID", "550E8400-E29B-41D4-A716-446655440000")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_uuid_type_invalid_format() {
+        let schema = make_schema(vec![("SESSION_ID", uuid_spec())]);
+        let env = make_env(vec![("SESSION_ID", "not-a-uuid")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected uuid"));
+    }
+
+    #[test]
+    fn test_uuid_type_invalid_no_dashes() {
+        let schema = make_schema(vec![("SESSION_ID", uuid_spec())]);
+        let env = make_env(vec![("SESSION_ID", "550e8400e29b41d4a716446655440000")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected uuid"));
+    }
+
+    // Email type tests
+
+    fn email_spec() -> VarSpec {
+        VarSpec {
+            var_type: VarType::Email,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_email_type_valid() {
+        let schema = make_schema(vec![("ADMIN_EMAIL", email_spec())]);
+        let env = make_env(vec![("ADMIN_EMAIL", "user@example.com")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_email_type_valid_subdomain() {
+        let schema = make_schema(vec![("ADMIN_EMAIL", email_spec())]);
+        let env = make_env(vec![("ADMIN_EMAIL", "user@mail.example.com")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_email_type_valid_plus() {
+        let schema = make_schema(vec![("ADMIN_EMAIL", email_spec())]);
+        let env = make_env(vec![("ADMIN_EMAIL", "user+tag@example.com")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_email_type_invalid_no_at() {
+        let schema = make_schema(vec![("ADMIN_EMAIL", email_spec())]);
+        let env = make_env(vec![("ADMIN_EMAIL", "userexample.com")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected email"));
+    }
+
+    #[test]
+    fn test_email_type_invalid_no_domain() {
+        let schema = make_schema(vec![("ADMIN_EMAIL", email_spec())]);
+        let env = make_env(vec![("ADMIN_EMAIL", "user@")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected email"));
+    }
+
+    // IPv4 type tests
+
+    fn ipv4_spec() -> VarSpec {
+        VarSpec {
+            var_type: VarType::Ipv4,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_ipv4_type_valid() {
+        let schema = make_schema(vec![("BIND_ADDRESS", ipv4_spec())]);
+        let env = make_env(vec![("BIND_ADDRESS", "192.168.1.1")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_ipv4_type_valid_localhost() {
+        let schema = make_schema(vec![("BIND_ADDRESS", ipv4_spec())]);
+        let env = make_env(vec![("BIND_ADDRESS", "127.0.0.1")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_ipv4_type_valid_all_zeros() {
+        let schema = make_schema(vec![("BIND_ADDRESS", ipv4_spec())]);
+        let env = make_env(vec![("BIND_ADDRESS", "0.0.0.0")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_ipv4_type_valid_max() {
+        let schema = make_schema(vec![("BIND_ADDRESS", ipv4_spec())]);
+        let env = make_env(vec![("BIND_ADDRESS", "255.255.255.255")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_ipv4_type_invalid_octet_too_large() {
+        let schema = make_schema(vec![("BIND_ADDRESS", ipv4_spec())]);
+        let env = make_env(vec![("BIND_ADDRESS", "256.168.1.1")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected ipv4"));
+    }
+
+    #[test]
+    fn test_ipv4_type_invalid_format() {
+        let schema = make_schema(vec![("BIND_ADDRESS", ipv4_spec())]);
+        let env = make_env(vec![("BIND_ADDRESS", "192.168.1")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected ipv4"));
+    }
+
+    #[test]
+    fn test_ipv4_type_invalid_text() {
+        let schema = make_schema(vec![("BIND_ADDRESS", ipv4_spec())]);
+        let env = make_env(vec![("BIND_ADDRESS", "localhost")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected ipv4"));
+    }
+
+    // Suggestions tests
+
+    #[test]
+    fn test_unknown_key_with_suggestion() {
+        let schema = make_schema(vec![
+            ("DATABASE_URL", string_spec(false)),
+            ("PORT", int_spec(false)),
+        ]);
+        let env = make_env(vec![("DATABSE_URL", "test")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("not in schema"));
+        assert!(errors[0].contains("Did you mean"));
+        assert!(errors[0].contains("DATABASE_URL"));
+    }
+
+    #[test]
+    fn test_enum_with_suggestion() {
+        let schema = make_schema(vec![("NODE_ENV", enum_spec(vec!["development", "staging", "production"]))]);
+        let env = make_env(vec![("NODE_ENV", "dev")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected one of"));
+        assert!(errors[0].contains("Did you mean"));
+        assert!(errors[0].contains("development"));
+    }
+
+    // Secret masking tests
+
+    #[test]
+    fn test_is_sensitive_key_password() {
+        assert!(is_sensitive_key("DATABASE_PASSWORD"));
+        assert!(is_sensitive_key("DB_PASSWD"));
+        assert!(is_sensitive_key("user_password"));
+    }
+
+    #[test]
+    fn test_is_sensitive_key_secret() {
+        assert!(is_sensitive_key("JWT_SECRET"));
+        assert!(is_sensitive_key("APP_SECRET"));
+        assert!(is_sensitive_key("client_secret"));
+    }
+
+    #[test]
+    fn test_is_sensitive_key_token() {
+        assert!(is_sensitive_key("AUTH_TOKEN"));
+        assert!(is_sensitive_key("ACCESS_TOKEN"));
+        assert!(is_sensitive_key("BEARER_TOKEN"));
+    }
+
+    #[test]
+    fn test_is_sensitive_key_api_key() {
+        assert!(is_sensitive_key("STRIPE_API_KEY"));
+        assert!(is_sensitive_key("GITHUB_APIKEY"));
+        assert!(is_sensitive_key("AWS_ACCESS_KEY"));
+    }
+
+    #[test]
+    fn test_is_sensitive_key_suffix() {
+        assert!(is_sensitive_key("ENCRYPTION_KEY"));
+        assert!(is_sensitive_key("SIGNING_KEY"));
+        assert!(is_sensitive_key("MY_CUSTOM_TOKEN"));
+        assert!(is_sensitive_key("APP_SECRET"));
+    }
+
+    #[test]
+    fn test_is_sensitive_key_not_sensitive() {
+        assert!(!is_sensitive_key("DATABASE_URL"));
+        assert!(!is_sensitive_key("PORT"));
+        assert!(!is_sensitive_key("NODE_ENV"));
+        assert!(!is_sensitive_key("DEBUG"));
+    }
+
+    #[test]
+    fn test_mask_value_sensitive() {
+        assert_eq!(mask_value("API_KEY", "sk_live_abc123"), "***MASKED***");
+        assert_eq!(mask_value("JWT_SECRET", "mysupersecret"), "***MASKED***");
+        assert_eq!(mask_value("DATABASE_PASSWORD", "hunter2"), "***MASKED***");
+    }
+
+    #[test]
+    fn test_mask_value_not_sensitive() {
+        assert_eq!(mask_value("PORT", "3000"), "3000");
+        assert_eq!(mask_value("NODE_ENV", "development"), "development");
+        assert_eq!(mask_value("DEBUG", "true"), "true");
+    }
+
+    #[test]
+    fn test_secret_masking_in_error() {
+        let schema = make_schema(vec![("API_SECRET", int_spec(true))]);
+        let env = make_env(vec![("API_SECRET", "not_an_int_but_secret")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        // Should NOT contain the actual value
+        assert!(!errors[0].contains("not_an_int_but_secret"));
+        // Should contain the masked indicator
+        assert!(errors[0].contains("***MASKED***"));
+    }
+
+    #[test]
+    fn test_non_secret_shows_value_in_error() {
+        let schema = make_schema(vec![("PORT", int_spec(true))]);
+        let env = make_env(vec![("PORT", "not_a_number")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        // Should contain the actual value since PORT is not sensitive
+        assert!(errors[0].contains("not_a_number"));
+    }
+
+    // Semver type tests
+    fn semver_spec(required: bool) -> VarSpec {
+        VarSpec {
+            var_type: VarType::Semver,
+            required,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_semver_valid_simple() {
+        let schema = make_schema(vec![("VERSION", semver_spec(true))]);
+        let env = make_env(vec![("VERSION", "1.0.0")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_semver_valid_with_prerelease() {
+        let schema = make_schema(vec![("VERSION", semver_spec(true))]);
+        let env = make_env(vec![("VERSION", "2.1.3-beta.1")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_semver_valid_with_build() {
+        let schema = make_schema(vec![("VERSION", semver_spec(true))]);
+        let env = make_env(vec![("VERSION", "1.0.0+build.123")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_semver_valid_with_prerelease_and_build() {
+        let schema = make_schema(vec![("VERSION", semver_spec(true))]);
+        let env = make_env(vec![("VERSION", "3.2.1-alpha.2+build.456")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_semver_valid_zero_version() {
+        let schema = make_schema(vec![("VERSION", semver_spec(true))]);
+        let env = make_env(vec![("VERSION", "0.0.0")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_semver_invalid_missing_patch() {
+        let schema = make_schema(vec![("VERSION", semver_spec(true))]);
+        let env = make_env(vec![("VERSION", "1.0")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected semver"));
+    }
+
+    #[test]
+    fn test_semver_invalid_text() {
+        let schema = make_schema(vec![("VERSION", semver_spec(true))]);
+        let env = make_env(vec![("VERSION", "latest")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected semver"));
+    }
+
+    #[test]
+    fn test_semver_invalid_v_prefix() {
+        let schema = make_schema(vec![("VERSION", semver_spec(true))]);
+        let env = make_env(vec![("VERSION", "v1.0.0")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected semver"));
+    }
+
+    #[test]
+    fn test_semver_invalid_extra_parts() {
+        let schema = make_schema(vec![("VERSION", semver_spec(true))]);
+        let env = make_env(vec![("VERSION", "1.0.0.0")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected semver"));
     }
 }

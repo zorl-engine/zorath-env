@@ -82,6 +82,20 @@ Validates `.env` against `env.schema.json`.
 ```bash
 zenv check                       # Basic validation
 zenv check --detect-secrets      # Also scan for potential secrets
+zenv check --format json         # JSON output for CI/CD
+```
+
+**JSON Output** (`--format json`):
+
+Machine-readable output for CI/CD pipelines:
+```json
+{
+  "valid": true,
+  "errors": [],
+  "warnings": [],
+  "secret_warnings": [],
+  "stats": { "total_variables": 10, "schema_variables": 10 }
+}
 ```
 
 **Secret Detection** (`--detect-secrets`):
@@ -166,6 +180,7 @@ Compares two `.env` files and shows differences.
 ```bash
 zenv diff .env.development .env.production
 zenv diff .env.dev .env.prod --schema env.schema.json
+zenv diff .env.dev .env.prod --format json  # Machine-readable output
 ```
 
 Shows:
@@ -173,6 +188,82 @@ Shows:
 - Variables only in second file
 - Variables with different values
 - Optional schema compliance check for both files
+
+### `zenv fix`
+
+Auto-fix common `.env` issues with backup.
+
+```bash
+zenv fix                          # Fix issues, create backup
+zenv fix --dry-run                # Preview fixes without applying
+zenv fix --remove-unknown         # Also remove keys not in schema
+```
+
+**What it fixes:**
+- Missing optional variables (adds with schema defaults)
+- Unknown keys (with `--remove-unknown`)
+
+**What it reports but doesn't fix:**
+- Invalid types (needs human input)
+- Missing required variables (needs human input)
+
+### `zenv scan`
+
+Scan source code for environment variable usage.
+
+```bash
+zenv scan                         # Scan current directory
+zenv scan --path ./src            # Scan specific directory
+zenv scan --show-unused           # Show vars in schema but not in code
+zenv scan --show-paths            # Show file:line for all found vars
+zenv scan --format json           # JSON output for CI
+```
+
+**Supported languages:** JavaScript/TypeScript, Python, Go, Rust, PHP, Ruby, Java, C#, Kotlin
+
+### `zenv cache`
+
+Manage remote schema cache.
+
+```bash
+zenv cache list                   # Show cached schemas
+zenv cache clear                  # Clear all cached schemas
+zenv cache clear https://...      # Clear specific cached schema
+zenv cache path                   # Show cache directory location
+```
+
+### `zenv export`
+
+Export `.env` to various formats for deployment.
+
+```bash
+zenv export .env --format shell       # Shell script (export FOO="bar")
+zenv export .env --format docker      # Dockerfile (ENV FOO=bar)
+zenv export .env --format k8s         # Kubernetes ConfigMap YAML
+zenv export .env --format json        # JSON object
+zenv export .env --format systemd     # systemd Environment directives
+zenv export .env --format dotenv      # Standard .env format
+
+zenv export .env --schema s.json      # Only export vars in schema
+zenv export .env -f shell -o setup.sh # Write to file
+```
+
+### `zenv doctor`
+
+Run health check and diagnostics.
+
+```bash
+zenv doctor
+```
+
+Checks:
+- Schema file exists and is valid
+- .env file exists and parses correctly
+- Config file (.zenvrc) is valid JSON
+- Remote schema cache is accessible
+- Validation passes (if schema and env exist)
+
+Output shows `[OK]`, `[WARN]`, or `[ERROR]` with actionable suggestions.
 
 ## Files
 
@@ -200,11 +291,13 @@ zenv docs  --schema env.schema.json
 zenv init  --example .env.example --schema env.schema.json
 ```
 
-## Schema format (v0.2)
+## Schema format (v0.3)
+
+Schemas can be written in **JSON** or **YAML** (auto-detected by file extension).
+
+### JSON schema
 
 `env.schema.json` is a JSON object where each key is an env var name.
-
-Example:
 
 ```json
 {
@@ -221,26 +314,58 @@ Example:
     "description": "Runtime environment"
   },
   "PORT": {
-    "type": "int",
+    "type": "port",
     "default": 3000,
     "required": false,
-    "description": "HTTP port",
-    "validate": {
-      "min": 1024,
-      "max": 65535
-    }
+    "description": "HTTP port"
   }
 }
 ```
 
-Supported types:
+### YAML schema
 
-* `string`
-* `int`
-* `float`
-* `bool`
-* `url`
-* `enum`
+Use `.yaml` or `.yml` extension for YAML schemas:
+
+```yaml
+# env.schema.yaml - more readable, supports comments
+DATABASE_URL:
+  type: url
+  required: true
+  description: Primary database connection string
+
+NODE_ENV:
+  type: enum
+  values:
+    - development
+    - staging
+    - production
+  default: development
+  description: Runtime environment
+
+SERVER_PORT:
+  type: port
+  default: 3000
+  description: HTTP port
+```
+
+### Supported types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `string` | Any string value | `"hello"` |
+| `int` | Integer number | `42` |
+| `float` | Floating point number | `3.14` |
+| `bool` | Boolean (true/false/1/0/yes/no) | `true` |
+| `url` | Valid URL | `https://example.com` |
+| `enum` | One of specified values | `"development"` |
+| `uuid` | UUID format | `550e8400-e29b-41d4-a716-446655440000` |
+| `email` | Email address | `user@example.com` |
+| `ipv4` | IPv4 address | `192.168.1.1` |
+| `ipv6` | IPv6 address | `2001:0db8:85a3::8a2e:0370:7334` |
+| `semver` | Semantic version | `1.2.3-beta.1` |
+| `port` | Port number (1-65535) | `8080` |
+| `date` | ISO 8601 date | `2024-06-15` |
+| `hostname` | RFC 1123 hostname | `api.example.com` |
 
 ### Validation rules
 
@@ -253,6 +378,27 @@ Add constraints with the `validate` field:
   "API_KEY": { "type": "string", "validate": { "min_length": 32, "pattern": "^sk_" } }
 }
 ```
+
+### Severity levels
+
+Mark non-critical validations as warnings (don't cause exit code 1):
+
+```json
+{
+  "DEBUG": {
+    "type": "bool",
+    "severity": "warning",
+    "description": "Enable debug mode (optional, won't fail CI)"
+  },
+  "DATABASE_URL": {
+    "type": "url",
+    "required": true,
+    "severity": "error"
+  }
+}
+```
+
+Default severity is `"error"`. Warnings are reported but don't fail validation.
 
 ### Schema inheritance
 
@@ -287,6 +433,29 @@ zenv check --schema https://example.com/schema.json --no-cache
 - Automatic caching with 1-hour TTL
 - `--no-cache` flag to bypass cache
 - Remote schemas can extend other schemas (URLs resolved relative to parent)
+
+#### Remote schema security
+
+**Hash verification** - Verify schema integrity with SHA-256:
+
+```bash
+# Verify schema hasn't been tampered with
+zenv check --schema https://example.com/schema.json --verify-hash abc123def456...
+
+# Hash prefix matching supported (first 16+ chars)
+zenv check --schema https://example.com/schema.json --verify-hash abc123def456
+```
+
+**Custom CA certificates** - For enterprise internal servers:
+
+```bash
+zenv check --schema https://internal.corp/schema.json --ca-cert /path/to/ca.pem
+```
+
+**Rate limiting** - Prevents excessive fetching:
+- Default: 60 seconds between fetches per URL
+- Bypassed by `--no-cache`
+- Configure in `.zenvrc`: `"rate_limit_seconds": 120`
 
 ## .env features
 

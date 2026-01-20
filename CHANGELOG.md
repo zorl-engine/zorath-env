@@ -2,6 +2,66 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.5] - 2026-01-19
+
+### Added
+- **YAML schema format support**: Use `.yaml` or `.yml` schemas alongside JSON
+  - Auto-detection by file extension
+  - Mixed format inheritance (YAML can extend JSON and vice versa)
+  - YAML supports comments for better documentation
+- **4 new validation types**:
+  - `port`: Validates port numbers (1-65535)
+  - `ipv6`: Validates IPv6 addresses
+  - `date`: Validates ISO 8601 dates (YYYY-MM-DD)
+  - `hostname`: Validates RFC 1123 hostnames
+- **`zenv check --format json`**: JSON output for CI/CD pipelines
+  - Structured errors, warnings, and secret warnings
+  - Machine-readable validation results
+- **`zenv export` command**: Export .env to multiple formats
+  - `--format shell` (export FOO="bar")
+  - `--format docker` (ENV FOO=bar)
+  - `--format k8s` (Kubernetes ConfigMap YAML)
+  - `--format json` (JSON object)
+  - `--format systemd` (Environment=FOO=bar)
+  - `--format dotenv` (standard .env format)
+  - `--schema` flag to filter to schema-defined variables
+- **`zenv doctor` command**: Health check and diagnostics
+  - Checks schema file exists and parses
+  - Checks .env file exists and parses
+  - Checks config file (.zenvrc) validity
+  - Checks remote schema cache
+  - Runs validation test if both files exist
+  - Actionable suggestions for each issue
+- **Severity levels**: `"severity": "warning"` in schema
+  - Warnings don't cause exit code 1
+  - Separate warnings from errors in output
+  - JSON output includes errors and warnings arrays
+- `zenv fix` command: Auto-fix common .env issues
+  - Creates backup before modifying
+  - `--remove-unknown` flag to remove undefined keys
+  - `--dry-run` to preview changes
+- `zenv scan` command: Scan source code for env var usage
+  - Supports 9 languages (JS/TS, Python, Go, Rust, PHP, Ruby, Java, C#, Kotlin)
+  - `--show-unused` to find vars in schema but not in code
+  - `--show-paths` to display file:line for all found variables
+  - `--format json` for CI integration
+- `zenv cache` command: Manage remote schema cache
+  - `cache list` to show cached schemas
+  - `cache clear` to remove cached entries
+  - `cache path` to show cache directory
+- `no_color` config option: Disable colored output (respects `NO_COLOR` env var)
+- **Remote schema security features**:
+  - `--verify-hash` flag for SHA-256 content verification
+  - `--ca-cert` flag for custom CA certificates (PEM format)
+  - Rate limiting (60s default, configurable via `.zenvrc`)
+  - Hash prefix matching (16+ chars) for convenience
+- 10 new tests (341 total)
+
+### Changed
+- Schema error messages now indicate format (JSON vs YAML)
+- `save_schema` auto-detects output format from file extension
+- Check command now separates errors (exit 1) from warnings (no exit)
+
 ## [0.3.4] - 2026-01-18
 
 ### Added

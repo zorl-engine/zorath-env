@@ -1,10 +1,53 @@
 use std::path::Path;
 
 use crate::envfile;
+use crate::presets;
 use crate::schema::{self, Schema, VarSpec, VarType};
 
-pub fn run(example_path: &str, schema_path: &str) -> Result<(), String> {
-    if !Path::new(example_path).exists() {
+pub fn run(example_path: &str, schema_path: &str, preset: Option<&str>) -> Result<(), String> {
+    // Start with preset schema if provided
+    let mut schema_map: Schema = if let Some(preset_name) = preset {
+        match presets::get_preset(preset_name) {
+            Some(preset_schema) => {
+                println!("zenv: using '{}' preset", preset_name);
+                preset_schema
+            }
+            None => {
+                return Err(format!(
+                    "unknown preset '{}'. Available: {}",
+                    preset_name,
+                    presets::list_presets().join(", ")
+                ));
+            }
+        }
+    } else {
+        Schema::new()
+    };
+
+    // If example file exists, merge inferred types (inferred takes precedence for existing keys)
+    if Path::new(example_path).exists() {
+        let env = envfile::parse_env_file(example_path).map_err(|e| e.to_string())?;
+
+        for (k, v) in env {
+            // Only add if not already in preset
+            schema_map.entry(k.clone()).or_insert_with(|| {
+                let inferred = infer_type(&v);
+                let description = infer_description(&k, &inferred);
+
+                VarSpec {
+                    var_type: inferred,
+                    required: true,
+                    description: Some(description),
+                    values: None,
+                    default: None,
+                    validate: None,
+                    secret: None,
+                    ..Default::default()
+                }
+            });
+        }
+    } else if preset.is_none() {
+        // No preset and no example file
         return Err(format!("example file not found: {example_path}"));
     }
 
@@ -12,26 +55,8 @@ pub fn run(example_path: &str, schema_path: &str) -> Result<(), String> {
         eprintln!("warning: overwriting existing {schema_path}");
     }
 
-    let env = envfile::parse_env_file(example_path).map_err(|e| e.to_string())?;
-
-    let mut schema_map: Schema = Schema::new();
-
-    for (k, v) in env {
-        let inferred = infer_type(&v);
-        let description = infer_description(&k, &inferred);
-
-        schema_map.insert(k, VarSpec {
-            var_type: inferred,
-            required: true,
-            description: Some(description),
-            values: None,
-            default: None,
-            validate: None,
-        });
-    }
-
     schema::save_schema(schema_path, &schema_map).map_err(|e| e.to_string())?;
-    println!("zenv: wrote schema to {schema_path}");
+    println!("zenv: wrote schema to {schema_path} ({} variables)", schema_map.len());
     Ok(())
 }
 

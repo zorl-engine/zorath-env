@@ -1,7 +1,18 @@
 use crate::schema::{self, LoadOptions, Schema, VarType};
 
-pub fn run(schema_path: &str, format: &str, no_cache: bool) -> Result<(), String> {
-    let options = LoadOptions { no_cache };
+pub fn run(
+    schema_path: &str,
+    format: &str,
+    no_cache: bool,
+    verify_hash: Option<&str>,
+    ca_cert: Option<&str>,
+) -> Result<(), String> {
+    let options = LoadOptions {
+        no_cache,
+        verify_hash: verify_hash.map(|s| s.to_string()),
+        ca_cert: ca_cert.map(|s| s.to_string()),
+        rate_limit_seconds: None,
+    };
     let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
 
     let output = match format {
@@ -35,6 +46,14 @@ pub fn generate_markdown(schema: &Schema) -> String {
             VarType::Bool => "bool",
             VarType::Url => "url",
             VarType::Enum => "enum",
+            VarType::Uuid => "uuid",
+            VarType::Email => "email",
+            VarType::Ipv4 => "ipv4",
+            VarType::Ipv6 => "ipv6",
+            VarType::Semver => "semver",
+            VarType::Port => "port",
+            VarType::Date => "date",
+            VarType::Hostname => "hostname",
         };
 
         output.push_str(&format!("## `{}`\n", key));
@@ -105,11 +124,7 @@ mod tests {
     fn test_variable_header_format() {
         let schema = make_schema(vec![("FOO", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         })]);
         let output = generate_markdown(&schema);
         assert!(output.contains("## `FOO`"));
@@ -119,11 +134,7 @@ mod tests {
     fn test_type_displayed() {
         let schema = make_schema(vec![("PORT", VarSpec {
             var_type: VarType::Int,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         })]);
         let output = generate_markdown(&schema);
         assert!(output.contains("- Type: `int`"));
@@ -145,8 +156,7 @@ mod tests {
                 required: false,
                 description: None,
                 values: None,
-                default: None,
-                validate: None,
+                ..Default::default()
             })]);
             let output = generate_markdown(&schema);
             assert!(output.contains(&format!("- Type: `{}`", expected)));
@@ -160,8 +170,7 @@ mod tests {
             required: true,
             description: None,
             values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         })]);
         let output = generate_markdown(&schema);
         assert!(output.contains("- Required: `true`"));
@@ -171,11 +180,7 @@ mod tests {
     fn test_required_false() {
         let schema = make_schema(vec![("FOO", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         })]);
         let output = generate_markdown(&schema);
         assert!(output.contains("- Required: `false`"));
@@ -185,11 +190,8 @@ mod tests {
     fn test_default_displayed() {
         let schema = make_schema(vec![("PORT", VarSpec {
             var_type: VarType::Int,
-            required: false,
-            description: None,
-            values: None,
             default: Some(serde_json::json!(3000)),
-            validate: None,
+            ..Default::default()
         })]);
         let output = generate_markdown(&schema);
         assert!(output.contains("- Default: `3000`"));
@@ -202,8 +204,7 @@ mod tests {
             required: false,
             description: None,
             values: Some(vec!["dev".into(), "prod".into()]),
-            default: None,
-            validate: None,
+            ..Default::default()
         })]);
         let output = generate_markdown(&schema);
         assert!(output.contains("- Allowed: `dev, prod`"));
@@ -216,8 +217,7 @@ mod tests {
             required: true,
             description: Some("Your API key for authentication".into()),
             values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         })]);
         let output = generate_markdown(&schema);
         assert!(output.contains("Your API key for authentication"));
@@ -226,9 +226,9 @@ mod tests {
     #[test]
     fn test_keys_sorted_alphabetically() {
         let schema = make_schema(vec![
-            ("ZEBRA", VarSpec { var_type: VarType::String, required: false, description: None, values: None, default: None, validate: None }),
-            ("ALPHA", VarSpec { var_type: VarType::String, required: false, description: None, values: None, default: None, validate: None }),
-            ("MIDDLE", VarSpec { var_type: VarType::String, required: false, description: None, values: None, default: None, validate: None }),
+            ("ZEBRA", VarSpec { var_type: VarType::String, ..Default::default() }),
+            ("ALPHA", VarSpec { var_type: VarType::String, ..Default::default() }),
+            ("MIDDLE", VarSpec { var_type: VarType::String, ..Default::default() }),
         ]);
         let output = generate_markdown(&schema);
         let alpha_pos = output.find("## `ALPHA`").unwrap();
@@ -251,9 +251,8 @@ mod tests {
             var_type: VarType::Int,
             required: true,
             description: Some("Server port".into()),
-            values: None,
             default: Some(serde_json::json!(3000)),
-            validate: None,
+            ..Default::default()
         })]);
         let output = generate_json(&schema).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
@@ -267,8 +266,7 @@ mod tests {
             required: true,
             description: Some("API key".into()),
             values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         })]);
         let output = generate_json(&schema).unwrap();
         assert!(output.contains("\"type\""));
@@ -289,14 +287,12 @@ mod tests {
         let schema = make_schema(vec![("PORT", VarSpec {
             var_type: VarType::Int,
             required: true,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 min: Some(1024),
                 max: Some(65535),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let output = generate_markdown(&schema);
         assert!(output.contains("- Constraints: `min: 1024, max: 65535`"));
@@ -308,14 +304,12 @@ mod tests {
         let schema = make_schema(vec![("API_KEY", VarSpec {
             var_type: VarType::String,
             required: true,
-            description: None,
-            values: None,
-            default: None,
             validate: Some(ValidationRule {
                 min_length: Some(32),
                 pattern: Some("^sk_".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         })]);
         let output = generate_markdown(&schema);
         assert!(output.contains("min_length: 32"));
@@ -326,11 +320,7 @@ mod tests {
     fn test_no_constraints_when_validate_none() {
         let schema = make_schema(vec![("FOO", VarSpec {
             var_type: VarType::String,
-            required: false,
-            description: None,
-            values: None,
-            default: None,
-            validate: None,
+            ..Default::default()
         })]);
         let output = generate_markdown(&schema);
         assert!(!output.contains("Constraints"));
