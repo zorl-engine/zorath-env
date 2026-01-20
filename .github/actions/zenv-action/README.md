@@ -95,5 +95,5 @@ jobs:
   with:
     schema: env.schema.json
     env-file: .env
-    version: '0.3.6'
+    version: '0.3.7'
 ```
