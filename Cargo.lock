@@ -1118,7 +1118,7 @@ dependencies = [
  "rustls-pki-types",
  "ureq-proto",
  "utf-8",
- "webpki-roots 1.0.5",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1192,15 +1192,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0562428422c63773dad2c345a1882263bbf4d65cf3f42e90921f787ef5ad58e7"
 dependencies = [
  "wit-bindgen",
-]
-
-[[package]]
-name = "webpki-roots"
-version = "0.26.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
-dependencies = [
- "webpki-roots 1.0.5",
 ]
 
 [[package]]
@@ -1486,7 +1477,7 @@ checksum = "2fc5a66a20078bf1251bde995aa2fdcc4b800c70b5d92dd2c62abc5c60f679f8"
 
 [[package]]
 name = "zorath-env"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1504,5 +1495,5 @@ dependencies = [
  "thiserror",
  "ureq",
  "url",
- "webpki-roots 0.26.11",
+ "webpki-roots",
 ]
