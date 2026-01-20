@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.6] - 2026-01-19
+
+### Fixed
+- GitHub Action quoting bug causing test failures
+- `--allow-missing-env` flag now correctly skips validation when env file is missing
+- Clippy warnings with allow annotations
+
 ## [0.3.5] - 2026-01-19
 
 ### Added
