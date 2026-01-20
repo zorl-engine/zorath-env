@@ -15,19 +15,29 @@ pub enum ExportFormat {
     Dotenv,     // FOO=bar (standard .env)
 }
 
-impl ExportFormat {
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for ExportFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "shell" | "bash" | "sh" => Some(ExportFormat::Shell),
-            "docker" | "dockerfile" => Some(ExportFormat::Docker),
-            "k8s" | "kubernetes" | "configmap" => Some(ExportFormat::K8s),
-            "json" => Some(ExportFormat::Json),
-            "systemd" | "service" => Some(ExportFormat::Systemd),
-            "dotenv" | "env" => Some(ExportFormat::Dotenv),
-            _ => None,
+            "shell" | "bash" | "sh" => Ok(ExportFormat::Shell),
+            "docker" | "dockerfile" => Ok(ExportFormat::Docker),
+            "k8s" | "kubernetes" | "configmap" => Ok(ExportFormat::K8s),
+            "json" => Ok(ExportFormat::Json),
+            "systemd" | "service" => Ok(ExportFormat::Systemd),
+            "dotenv" | "env" => Ok(ExportFormat::Dotenv),
+            _ => Err(format!("Unknown format '{}'. Valid: shell, docker, k8s, json, systemd, dotenv", s)),
         }
     }
+}
 
+impl std::fmt::Display for ExportFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+impl ExportFormat {
     pub fn name(&self) -> &'static str {
         match self {
             ExportFormat::Shell => "shell",
@@ -83,8 +93,7 @@ pub fn run(
     ca_cert: Option<&str>,
 ) -> Result<(), String> {
     // Parse format
-    let export_format = ExportFormat::from_str(format)
-        .ok_or_else(|| format!("Unknown format '{}'. Valid formats: shell, docker, k8s, json, systemd, dotenv", format))?;
+    let export_format: ExportFormat = format.parse()?;
 
     // Load and parse env file
     let content = fs::read_to_string(env_path)
@@ -329,19 +338,19 @@ mod tests {
 
     #[test]
     fn test_export_format_from_str() {
-        assert_eq!(ExportFormat::from_str("shell"), Some(ExportFormat::Shell));
-        assert_eq!(ExportFormat::from_str("bash"), Some(ExportFormat::Shell));
-        assert_eq!(ExportFormat::from_str("docker"), Some(ExportFormat::Docker));
-        assert_eq!(ExportFormat::from_str("dockerfile"), Some(ExportFormat::Docker));
-        assert_eq!(ExportFormat::from_str("k8s"), Some(ExportFormat::K8s));
-        assert_eq!(ExportFormat::from_str("kubernetes"), Some(ExportFormat::K8s));
-        assert_eq!(ExportFormat::from_str("configmap"), Some(ExportFormat::K8s));
-        assert_eq!(ExportFormat::from_str("json"), Some(ExportFormat::Json));
-        assert_eq!(ExportFormat::from_str("systemd"), Some(ExportFormat::Systemd));
-        assert_eq!(ExportFormat::from_str("service"), Some(ExportFormat::Systemd));
-        assert_eq!(ExportFormat::from_str("dotenv"), Some(ExportFormat::Dotenv));
-        assert_eq!(ExportFormat::from_str("env"), Some(ExportFormat::Dotenv));
-        assert_eq!(ExportFormat::from_str("invalid"), None);
+        assert_eq!("shell".parse::<ExportFormat>(), Ok(ExportFormat::Shell));
+        assert_eq!("bash".parse::<ExportFormat>(), Ok(ExportFormat::Shell));
+        assert_eq!("docker".parse::<ExportFormat>(), Ok(ExportFormat::Docker));
+        assert_eq!("dockerfile".parse::<ExportFormat>(), Ok(ExportFormat::Docker));
+        assert_eq!("k8s".parse::<ExportFormat>(), Ok(ExportFormat::K8s));
+        assert_eq!("kubernetes".parse::<ExportFormat>(), Ok(ExportFormat::K8s));
+        assert_eq!("configmap".parse::<ExportFormat>(), Ok(ExportFormat::K8s));
+        assert_eq!("json".parse::<ExportFormat>(), Ok(ExportFormat::Json));
+        assert_eq!("systemd".parse::<ExportFormat>(), Ok(ExportFormat::Systemd));
+        assert_eq!("service".parse::<ExportFormat>(), Ok(ExportFormat::Systemd));
+        assert_eq!("dotenv".parse::<ExportFormat>(), Ok(ExportFormat::Dotenv));
+        assert_eq!("env".parse::<ExportFormat>(), Ok(ExportFormat::Dotenv));
+        assert!("invalid".parse::<ExportFormat>().is_err());
     }
 
     #[test]
