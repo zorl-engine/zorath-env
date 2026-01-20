@@ -122,7 +122,7 @@ runs:
         # Build command with proper quoting
         CMD="zenv check --schema \"${{ inputs.schema }}\" --env \"${{ inputs.env-file }}\""
         if [ "${{ inputs.allow-missing-env }}" = "true" ]; then
-          CMD="$CMD --allow-missing-env"
+          CMD="$CMD --allow-missing-env=true"
         fi
 
         # Run validation and capture output
