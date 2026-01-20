@@ -12,7 +12,7 @@
 
 **Built by Zorath -- infrastructure for builders.**
 
-A tiny, fast CLI that makes `.env` sane.
+A fast, zero-dependency CLI that makes `.env` sane.
 
 `zenv` validates environment variables from a schema, generates docs, and helps keep config consistent across dev/staging/prod.
 

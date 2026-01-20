@@ -8,7 +8,7 @@
 
 ## Test Summary
 
-zenv was tested on production codebases and passed all tests. All 12 commands, 28 advertised features, and library APIs verified working. **370 total tests** (341 unit + 29 integration).
+zenv was tested on production codebases and passed all tests. All 13 commands, 28 advertised features, and library APIs verified working. **380 total tests** (351 unit + 29 integration).
 
 ---
 
@@ -40,9 +40,11 @@ Tested on production schema with 72 variables (database, cache, payments, email 
 | `zenv cache clear` | PASS | Cleared schema cache |
 | `zenv completions bash` | PASS | Valid bash completion script |
 | `zenv completions powershell` | PASS | Valid PowerShell completion script |
-| `zenv version` | PASS | Shows `zenv v0.3.6` |
+| `zenv version` | PASS | Shows `zenv v0.3.7` |
 | `zenv version --check-update` | PASS | Reports "latest version" with changelog links |
-| `zenv --help` | PASS | Shows all 10 commands |
+| `zenv template --list` | PASS | Lists 3 available templates (github, gitlab, circleci) |
+| `zenv template github` | PASS | Generates GitHub Actions workflow |
+| `zenv --help` | PASS | Shows all 13 commands |
 
 **Schema complexity:** 72 variables including URLs, strings, bools, ints, and enums with defaults and validation rules.
 
@@ -83,7 +85,7 @@ All advertised features were individually tested and verified:
 
 ### Unit Test Coverage
 
-**v0.3.7** includes 341 unit tests covering all core functionality:
+**v0.3.7** includes 351 unit tests covering all core functionality:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
@@ -823,6 +825,7 @@ $ zenv docs --schema child.schema.json
 | `zenv scan` | Working |
 | `zenv scan --show-unused` | Working |
 | `zenv cache` | Working |
+| `zenv template` | Working |
 | Remote schema (`--schema https://...`) | Working |
 | `--no-cache` flag | Working |
 | Type validation (14 types) | Working |
@@ -872,7 +875,7 @@ $ zenv docs --schema child.schema.json
 
 ## Conclusion
 
-zenv v0.3.7 adds clean library APIs for embedding (validate_files, export_to_string, generate functions) and 29 integration tests for comprehensive coverage. v0.3.6 included CI bug fixes, webpki-roots 1.0 update, and improved GitHub Action reliability. v0.3.5 added 8 new validation types (uuid, email, ipv4, ipv6, semver, port, date, hostname), YAML schema format, severity levels (warning vs error), JSON output for check command, export to 6 formats (shell/docker/k8s/json/systemd/dotenv), doctor health check command, "Did You Mean?" suggestions, secret masking, config file support (.zenvrc), 6 framework presets, auto-fix command, code scanning (9 languages), and cache management. v0.3.4 added watch mode with delta detection. v0.3.3 added remote schema support. v0.3.2 added secret detection and diff command. v0.3.0 introduced shell completions, example command, and GitHub Action. **370 tests** (341 unit + 29 integration) and 40 features verified. Ready for production use.
+zenv v0.3.7 adds clean library APIs for embedding (validate_files, export_to_string, generate functions) and 29 integration tests for comprehensive coverage. v0.3.6 included CI bug fixes, webpki-roots 1.0 update, and improved GitHub Action reliability. v0.3.5 added 8 new validation types (uuid, email, ipv4, ipv6, semver, port, date, hostname), YAML schema format, severity levels (warning vs error), JSON output for check command, export to 6 formats (shell/docker/k8s/json/systemd/dotenv), doctor health check command, "Did You Mean?" suggestions, secret masking, config file support (.zenvrc), 6 framework presets, auto-fix command, code scanning (9 languages), and cache management. v0.3.4 added watch mode with delta detection. v0.3.3 added remote schema support. v0.3.2 added secret detection and diff command. v0.3.0 introduced shell completions, example command, and GitHub Action. **380 tests** (351 unit + 29 integration) and 40 features verified. Ready for production use.
 
 ---
 
