@@ -19,6 +19,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build zenv from source
+        run: |
+          cargo build --release
+          mkdir -p ~/.local/bin
+          cp target/release/zenv ~/.local/bin/
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Verify zenv
+        run: ~/.local/bin/zenv version
+
       - name: Setup test files
         run: |
           cp examples/.env.example .env
@@ -45,6 +58,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build zenv from source
+        run: |
+          cargo build --release
+          mkdir -p ~/.local/bin
+          cp target/release/zenv ~/.local/bin/
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Verify zenv
+        run: ~/.local/bin/zenv version
 
       - name: Setup test files
         run: |
@@ -75,6 +101,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build zenv from source
+        run: |
+          cargo build --release
+          mkdir -p ~/.local/bin
+          cp target/release/zenv ~/.local/bin/
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Verify zenv
+        run: ~/.local/bin/zenv version
 
       - name: Setup test files
         run: |
