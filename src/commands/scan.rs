@@ -42,6 +42,7 @@ struct ScanResults {
 }
 
 /// Run the scan command
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     path: &str,
     schema_path: &str,

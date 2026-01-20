@@ -27,6 +27,7 @@ pub fn levenshtein_distance(a: &str, b: &str) -> usize {
     }
 
     // Initialize first row
+    #[allow(clippy::needless_range_loop)]
     for j in 0..=b_len {
         matrix[0][j] = j;
     }

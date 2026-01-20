@@ -270,6 +270,7 @@ fn missing_env_error(primary: &str) -> String {
     msg
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     env_path: &str,
     schema_path: &str,
@@ -292,6 +293,7 @@ pub fn run(
 }
 
 /// Run validation once and exit
+#[allow(clippy::too_many_arguments)]
 fn run_once(
     env_path: &str,
     schema_path: &str,
