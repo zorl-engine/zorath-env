@@ -1,5 +1,25 @@
 use crate::schema::{self, LoadOptions, Schema, VarType};
 
+/// Generate documentation from a Schema (library function)
+///
+/// This is the unified library function that generates documentation
+/// in the specified format. No file I/O.
+///
+/// # Arguments
+/// * `schema` - The loaded Schema to document
+/// * `format` - Output format: "markdown", "md", or "json"
+///
+/// # Returns
+/// The generated documentation as a String, or an error for unknown format
+pub fn generate(schema: &Schema, format: &str) -> Result<String, String> {
+    match format {
+        "markdown" | "md" => Ok(generate_markdown(schema)),
+        "json" => generate_json(schema),
+        _ => Err(format!("unknown format '{}'. Use 'markdown' or 'json'", format)),
+    }
+}
+
+/// Run the docs command (CLI function)
 pub fn run(
     schema_path: &str,
     format: &str,
@@ -15,11 +35,8 @@ pub fn run(
     };
     let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
 
-    let output = match format {
-        "markdown" | "md" => generate_markdown(&schema),
-        "json" => generate_json(&schema)?,
-        _ => return Err(format!("unknown format '{}'. Use 'markdown' or 'json'", format)),
-    };
+    // Use the library function
+    let output = generate(&schema, format)?;
 
     print!("{}", output);
     Ok(())

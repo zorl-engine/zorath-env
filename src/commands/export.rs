@@ -28,7 +28,6 @@ impl ExportFormat {
         }
     }
 
-    #[allow(dead_code)]
     pub fn name(&self) -> &'static str {
         match self {
             ExportFormat::Shell => "shell",
@@ -38,6 +37,39 @@ impl ExportFormat {
             ExportFormat::Systemd => "systemd",
             ExportFormat::Dotenv => "dotenv",
         }
+    }
+}
+
+/// Export environment variables to a string (library function)
+///
+/// This is the pure library function that takes an environment HashMap
+/// and returns the exported content as a String. No file I/O.
+///
+/// # Arguments
+/// * `env_map` - HashMap of environment variable key-value pairs
+/// * `format` - Export format (use ExportFormat::from_str to parse)
+///
+/// # Returns
+/// The exported content as a String, or an error message
+///
+/// # Example
+/// ```ignore
+/// let mut env = HashMap::new();
+/// env.insert("PORT".to_string(), "3000".to_string());
+/// let output = export_to_string(&env, ExportFormat::Shell)?;
+/// ```
+pub fn export_to_string(env_map: &HashMap<String, String>, format: ExportFormat) -> Result<String, String> {
+    // Sort keys for consistent output
+    let mut keys: Vec<&String> = env_map.keys().collect();
+    keys.sort();
+
+    match format {
+        ExportFormat::Shell => export_shell(&keys, env_map),
+        ExportFormat::Docker => export_docker(&keys, env_map),
+        ExportFormat::K8s => export_k8s(&keys, env_map),
+        ExportFormat::Json => export_json(&keys, env_map),
+        ExportFormat::Systemd => export_systemd(&keys, env_map),
+        ExportFormat::Dotenv => export_dotenv(&keys, env_map),
     }
 }
 

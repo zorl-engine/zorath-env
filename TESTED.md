@@ -1,6 +1,6 @@
 # zenv - Tested and Verified
 
-**Version:** 0.3.6
+**Version:** 0.3.7
 **Status:** Verified Working
 **Test Date:** January 20, 2026
 
@@ -8,7 +8,7 @@
 
 ## Test Summary
 
-zenv was tested on a production codebase (72 environment variables, 493 source files) and passed all tests. All 10 commands and 28 advertised features verified working.
+zenv was tested on production codebases and passed all tests. All 12 commands, 28 advertised features, and library APIs verified working. **370 total tests** (341 unit + 29 integration).
 
 ---
 
@@ -83,31 +83,82 @@ All advertised features were individually tested and verified:
 
 ### Unit Test Coverage
 
-**v0.3.6** includes 341 unit tests covering all core functionality:
+**v0.3.7** includes 341 unit tests covering all core functionality:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| `envfile.rs` | 39 | Parser, multiline, escapes, variable interpolation, duplicate key detection |
-| `schema.rs` | 20 | Type parsing, serialization, inheritance, error handling |
-| `secrets.rs` | 13 | Secret detection patterns, high-entropy strings, URL passwords, whitelist |
-| `remote.rs` | 4 | URL detection, HTTP rejection, cache filename, URL resolution |
-| `config.rs` | 9 | Config loading, fallbacks, JSON parsing |
-| `suggestions.rs` | 15 | Levenshtein distance, variable/enum suggestions |
-| `presets.rs` | 10 | Framework presets (nextjs, rails, django, fastapi, express, laravel) |
-| `commands/check.rs` | 85 | Type validations (10 types), validation rules, secret masking, suggestions |
-| `commands/diff.rs` | 10 | File comparison, truncation, schema compliance, JSON output |
-| `commands/init.rs` | 33 | Type inference, smart description inference, service name extraction |
-| `commands/docs.rs` | 17 | Markdown and JSON output formats, sorting, validation rules display |
-| `commands/version.rs` | 1 | Version output |
+| `commands/check.rs` | 110 | Type validations (14 types), validation rules, secret masking, suggestions |
+| `schema.rs` | 77 | Type parsing, serialization, inheritance, error handling |
+| `commands/fix.rs` | 43 | Auto-fix, backup creation, dry-run mode |
+| `envfile.rs` | 40 | Parser, multiline, escapes, variable interpolation, duplicate key detection |
+| `commands/export.rs` | 29 | Export to shell/docker/k8s/json/systemd/dotenv |
+| `remote.rs` | 28 | URL detection, HTTP rejection, cache filename, URL resolution |
+| `commands/diff.rs` | 18 | File comparison, truncation, schema compliance, JSON output |
+| `config.rs` | 18 | Config loading, fallbacks, JSON parsing |
+| `secrets.rs` | 17 | Secret detection patterns, high-entropy strings, URL passwords, whitelist |
+| `commands/scan.rs` | 17 | Code scanning, language detection, pattern matching |
+| `suggestions.rs` | 14 | Levenshtein distance, variable/enum suggestions |
+| `presets.rs` | 13 | Framework presets (nextjs, rails, django, fastapi, express, laravel) |
+| `commands/example.rs` | 12 | .env.example generation, type-aware placeholders |
+| `commands/docs.rs` | 11 | Markdown and JSON output formats, sorting, validation rules display |
+| `commands/init.rs` | 8 | Type inference, smart description inference, service name extraction |
+| `commands/cache.rs` | 6 | Cache management (list, clear, path) |
+| `commands/doctor.rs` | 5 | Health check diagnostics |
 | `commands/completions.rs` | 4 | Shell completions for bash, zsh, fish, powershell |
-| `commands/example.rs` | 19 | .env.example generation, type-aware placeholders |
-| `commands/fix.rs` | 13 | Auto-fix, backup creation, dry-run mode |
-| `commands/scan.rs` | 12 | Code scanning, language detection, pattern matching |
-| `commands/cache.rs` | 5 | Cache management (list, clear, path) |
-| `commands/doctor.rs` | 1 | Health check diagnostics |
-| `commands/export.rs` | 9 | Export to shell/docker/k8s/json/systemd/dotenv |
 
 All tests pass with zero warnings and zero clippy lints.
+
+### Integration Test Coverage
+
+**v0.3.7** adds 29 integration tests in `tests/integration_tests.rs`:
+
+| Category | Tests | Coverage |
+|----------|-------|----------|
+| CHECK command | 12 | Valid/invalid envs, type validation, enum, validation rules |
+| DOCS command | 3 | Markdown generation, JSON output, alphabetical sorting |
+| FIX command | 3 | Dry-run, remove unknown, add missing with defaults |
+| INIT command | 2 | Schema creation, type inference |
+| EDGE CASES | 5 | Empty files, comments, export prefix, variable interpolation |
+| TYPE VALIDATION | 2 | All 14 types, validation rules (length, pattern, range) |
+| SCHEMA INHERITANCE | 2 | Extends field, merged schema validation |
+
+### Library API (New in v0.3.7)
+
+zenv now exposes clean library APIs for embedding in other tools:
+
+```rust
+// Convenience validation from file paths
+use zorath_env::commands::check;
+let errors = check::validate_files(".env", "schema.json", &opts)?;
+
+// Export to string (no file I/O)
+use zorath_env::commands::export::{export_to_string, ExportFormat};
+let docker_env = export_to_string(&env_map, ExportFormat::Docker)?;
+
+// Generate docs to string
+use zorath_env::commands::docs;
+let markdown = docs::generate(&schema, "markdown")?;
+
+// Generate .env.example to string
+use zorath_env::commands::example;
+let example_content = example::generate(&schema, true);
+```
+
+**Public Library Functions:**
+
+| Module | Function | Purpose |
+|--------|----------|---------|
+| `check` | `validate(schema, env_map)` | Validate env against schema |
+| `check` | `validate_files(env, schema, opts)` | Load files and validate |
+| `docs` | `generate(schema, format)` | Generate docs (markdown/json) |
+| `docs` | `generate_markdown(schema)` | Generate markdown docs |
+| `docs` | `generate_json(schema)` | Generate JSON docs |
+| `example` | `generate(schema, include_defaults)` | Generate .env.example content |
+| `export` | `export_to_string(env_map, format)` | Export to various formats |
+| `envfile` | `parse_env_file(path)` | Parse .env file to HashMap |
+| `envfile` | `interpolate_env(env_map)` | Resolve ${VAR} references |
+| `schema` | `load_schema_with_options(path, opts)` | Load JSON/YAML schema |
+| `secrets` | `detect_secrets(env_map, content, schema)` | Find potential secrets |
 
 ---
 
@@ -821,7 +872,7 @@ $ zenv docs --schema child.schema.json
 
 ## Conclusion
 
-zenv v0.3.6 includes CI bug fixes, webpki-roots 1.0 update, and improved GitHub Action reliability. v0.3.5 added 8 new validation types (uuid, email, ipv4, ipv6, semver, port, date, hostname), YAML schema format, severity levels (warning vs error), JSON output for check command, export to 6 formats (shell/docker/k8s/json/systemd/dotenv), doctor health check command, "Did You Mean?" suggestions, secret masking, config file support (.zenvrc), 6 framework presets, auto-fix command, code scanning (9 languages), and cache management. v0.3.4 added watch mode with delta detection. v0.3.3 added remote schema support. v0.3.2 added secret detection and diff command. v0.3.0 introduced shell completions, example command, and GitHub Action. 341 unit tests and 40 features verified. Ready for production use.
+zenv v0.3.7 adds clean library APIs for embedding (validate_files, export_to_string, generate functions) and 29 integration tests for comprehensive coverage. v0.3.6 included CI bug fixes, webpki-roots 1.0 update, and improved GitHub Action reliability. v0.3.5 added 8 new validation types (uuid, email, ipv4, ipv6, semver, port, date, hostname), YAML schema format, severity levels (warning vs error), JSON output for check command, export to 6 formats (shell/docker/k8s/json/systemd/dotenv), doctor health check command, "Did You Mean?" suggestions, secret masking, config file support (.zenvrc), 6 framework presets, auto-fix command, code scanning (9 languages), and cache management. v0.3.4 added watch mode with delta detection. v0.3.3 added remote schema support. v0.3.2 added secret detection and diff command. v0.3.0 introduced shell completions, example command, and GitHub Action. **370 tests** (341 unit + 29 integration) and 40 features verified. Ready for production use.
 
 ---
 
