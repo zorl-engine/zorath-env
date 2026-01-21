@@ -11,6 +11,10 @@ readme = "README.md"
 keywords = ["dotenv", "env", "validation", "schema", "secrets"]
 categories = ["command-line-utilities", "development-tools", "config"]
 
+[lib]
+name = "zorath_env"
+path = "src/lib.rs"
+
 [[bin]]
 name = "zenv"
 path = "src/main.rs"

@@ -1,23 +1,18 @@
-use crate::schema::{load_schema_with_options, LoadOptions, VarSpec, VarType};
+use crate::schema::{load_schema_with_options, LoadOptions, Schema, VarSpec, VarType};
 use std::fs;
 
-/// Generate .env.example from schema
-pub fn run(
-    schema_path: &str,
-    output_path: Option<&str>,
-    include_defaults: bool,
-    no_cache: bool,
-    verify_hash: Option<&str>,
-    ca_cert: Option<&str>,
-) -> Result<(), String> {
-    let options = LoadOptions {
-        no_cache,
-        verify_hash: verify_hash.map(|s| s.to_string()),
-        ca_cert: ca_cert.map(|s| s.to_string()),
-        rate_limit_seconds: None,
-    };
-    let schema = load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
-
+/// Generate .env.example content from a Schema (library function)
+///
+/// This is the pure library function that takes an already-loaded Schema
+/// and returns the generated content as a String. No file I/O.
+///
+/// # Arguments
+/// * `schema` - The loaded Schema to generate from
+/// * `include_defaults` - If true, use default values; if false, use smart placeholders
+///
+/// # Returns
+/// The generated .env.example content as a String
+pub fn generate(schema: &Schema, include_defaults: bool) -> String {
     // Sort keys alphabetically for consistent output
     let mut keys: Vec<&String> = schema.keys().collect();
     keys.sort();
@@ -39,6 +34,29 @@ pub fn run(
         output.push_str(&generate_var_line(key, spec, include_defaults));
         output.push('\n');
     }
+
+    output
+}
+
+/// Generate .env.example from schema (CLI function)
+pub fn run(
+    schema_path: &str,
+    output_path: Option<&str>,
+    include_defaults: bool,
+    no_cache: bool,
+    verify_hash: Option<&str>,
+    ca_cert: Option<&str>,
+) -> Result<(), String> {
+    let options = LoadOptions {
+        no_cache,
+        verify_hash: verify_hash.map(|s| s.to_string()),
+        ca_cert: ca_cert.map(|s| s.to_string()),
+        rate_limit_seconds: None,
+    };
+    let schema = load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
+
+    // Use the library function
+    let output = generate(&schema, include_defaults);
 
     // Output to file or stdout
     if let Some(path) = output_path {

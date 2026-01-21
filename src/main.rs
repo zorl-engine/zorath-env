@@ -1,15 +1,8 @@
-mod config;
-mod envfile;
-mod presets;
-mod remote;
-mod schema;
-mod secrets;
-mod suggestions;
-mod commands;
-
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
-use config::Config;
+use zorath_env::config::Config;
+use zorath_env::commands;
+use zorath_env::presets;
 
 #[derive(Parser, Debug)]
 #[command(name="zenv", version, about="Validate .env files with a schema and generate docs.")]
@@ -403,7 +396,7 @@ fn main() {
             }
         }
         Command::Version { check_update } => commands::version::run(check_update),
-        Command::Completions { shell } => commands::completions::run(shell),
+        Command::Completions { shell } => commands::completions::run(shell, &mut Cli::command()),
         Command::Example { schema, output, include_defaults, no_cache, verify_hash, ca_cert } => {
             let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));

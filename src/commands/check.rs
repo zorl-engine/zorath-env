@@ -807,14 +807,28 @@ fn run_initial_validation(
     })
 }
 
-/// Detect changes between old and new environment maps
+/// Detect changes between old and new environment maps.
+///
+/// # Algorithm
+/// Uses HashSet set operations for O(n) complexity instead of O(n^2) nested loops.
+/// Memory tradeoff: creates two HashSets of key references for efficient comparison.
+///
+/// # Change Detection
+/// - **Added**: Keys in `new` but not in `old` (new_keys.difference(old_keys))
+/// - **Removed**: Keys in `old` but not in `new` (old_keys.difference(new_keys))
+/// - **Modified**: Keys in both with different values (old_keys.intersection(new_keys))
+///
+/// # Output
+/// Returns sorted Vec<EnvChange> for consistent, reproducible output in watch mode.
+/// Sorting is O(n log n) but acceptable for typical .env sizes (<100 variables).
 fn detect_changes(old: &HashMap<String, String>, new: &HashMap<String, String>) -> Vec<EnvChange> {
     let mut changes = Vec::new();
 
+    // Build HashSets for O(n) set operations instead of O(n^2) nested iteration
     let old_keys: HashSet<&String> = old.keys().collect();
     let new_keys: HashSet<&String> = new.keys().collect();
 
-    // Added keys
+    // Added: keys present in new state but absent from old state
     for key in new_keys.difference(&old_keys) {
         changes.push(EnvChange {
             key: (*key).clone(),
@@ -823,7 +837,7 @@ fn detect_changes(old: &HashMap<String, String>, new: &HashMap<String, String>) 
         });
     }
 
-    // Removed keys
+    // Removed: keys present in old state but absent from new state
     for key in old_keys.difference(&new_keys) {
         changes.push(EnvChange {
             key: (*key).clone(),
@@ -832,7 +846,7 @@ fn detect_changes(old: &HashMap<String, String>, new: &HashMap<String, String>) 
         });
     }
 
-    // Modified keys
+    // Modified: keys in both states with different values (string equality comparison)
     for key in old_keys.intersection(&new_keys) {
         let old_val = old.get(*key).unwrap();
         let new_val = new.get(*key).unwrap();
@@ -845,7 +859,7 @@ fn detect_changes(old: &HashMap<String, String>, new: &HashMap<String, String>) 
         }
     }
 
-    // Sort by key for consistent output
+    // Sort alphabetically for consistent output order (aids testing and user experience)
     changes.sort_by(|a, b| a.key.cmp(&b.key));
     changes
 }
@@ -1396,6 +1410,49 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
     }
 
     errors
+}
+
+/// Validate environment file against schema file (convenience function)
+///
+/// This is a convenience wrapper that handles file loading and parsing.
+/// Useful for simple validation without needing to manually load files.
+///
+/// # Arguments
+/// * `env_path` - Path to the .env file
+/// * `schema_path` - Path to the schema file (JSON or YAML)
+/// * `opts` - Schema loading options (caching, hash verification, etc.)
+///
+/// # Returns
+/// * `Ok(Vec<String>)` - Empty vec if valid, otherwise contains error messages
+/// * `Err(String)` - If schema or env file could not be loaded
+///
+/// # Example
+/// ```ignore
+/// let opts = LoadOptions::default();
+/// let errors = validate_files(".env", "env.schema.json", &opts)?;
+/// if errors.is_empty() {
+///     println!("Valid!");
+/// }
+/// ```
+pub fn validate_files(
+    env_path: &str,
+    schema_path: &str,
+    opts: &LoadOptions,
+) -> Result<Vec<String>, String> {
+    // Load schema
+    let schema_result = schema::load_schema_with_options(schema_path, opts);
+    let loaded_schema = schema_result.map_err(|e| e.to_string())?;
+
+    // Parse env file
+    let env_map = envfile::parse_env_file(env_path)
+        .map_err(|e| format!("Failed to parse {}: {}", env_path, e))?;
+
+    // Interpolate variables
+    let env_map = envfile::interpolate_env(env_map)
+        .map_err(|e| format!("Interpolation error: {}", e))?;
+
+    // Validate and return errors
+    Ok(validate(&loaded_schema, &env_map))
 }
 
 #[cfg(test)]
