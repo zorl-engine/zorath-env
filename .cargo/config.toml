@@ -1,0 +1,18 @@
+# Cargo configuration for zorath-env
+# Provides convenience aliases for common build operations
+
+[alias]
+# Clean build - guaranteed fresh compilation
+fresh = "clean"
+
+# Quick release build
+rel = "build --release"
+
+# Run all tests
+t = "test"
+
+# Run clippy lints
+lint = "clippy -- -D warnings"
+
+# Full release workflow: clean + build + test
+release = ["clean", "build --release", "test --release"]

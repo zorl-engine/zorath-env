@@ -343,6 +343,30 @@ Each check shows:
   [WARN]  - Non-critical issue
   [ERROR] - Critical issue that needs attention")]
     Doctor,
+
+    /// Generate CI/CD configuration templates
+    #[command(after_help = "\
+Examples:
+  zenv template github              Output GitHub Actions workflow
+  zenv template gitlab -o .gitlab-ci.yml  Write GitLab CI config to file
+  zenv template circleci            Output CircleCI config
+  zenv template --list              List available templates
+
+Aliases:
+  github: gh, github-actions
+  gitlab: gl, gitlab-ci
+  circleci: circle")]
+    Template {
+        /// Template name (github, gitlab, circleci)
+        #[arg(default_value = "github")]
+        name: String,
+        /// Output file path (defaults to stdout)
+        #[arg(short = 'o', long)]
+        output: Option<String>,
+        /// List available templates
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -438,6 +462,9 @@ fn main() {
             commands::export::run(&env, schema.as_deref(), &format, output.as_deref(), no_cache, verify_hash.as_deref(), ca_cert.as_deref())
         }
         Command::Doctor => commands::doctor::run(),
+        Command::Template { name, output, list } => {
+            commands::template::run(&name, output.as_deref(), list)
+        }
     };
 
     if let Err(e) = result {

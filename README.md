@@ -50,6 +50,41 @@ cargo install --path .
 cargo run -- check
 ```
 
+## Library usage
+
+zenv can be embedded in other Rust tools:
+
+```rust
+use zorath_env::commands::{check, docs, example, export};
+use zorath_env::schema::{load_schema_with_options, LoadOptions};
+
+// Load schema
+let opts = LoadOptions::default();
+let schema = load_schema_with_options("env.schema.json", &opts)?;
+
+// Validate files directly
+let errors = check::validate_files(".env", "env.schema.json", &opts)?;
+
+// Generate documentation
+let markdown = docs::generate(&schema, "markdown")?;
+let json_docs = docs::generate(&schema, "json")?;
+
+// Generate .env.example content
+let example_content = example::generate(&schema, true); // include defaults
+
+// Export to deployment formats
+use zorath_env::commands::export::ExportFormat;
+let docker_env = export::export_to_string(&env_map, ExportFormat::Docker)?;
+let k8s_config = export::export_to_string(&env_map, ExportFormat::K8s)?;
+```
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+zorath-env = "0.3"
+```
+
 ## Quick start
 
 1. Create a schema:
@@ -264,6 +299,22 @@ Checks:
 - Validation passes (if schema and env exist)
 
 Output shows `[OK]`, `[WARN]`, or `[ERROR]` with actionable suggestions.
+
+### `zenv template`
+
+Generate CI/CD configuration templates for popular platforms.
+
+```bash
+zenv template github              # Output GitHub Actions workflow
+zenv template gitlab -o .gitlab-ci.yml  # Write GitLab CI config
+zenv template circleci            # Output CircleCI config
+zenv template --list              # List available templates
+```
+
+**Available templates:**
+- `github` (aliases: `gh`, `github-actions`) - GitHub Actions workflow
+- `gitlab` (aliases: `gl`, `gitlab-ci`) - GitLab CI configuration
+- `circleci` (aliases: `circle`) - CircleCI configuration
 
 ## Files
 

@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.7] - 2026-01-20
+
+### Added
+- **`zenv template` command**: Generate CI/CD configuration templates
+  - `github` - GitHub Actions workflow for env validation
+  - `gitlab` - GitLab CI configuration
+  - `circleci` - CircleCI configuration
+  - Supports aliases (gh, gl, circle) and `--output` flag
+- **Duplicate key detection**: Warns when .env files contain duplicate keys
+  - Shows line numbers for both original and duplicate definitions
+  - Included in JSON output (`duplicate_warnings` array)
+  - Prevents silent value overwrites from copy-paste errors
+- **Library APIs for embedding**: zenv is now both a library and CLI
+  - `check::validate_files()` - convenience wrapper for file validation
+  - `export::export_to_string()` - export to string without file I/O
+  - `docs::generate()` - unified docs generation (markdown/json)
+  - `example::generate()` - generate .env.example content to string
+- **29 integration tests** in `tests/integration_tests.rs`
+  - End-to-end testing with real files via tempfile
+  - Coverage for check, docs, fix, init, and edge cases
+- **Version-aware build system** (`build.rs`)
+  - Detects stale cache and warns on version mismatch
+  - Forces rebuild when Cargo.toml, Cargo.lock, or src files change
+  - Writes version stamp to target/ for comparison
+- **Cargo aliases** (`.cargo/config.toml`)
+  - `cargo fresh` - clean build
+  - `cargo rel` - release build
+  - `cargo t` - run tests
+  - `cargo lint` - run clippy
+- 380 total tests (351 unit + 29 integration)
+
+### Changed
+- Refactored completions module to accept Command from caller for testability
+
 ## [0.3.6] - 2026-01-19
 
 ### Fixed
