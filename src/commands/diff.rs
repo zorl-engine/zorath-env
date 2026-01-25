@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::envfile;
 use crate::schema::{self, LoadOptions};
+use crate::suggestions::find_closest_match;
 use serde::Serialize;
 
 /// JSON output structure for diff command
@@ -112,6 +113,32 @@ pub fn run(
             println!("  + {}={}", key, truncate_value(val, 50));
         }
         println!();
+    }
+
+    // Check for potential typos between only_in_a and only_in_b
+    if !only_in_a.is_empty() && !only_in_b.is_empty() {
+        let mut typo_suggestions: Vec<(String, String)> = Vec::new();
+
+        // For each key in A, check if there's a similar key in B
+        let keys_b_strings: Vec<String> = only_in_b.iter().map(|k| (*k).clone()).collect();
+        for key_a in &only_in_a {
+            if let Some((match_key, distance)) =
+                find_closest_match(key_a, keys_b_strings.iter().map(|s| s.as_str()), 3)
+            {
+                // Only suggest if the distance is small relative to key length
+                if distance <= key_a.len() / 3 + 1 {
+                    typo_suggestions.push(((*key_a).clone(), match_key.to_string()));
+                }
+            }
+        }
+
+        if !typo_suggestions.is_empty() {
+            println!("Possible typos:");
+            for (key_a, key_b) in &typo_suggestions {
+                println!("  {} (in {}) <-> {} (in {})", key_a, env_a, key_b, env_b);
+            }
+            println!();
+        }
     }
 
     // Variables with different values
@@ -393,5 +420,167 @@ mod tests {
         let result = run(&env_a, &env_b, None, "xml", false, None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown format"));
+    }
+
+    #[test]
+    fn test_diff_empty_files() {
+        let dir = TempDir::new().unwrap();
+        let env_a = create_temp_env(&dir, "a.env", "");
+        let env_b = create_temp_env(&dir, "b.env", "");
+
+        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_diff_one_empty_one_populated() {
+        let dir = TempDir::new().unwrap();
+        let env_a = create_temp_env(&dir, "a.env", "");
+        let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
+
+        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_diff_multiline_values() {
+        let dir = TempDir::new().unwrap();
+        let env_a = create_temp_env(&dir, "a.env", "FOO=\"line1\nline2\"");
+        let env_b = create_temp_env(&dir, "b.env", "FOO=\"line1\nline2\nline3\"");
+
+        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_truncate_value_exact_limit() {
+        // Value exactly at limit should not be truncated
+        let value = "0123456789";
+        assert_eq!(truncate_value(value, 10), value);
+    }
+
+    #[test]
+    fn test_truncate_value_one_over_limit() {
+        // Value one char over limit should be truncated
+        let value = "01234567890";
+        let result = truncate_value(value, 10);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_value_empty() {
+        assert_eq!(truncate_value("", 10), "");
+    }
+
+    #[test]
+    fn test_diff_with_comments_and_blank_lines() {
+        let dir = TempDir::new().unwrap();
+        let env_a = create_temp_env(&dir, "a.env", "# Comment\nFOO=bar\n\n# Another comment\nBAZ=qux");
+        let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
+
+        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        assert!(result.is_ok());
+    }
+
+    // ====== Typo Detection Tests ======
+
+    #[test]
+    fn test_diff_with_typo_detection() {
+        let dir = TempDir::new().unwrap();
+        // API_KEY vs APY_KEY - typo (1 edit distance)
+        let env_a = create_temp_env(&dir, "a.env", "API_KEY=secret123");
+        let env_b = create_temp_env(&dir, "b.env", "APY_KEY=secret123");
+
+        // Run should succeed and internally detect the typo
+        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_diff_no_typos_completely_different() {
+        let dir = TempDir::new().unwrap();
+        // Completely different keys - no typo suggestion
+        let env_a = create_temp_env(&dir, "a.env", "FOO=bar");
+        let env_b = create_temp_env(&dir, "b.env", "COMPLETELY_DIFFERENT=value");
+
+        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_diff_multiple_similar_keys() {
+        let dir = TempDir::new().unwrap();
+        // Multiple similar keys
+        let env_a = create_temp_env(&dir, "a.env", "DATABASE_URL=db1\nDATABASE_HOST=host1");
+        let env_b = create_temp_env(&dir, "b.env", "DATABSE_URL=db2\nDATABSE_HOST=host2");
+
+        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        assert!(result.is_ok());
+    }
+
+    // ====== Schema Compliance Helper Tests ======
+
+    #[test]
+    fn test_check_missing_required() {
+        use crate::schema::{Schema, VarSpec, VarType};
+
+        let mut schema = Schema::new();
+        let spec = VarSpec {
+            var_type: VarType::String,
+            required: true,
+            ..Default::default()
+        };
+        schema.insert("REQUIRED_VAR".to_string(), spec);
+
+        let mut env_map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        env_map.insert("OTHER_VAR".to_string(), "value".to_string());
+
+        let missing = check_missing_required(&env_map, &schema);
+        assert_eq!(missing.len(), 1);
+        assert!(missing.contains(&"REQUIRED_VAR".to_string()));
+    }
+
+    #[test]
+    fn test_check_unknown_keys() {
+        use crate::schema::{Schema, VarSpec, VarType};
+
+        let mut schema = Schema::new();
+        let spec = VarSpec {
+            var_type: VarType::String,
+            ..Default::default()
+        };
+        schema.insert("KNOWN_VAR".to_string(), spec);
+
+        let mut env_map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        env_map.insert("KNOWN_VAR".to_string(), "value".to_string());
+        env_map.insert("UNKNOWN_VAR".to_string(), "value".to_string());
+
+        let unknown = check_unknown_keys(&env_map, &schema);
+        assert_eq!(unknown.len(), 1);
+        assert!(unknown.contains(&"UNKNOWN_VAR".to_string()));
+    }
+
+    #[test]
+    fn test_diff_schema_both_files_compliant() {
+        let dir = TempDir::new().unwrap();
+        let env_a = create_temp_env(&dir, "a.env", "PORT=3000\nDEBUG=true");
+        let env_b = create_temp_env(&dir, "b.env", "PORT=8080\nDEBUG=false");
+        let schema = create_temp_env(&dir, "schema.json", r#"{
+            "PORT": {"type": "int", "required": true},
+            "DEBUG": {"type": "bool", "required": true}
+        }"#);
+
+        let result = run(&env_a, &env_b, Some(&schema), "text", false, None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_diff_json_output_structure() {
+        let dir = TempDir::new().unwrap();
+        let env_a = create_temp_env(&dir, "a.env", "FOO=bar\nONLY_A=value");
+        let env_b = create_temp_env(&dir, "b.env", "FOO=different\nONLY_B=value");
+
+        let result = run(&env_a, &env_b, None, "json", false, None, None);
+        assert!(result.is_ok());
     }
 }

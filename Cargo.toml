@@ -1,6 +1,6 @@
 [package]
 name = "zorath-env"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2021"
 description = "Fast CLI for .env validation against JSON/YAML schemas. 14 types, secret detection, watch mode, remote schemas, export to shell/docker/k8s/json, health diagnostics, code scanning, auto-fix. CI-friendly. Language-agnostic single binary."
 license = "MIT"

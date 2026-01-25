@@ -62,7 +62,7 @@ cargo run -- init
 cargo test
 ```
 
-All 332 tests should pass.
+All 630 tests should pass.
 
 ### Check Code Quality
 
@@ -178,7 +178,7 @@ src/
   suggestions.rs   # "Did you mean?" suggestions
   presets.rs       # Framework presets (nextjs, rails, etc.)
   commands/
-    mod.rs         # Command module
+    mod.rs         # Command module declarations
     cache.rs       # zenv cache command
     check.rs       # zenv check command
     completions.rs # zenv completions command
@@ -190,6 +190,7 @@ src/
     fix.rs         # zenv fix command
     init.rs        # zenv init command
     scan.rs        # zenv scan command
+    template.rs    # zenv template command
     version.rs     # zenv version command
 ```
 

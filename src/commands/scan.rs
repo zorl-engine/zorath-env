@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use ignore::WalkBuilder;
 use regex::Regex;
@@ -19,6 +20,9 @@ struct EnvPattern {
     language: &'static str,
     pattern: Regex,
 }
+
+/// Cached regex patterns (compiled once, reused across calls)
+static SCAN_PATTERNS: OnceLock<Vec<EnvPattern>> = OnceLock::new();
 
 /// A detected environment variable usage in source code
 #[derive(Debug, Clone)]
@@ -63,8 +67,8 @@ pub fn run(
     let schema = schema::load_schema_with_options(schema_path, &options)
         .map_err(|e| format!("failed to load schema: {}", e))?;
 
-    // Build regex patterns
-    let patterns = build_patterns();
+    // Get cached regex patterns (compiled once, reused for performance)
+    let patterns = get_patterns();
 
     // Scan directory
     let scan_path = Path::new(path);
@@ -72,7 +76,7 @@ pub fn run(
         return Err(format!("path does not exist: {}", path));
     }
 
-    let results = scan_directory(scan_path, &patterns, &schema)?;
+    let results = scan_directory(scan_path, patterns, &schema)?;
 
     // Output results
     match format {
@@ -89,6 +93,11 @@ pub fn run(
     }
 
     Ok(())
+}
+
+/// Get cached regex patterns (compiled once, reused for performance)
+fn get_patterns() -> &'static Vec<EnvPattern> {
+    SCAN_PATTERNS.get_or_init(build_patterns)
 }
 
 /// Build all language-specific regex patterns for env var detection
@@ -666,5 +675,385 @@ const config = {
         assert!(results.found_vars.contains_key("API_KEY"));
         assert!(results.missing_from_schema.is_empty());
         assert!(results.unused_in_code.contains(&"UNUSED_VAR".to_string()));
+    }
+
+    // ====== Go Language Tests ======
+
+    #[test]
+    fn test_detect_language_go() {
+        assert_eq!(detect_language(Path::new("main.go")), Some("go"));
+        assert_eq!(detect_language(Path::new("handler.go")), Some("go"));
+    }
+
+    #[test]
+    fn test_go_pattern_getenv() {
+        let patterns = build_patterns();
+        let content = r#"apiKey := os.Getenv("API_KEY")"#;
+
+        let mut found = false;
+        for pattern in &patterns {
+            for cap in pattern.pattern.captures_iter(content) {
+                if let Some(m) = cap.get(1) {
+                    if m.as_str() == "API_KEY" {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "Should detect API_KEY in Go os.Getenv");
+    }
+
+    #[test]
+    fn test_go_pattern_lookupenv() {
+        let patterns = build_patterns();
+        let content = r#"value, exists := os.LookupEnv("DATABASE_URL")"#;
+
+        let mut found = false;
+        for pattern in &patterns {
+            for cap in pattern.pattern.captures_iter(content) {
+                if let Some(m) = cap.get(1) {
+                    if m.as_str() == "DATABASE_URL" {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "Should detect DATABASE_URL in Go os.LookupEnv");
+    }
+
+    #[test]
+    fn test_scan_file_go() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("main.go");
+
+        let content = r#"
+package main
+
+import "os"
+
+func main() {
+    apiKey := os.Getenv("API_KEY")
+    dbUrl, _ := os.LookupEnv("DATABASE_URL")
+}
+"#;
+        fs::write(&file_path, content).unwrap();
+
+        let patterns = build_patterns();
+        let usages = scan_file(&file_path, &patterns).unwrap();
+
+        let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
+        assert!(var_names.contains("API_KEY"), "Should find API_KEY in Go file");
+        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in Go file");
+    }
+
+    // ====== PHP Language Tests ======
+
+    #[test]
+    fn test_detect_language_php() {
+        assert_eq!(detect_language(Path::new("index.php")), Some("php"));
+        assert_eq!(detect_language(Path::new("config.php")), Some("php"));
+    }
+
+    #[test]
+    fn test_php_pattern_getenv() {
+        let patterns = build_patterns();
+        let content = r#"$apiKey = getenv("API_KEY");"#;
+
+        let mut found = false;
+        for pattern in &patterns {
+            for cap in pattern.pattern.captures_iter(content) {
+                if let Some(m) = cap.get(1) {
+                    if m.as_str() == "API_KEY" {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "Should detect API_KEY in PHP getenv()");
+    }
+
+    #[test]
+    fn test_php_pattern_env_superglobal() {
+        let patterns = build_patterns();
+        let content = r#"$dbUrl = $_ENV["DATABASE_URL"];"#;
+
+        let mut found = false;
+        for pattern in &patterns {
+            for cap in pattern.pattern.captures_iter(content) {
+                if let Some(m) = cap.get(1) {
+                    if m.as_str() == "DATABASE_URL" {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "Should detect DATABASE_URL in PHP $_ENV");
+    }
+
+    #[test]
+    fn test_php_pattern_server_superglobal() {
+        let patterns = build_patterns();
+        let content = r#"$secret = $_SERVER["SECRET_KEY"];"#;
+
+        let mut found = false;
+        for pattern in &patterns {
+            for cap in pattern.pattern.captures_iter(content) {
+                if let Some(m) = cap.get(1) {
+                    if m.as_str() == "SECRET_KEY" {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "Should detect SECRET_KEY in PHP $_SERVER");
+    }
+
+    #[test]
+    fn test_scan_file_php() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("config.php");
+
+        let content = r#"<?php
+$apiKey = getenv("API_KEY");
+$dbUrl = $_ENV["DATABASE_URL"];
+$secret = $_SERVER['SECRET_KEY'];
+"#;
+        fs::write(&file_path, content).unwrap();
+
+        let patterns = build_patterns();
+        let usages = scan_file(&file_path, &patterns).unwrap();
+
+        let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
+        assert!(var_names.contains("API_KEY"), "Should find API_KEY in PHP file");
+        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in PHP file");
+        assert!(var_names.contains("SECRET_KEY"), "Should find SECRET_KEY in PHP file");
+    }
+
+    // ====== Ruby Language Tests ======
+
+    #[test]
+    fn test_detect_language_ruby() {
+        assert_eq!(detect_language(Path::new("app.rb")), Some("ruby"));
+        assert_eq!(detect_language(Path::new("config.erb")), Some("ruby"));
+    }
+
+    #[test]
+    fn test_ruby_pattern_env_bracket() {
+        let patterns = build_patterns();
+        let content = r#"api_key = ENV["API_KEY"]"#;
+
+        let mut found = false;
+        for pattern in &patterns {
+            for cap in pattern.pattern.captures_iter(content) {
+                if let Some(m) = cap.get(1) {
+                    if m.as_str() == "API_KEY" {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "Should detect API_KEY in Ruby ENV[]");
+    }
+
+    #[test]
+    fn test_ruby_pattern_env_fetch() {
+        let patterns = build_patterns();
+        let content = r#"db_url = ENV.fetch("DATABASE_URL")"#;
+
+        let mut found = false;
+        for pattern in &patterns {
+            for cap in pattern.pattern.captures_iter(content) {
+                if let Some(m) = cap.get(1) {
+                    if m.as_str() == "DATABASE_URL" {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "Should detect DATABASE_URL in Ruby ENV.fetch");
+    }
+
+    #[test]
+    fn test_scan_file_ruby() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("config.rb");
+
+        let content = r#"
+api_key = ENV["API_KEY"]
+db_url = ENV['DATABASE_URL']
+secret = ENV.fetch("SECRET_KEY")
+"#;
+        fs::write(&file_path, content).unwrap();
+
+        let patterns = build_patterns();
+        let usages = scan_file(&file_path, &patterns).unwrap();
+
+        let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
+        assert!(var_names.contains("API_KEY"), "Should find API_KEY in Ruby file");
+        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in Ruby file");
+        assert!(var_names.contains("SECRET_KEY"), "Should find SECRET_KEY in Ruby file");
+    }
+
+    // ====== Shell Language Tests ======
+
+    #[test]
+    fn test_detect_language_shell() {
+        assert_eq!(detect_language(Path::new("script.sh")), Some("shell"));
+        assert_eq!(detect_language(Path::new("run.bash")), Some("shell"));
+        assert_eq!(detect_language(Path::new("init.zsh")), Some("shell"));
+    }
+
+    #[test]
+    fn test_shell_pattern_braces() {
+        let patterns = build_patterns();
+        let content = r#"echo "${API_KEY}""#;
+
+        let mut found = false;
+        for pattern in &patterns {
+            for cap in pattern.pattern.captures_iter(content) {
+                if let Some(m) = cap.get(1) {
+                    if m.as_str() == "API_KEY" {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "Should detect API_KEY in shell ${{VAR}} syntax");
+    }
+
+    #[test]
+    fn test_shell_pattern_dollar() {
+        let patterns = build_patterns();
+        let content = r#"export VALUE=$DATABASE_URL"#;
+
+        let mut found = false;
+        for pattern in &patterns {
+            for cap in pattern.pattern.captures_iter(content) {
+                if let Some(m) = cap.get(1) {
+                    if m.as_str() == "DATABASE_URL" {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "Should detect DATABASE_URL in shell $VAR syntax");
+    }
+
+    #[test]
+    fn test_scan_file_shell() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("deploy.sh");
+
+        let content = r#"#!/bin/bash
+echo "Deploying with ${API_KEY}"
+export DB=$DATABASE_URL
+"#;
+        fs::write(&file_path, content).unwrap();
+
+        let patterns = build_patterns();
+        let usages = scan_file(&file_path, &patterns).unwrap();
+
+        let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
+        assert!(var_names.contains("API_KEY"), "Should find API_KEY in shell file");
+        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in shell file");
+    }
+
+    // ====== Java Language Tests ======
+
+    #[test]
+    fn test_detect_language_java() {
+        assert_eq!(detect_language(Path::new("Main.java")), Some("java"));
+        assert_eq!(detect_language(Path::new("Config.kt")), Some("java"));
+    }
+
+    #[test]
+    fn test_java_pattern_getenv() {
+        let patterns = build_patterns();
+        let content = r#"String apiKey = System.getenv("API_KEY");"#;
+
+        let mut found = false;
+        for pattern in &patterns {
+            for cap in pattern.pattern.captures_iter(content) {
+                if let Some(m) = cap.get(1) {
+                    if m.as_str() == "API_KEY" {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "Should detect API_KEY in Java System.getenv");
+    }
+
+    #[test]
+    fn test_scan_file_java() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("Config.java");
+
+        let content = r#"
+public class Config {
+    public static void main(String[] args) {
+        String apiKey = System.getenv("API_KEY");
+        String dbUrl = System.getenv("DATABASE_URL");
+    }
+}
+"#;
+        fs::write(&file_path, content).unwrap();
+
+        let patterns = build_patterns();
+        let usages = scan_file(&file_path, &patterns).unwrap();
+
+        let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
+        assert!(var_names.contains("API_KEY"), "Should find API_KEY in Java file");
+        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in Java file");
+    }
+
+    // ====== C# Language Tests ======
+
+    #[test]
+    fn test_detect_language_csharp() {
+        assert_eq!(detect_language(Path::new("Program.cs")), Some("csharp"));
+    }
+
+    #[test]
+    fn test_csharp_pattern_getenvironmentvariable() {
+        let patterns = build_patterns();
+        let content = r#"var apiKey = Environment.GetEnvironmentVariable("API_KEY");"#;
+
+        let mut found = false;
+        for pattern in &patterns {
+            for cap in pattern.pattern.captures_iter(content) {
+                if let Some(m) = cap.get(1) {
+                    if m.as_str() == "API_KEY" {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "Should detect API_KEY in C# Environment.GetEnvironmentVariable");
+    }
+
+    #[test]
+    fn test_scan_file_csharp() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("Program.cs");
+
+        let content = r#"
+using System;
+
+class Program {
+    static void Main() {
+        var apiKey = Environment.GetEnvironmentVariable("API_KEY");
+        var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
+    }
+}
+"#;
+        fs::write(&file_path, content).unwrap();
+
+        let patterns = build_patterns();
+        let usages = scan_file(&file_path, &patterns).unwrap();
+
+        let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
+        assert!(var_names.contains("API_KEY"), "Should find API_KEY in C# file");
+        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in C# file");
     }
 }

@@ -18,10 +18,11 @@ enum Command {
 Examples:
   zenv check                            Validate using defaults
   zenv check --schema custom.json       Use custom schema
-  zenv check --detect-secrets true      Include secret detection
+  zenv check --detect-secrets           Include secret detection
   zenv check --watch                    Watch for file changes
   zenv check --env .env.local           Validate specific env file
   zenv check --format json              JSON output for CI/CD
+  zenv check --allow-missing-env        Schema-only validation (no .env required)
 
 Security options for remote schemas:
   zenv check --schema https://... --verify-hash abc123...
@@ -41,7 +42,7 @@ Config file:
         #[arg(long)]
         allow_missing_env: Option<bool>,
         /// Detect potential secrets in .env file (API keys, passwords, tokens)
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         detect_secrets: Option<bool>,
         /// Skip cache when fetching remote schemas
         #[arg(long)]
@@ -173,7 +174,10 @@ Examples:
 Examples:
   zenv diff .env.local .env.prod        Compare two env files
   zenv diff .env.dev .env --schema s.json   With schema validation
-  zenv diff .env.a .env.b --format json     JSON output for CI")]
+  zenv diff .env.a .env.b --format json     JSON output for CI
+
+Remote schema with integrity verification:
+  zenv diff .env.a .env.b --schema https://... --verify-hash abc123...")]
     Diff {
         /// First .env file
         env_a: String,
@@ -202,6 +206,9 @@ Examples:
   zenv fix --dry-run                    Preview fixes without changing files
   zenv fix                              Apply fixes (creates .env.backup)
   zenv fix --remove-unknown             Also remove keys not in schema
+
+Remote schema with integrity verification:
+  zenv fix --schema https://... --verify-hash abc123...
 
 What it fixes:
   - Adds missing required variables (with schema defaults)
@@ -276,6 +283,7 @@ Supported languages:
     #[command(after_help = "\
 Examples:
   zenv cache list                       List cached schemas
+  zenv cache stats                      Show cache statistics
   zenv cache clear                      Clear all cached schemas
   zenv cache clear https://...          Clear specific URL
   zenv cache path                       Show cache directory")]
@@ -287,25 +295,29 @@ Examples:
     /// Export .env to various formats
     #[command(after_help = "\
 Examples:
-  zenv export .env --format shell       Shell script (export FOO=\"bar\")
-  zenv export .env --format docker      Dockerfile (ENV FOO=bar)
-  zenv export .env --format k8s         Kubernetes ConfigMap YAML
-  zenv export .env --format json        JSON object
-  zenv export .env --format systemd     systemd Environment directives
-  zenv export .env --format dotenv      Standard .env format
+  zenv export --format shell            Shell script (export FOO=\"bar\")
+  zenv export --format docker           Dockerfile (ENV FOO=bar)
+  zenv export --format k8s              Kubernetes ConfigMap YAML
+  zenv export --format json             JSON object
+  zenv export --format systemd          systemd Environment directives
+  zenv export --format dotenv           Standard .env format
+  zenv export --format github-secrets   GitHub CLI commands (gh secret set)
 
-  zenv export .env --schema s.json      Only export vars defined in schema
-  zenv export .env -f shell -o setup.sh Write to file
+  zenv export --env .env.local          Export specific env file
+  zenv export --schema s.json           Only export vars defined in schema
+  zenv export -f shell -o setup.sh      Write to file
 
 Aliases:
   shell: bash, sh
   docker: dockerfile
   k8s: kubernetes, configmap
   systemd: service
-  dotenv: env")]
+  dotenv: env
+  github-secrets: gh-secrets, github")]
     Export {
-        /// Path to .env file to export
-        env: String,
+        /// Path to .env file to export (default: .env, or from .zenvrc)
+        #[arg(long)]
+        env: Option<String>,
         /// Output format (shell, docker, k8s, json, systemd, dotenv)
         #[arg(short = 'f', long, default_value = "shell")]
         format: String,
@@ -330,6 +342,8 @@ Aliases:
     #[command(after_help = "\
 Examples:
   zenv doctor                           Run full health check
+  zenv doctor --schema custom.json      Use custom schema path
+  zenv doctor --env .env.local          Use specific env file
 
 Checks:
   - Schema file exists and is valid
@@ -342,7 +356,14 @@ Each check shows:
   [OK]    - No issues
   [WARN]  - Non-critical issue
   [ERROR] - Critical issue that needs attention")]
-    Doctor,
+    Doctor {
+        /// Path to .env file (default: .env, or from .zenvrc)
+        #[arg(long)]
+        env: Option<String>,
+        /// Path to schema file (default: env.schema.json, or from .zenvrc)
+        #[arg(long)]
+        schema: Option<String>,
+    },
 
     /// Generate CI/CD configuration templates
     #[command(after_help = "\
@@ -351,6 +372,7 @@ Examples:
   zenv template gitlab -o .gitlab-ci.yml  Write GitLab CI config to file
   zenv template circleci            Output CircleCI config
   zenv template --list              List available templates
+  zenv template github --use-binary Use binary download (faster CI)
 
 Aliases:
   github: gh, github-actions
@@ -366,6 +388,9 @@ Aliases:
         /// List available templates
         #[arg(long)]
         list: bool,
+        /// Use binary download instead of cargo install (faster)
+        #[arg(long)]
+        use_binary: bool,
     },
 }
 
@@ -380,6 +405,8 @@ enum CacheAction {
     },
     /// Print cache directory path
     Path,
+    /// Show cache statistics (size, age, expiry)
+    Stats,
 }
 
 fn main() {
@@ -454,21 +481,64 @@ fn main() {
             CacheAction::List => commands::cache::run_list(),
             CacheAction::Clear { url } => commands::cache::run_clear(url.as_deref()),
             CacheAction::Path => commands::cache::run_path(),
+            CacheAction::Stats => commands::cache::run_stats(),
         },
         Command::Export { env, format, schema, output, no_cache, verify_hash, ca_cert } => {
+            let env = env.unwrap_or_else(|| config.env_or(".env"));
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
             commands::export::run(&env, schema.as_deref(), &format, output.as_deref(), no_cache, verify_hash.as_deref(), ca_cert.as_deref())
         }
-        Command::Doctor => commands::doctor::run(),
-        Command::Template { name, output, list } => {
-            commands::template::run(&name, output.as_deref(), list)
+        Command::Doctor { env, schema } => {
+            let env = env.unwrap_or_else(|| config.env_or(".env"));
+            let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
+            commands::doctor::run(&env, &schema)
+        }
+        Command::Template { name, output, list, use_binary } => {
+            commands::template::run(&name, output.as_deref(), list, use_binary)
         }
     };
 
     if let Err(e) = result {
         eprintln!("zenv error: {e}");
-        std::process::exit(1);
+        // Exit with specific codes for CI/CD integration:
+        //   1 = validation failed (check command found errors)
+        //   2 = input/file error (file not found, parse error)
+        //   3 = schema error (invalid schema, failed to load)
+        let exit_code = determine_exit_code(&e);
+        std::process::exit(exit_code);
     }
+}
+
+/// Determine appropriate exit code based on error message
+fn determine_exit_code(error: &str) -> i32 {
+    let lower = error.to_lowercase();
+
+    // Validation failures (exit code 1)
+    if lower.contains("validation failed") || lower.contains("check failed") {
+        return 1;
+    }
+
+    // Schema errors (exit code 3)
+    if lower.contains("schema")
+        || lower.contains("invalid json")
+        || lower.contains("invalid yaml")
+        || lower.contains("failed to parse")
+    {
+        return 3;
+    }
+
+    // Input/file errors (exit code 2)
+    if lower.contains("not found")
+        || lower.contains("failed to read")
+        || lower.contains("failed to write")
+        || lower.contains("unknown format")
+        || lower.contains("unknown template")
+    {
+        return 2;
+    }
+
+    // Default to 1 for any other error
+    1
 }

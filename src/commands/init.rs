@@ -47,8 +47,16 @@ pub fn run(example_path: &str, schema_path: &str, preset: Option<&str>) -> Resul
             });
         }
     } else if preset.is_none() {
-        // No preset and no example file
-        return Err(format!("example file not found: {example_path}"));
+        // No preset and no example file - provide helpful suggestion
+        return Err(format!(
+            "example file not found: {example_path}\n\n\
+            To create a schema, either:\n  \
+            1. Create a {} file with your environment variables\n  \
+            2. Use a framework preset: zenv init --preset <name>\n\n\
+            Available presets: nextjs, rails, django, fastapi, express, laravel\n\
+            List presets with: zenv init --list-presets",
+            example_path
+        ));
     }
 
     if Path::new(schema_path).exists() {

@@ -86,14 +86,15 @@ fn errors_to_issues(errors: Vec<String>, schema: &Schema) -> Vec<ValidationIssue
 }
 
 // Pre-compiled regex patterns for built-in types (cached with OnceLock)
-fn uuid_regex() -> &'static Regex {
+// Made public for reuse in fix.rs
+pub fn uuid_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap()
     })
 }
 
-fn email_regex() -> &'static Regex {
+pub fn email_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         // RFC 5322 simplified - covers most common email formats
@@ -101,14 +102,14 @@ fn email_regex() -> &'static Regex {
     })
 }
 
-fn ipv4_regex() -> &'static Regex {
+pub fn ipv4_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$").unwrap()
     })
 }
 
-fn semver_regex() -> &'static Regex {
+pub fn semver_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         // Matches: 1.0.0, 2.1.3-beta.1, 1.0.0+build.123, 1.0.0-alpha+001
@@ -116,7 +117,7 @@ fn semver_regex() -> &'static Regex {
     })
 }
 
-fn ipv6_regex() -> &'static Regex {
+pub fn ipv6_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         // Simplified IPv6 validation - 8 groups of 1-4 hex digits separated by colons
@@ -125,7 +126,7 @@ fn ipv6_regex() -> &'static Regex {
     })
 }
 
-fn date_regex() -> &'static Regex {
+pub fn date_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         // ISO 8601 date format: YYYY-MM-DD
@@ -133,7 +134,7 @@ fn date_regex() -> &'static Regex {
     })
 }
 
-fn hostname_regex() -> &'static Regex {
+pub fn hostname_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         // RFC 1123 hostname: labels separated by dots, each 1-63 chars, total max 253
@@ -181,8 +182,8 @@ fn is_valid_ipv4(value: &str) -> bool {
     }
 }
 
-/// Check if a key name indicates it contains sensitive data
-fn is_sensitive_key(key: &str) -> bool {
+/// Check if a key name suggests it contains sensitive data
+pub fn is_sensitive_key(key: &str) -> bool {
     let lower = key.to_lowercase();
     let sensitive_patterns = [
         "password", "passwd", "secret", "token", "api_key", "apikey",
@@ -201,8 +202,8 @@ fn is_sensitive_key(key: &str) -> bool {
     lower.ends_with("_key") || lower.ends_with("_token") || lower.ends_with("_secret")
 }
 
-/// Mask a value if the key is sensitive, otherwise return truncated value
-fn mask_value(key: &str, value: &str) -> String {
+/// Mask sensitive values for safe display (truncates non-sensitive values)
+pub fn mask_value(key: &str, value: &str) -> String {
     if is_sensitive_key(key) {
         "***MASKED***".to_string()
     } else {
@@ -461,6 +462,21 @@ fn run_once(
             eprintln!("\nTip: {} unknown key(s) found in .env but not in schema.", unknown_count);
             eprintln!("  To add them: zenv init --example .env --schema {} (creates new schema)", schema_path);
             eprintln!("  Or manually add them to your schema file.");
+        }
+
+        // Count missing required keys for fix suggestion
+        let missing_count = errors
+            .iter()
+            .filter(|e| e.message.contains("missing and required"))
+            .count();
+
+        // Suggest fix command when there are auto-fixable issues
+        if missing_count > 0 || unknown_count > 0 {
+            eprintln!();
+            eprintln!("Tip: Run `zenv fix --dry-run --schema {} --env {}` to preview auto-fixes.", schema_path, env_path);
+            if unknown_count > 0 {
+                eprintln!("  Add `--remove-unknown` to also remove keys not in schema.");
+            }
         }
     }
 
@@ -2472,5 +2488,571 @@ mod tests {
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("expected semver"));
+    }
+
+    // =========================================================================
+    // IPv6 Type Tests
+    // =========================================================================
+
+    fn ipv6_spec(required: bool) -> VarSpec {
+        VarSpec {
+            var_type: VarType::Ipv6,
+            required,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_ipv6_type_valid_full() {
+        let schema = make_schema(vec![("IP", ipv6_spec(true))]);
+        let env = make_env(vec![("IP", "2001:0db8:85a3:0000:0000:8a2e:0370:7334")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_ipv6_type_valid_uppercase() {
+        let schema = make_schema(vec![("IP", ipv6_spec(true))]);
+        let env = make_env(vec![("IP", "2001:0DB8:85A3:0000:0000:8A2E:0370:7335")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_ipv6_type_valid_all_zeros() {
+        let schema = make_schema(vec![("IP", ipv6_spec(true))]);
+        let env = make_env(vec![("IP", "0000:0000:0000:0000:0000:0000:0000:0000")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_ipv6_type_invalid() {
+        let schema = make_schema(vec![("IP", ipv6_spec(true))]);
+        let env = make_env(vec![("IP", "not-an-ipv6")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected ipv6"));
+    }
+
+    // =========================================================================
+    // Port Type Tests
+    // =========================================================================
+
+    fn port_spec(required: bool) -> VarSpec {
+        VarSpec {
+            var_type: VarType::Port,
+            required,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_port_type_valid_standard() {
+        let schema = make_schema(vec![("PORT", port_spec(true))]);
+        let env = make_env(vec![("PORT", "8080")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_port_type_valid_min() {
+        let schema = make_schema(vec![("PORT", port_spec(true))]);
+        let env = make_env(vec![("PORT", "1")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_port_type_valid_max() {
+        let schema = make_schema(vec![("PORT", port_spec(true))]);
+        let env = make_env(vec![("PORT", "65535")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_port_type_invalid_zero() {
+        let schema = make_schema(vec![("PORT", port_spec(true))]);
+        let env = make_env(vec![("PORT", "0")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("port") && errors[0].contains("between"));
+    }
+
+    #[test]
+    fn test_port_type_invalid_too_high() {
+        let schema = make_schema(vec![("PORT", port_spec(true))]);
+        let env = make_env(vec![("PORT", "65536")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("port"));
+    }
+
+    #[test]
+    fn test_port_type_invalid_text() {
+        let schema = make_schema(vec![("PORT", port_spec(true))]);
+        let env = make_env(vec![("PORT", "http")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+    }
+
+    // =========================================================================
+    // Date Type Tests
+    // =========================================================================
+
+    fn date_spec(required: bool) -> VarSpec {
+        VarSpec {
+            var_type: VarType::Date,
+            required,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_date_type_valid_standard() {
+        let schema = make_schema(vec![("EXPIRY", date_spec(true))]);
+        let env = make_env(vec![("EXPIRY", "2024-01-15")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_date_type_valid_leap_year() {
+        let schema = make_schema(vec![("DATE", date_spec(true))]);
+        let env = make_env(vec![("DATE", "2024-02-29")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_date_type_invalid_format() {
+        let schema = make_schema(vec![("DATE", date_spec(true))]);
+        let env = make_env(vec![("DATE", "01/15/2024")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected date"));
+    }
+
+    #[test]
+    fn test_date_type_invalid_month() {
+        let schema = make_schema(vec![("DATE", date_spec(true))]);
+        let env = make_env(vec![("DATE", "2024-13-01")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+    }
+
+    // =========================================================================
+    // Hostname Type Tests
+    // =========================================================================
+
+    fn hostname_spec(required: bool) -> VarSpec {
+        VarSpec {
+            var_type: VarType::Hostname,
+            required,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_hostname_type_valid_simple() {
+        let schema = make_schema(vec![("HOST", hostname_spec(true))]);
+        let env = make_env(vec![("HOST", "localhost")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_hostname_type_valid_domain() {
+        let schema = make_schema(vec![("HOST", hostname_spec(true))]);
+        let env = make_env(vec![("HOST", "api.example.com")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_hostname_type_valid_subdomain() {
+        let schema = make_schema(vec![("HOST", hostname_spec(true))]);
+        let env = make_env(vec![("HOST", "dev.api.example.com")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_hostname_type_invalid_starting_dash() {
+        let schema = make_schema(vec![("HOST", hostname_spec(true))]);
+        let env = make_env(vec![("HOST", "-invalid.com")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("expected hostname"));
+    }
+
+    #[test]
+    fn test_hostname_type_invalid_spaces() {
+        let schema = make_schema(vec![("HOST", hostname_spec(true))]);
+        let env = make_env(vec![("HOST", "invalid host.com")]);
+        let errors = validate(&schema, &env);
+        assert_eq!(errors.len(), 1);
+    }
+
+    // Test for invalid flag combination: --watch with --format json
+    #[test]
+    fn test_watch_json_combination_rejected() {
+        // Create temp files for testing
+        let temp_dir = std::env::temp_dir();
+        let schema_path = temp_dir.join("test_schema.json");
+        let env_path = temp_dir.join("test.env");
+
+        // Write minimal schema
+        std::fs::write(&schema_path, r#"{"FOO": {"type": "string"}}"#).unwrap();
+        std::fs::write(&env_path, "FOO=bar").unwrap();
+
+        // Test that watch + json combination returns error
+        let result = super::run(
+            env_path.to_str().unwrap(),
+            schema_path.to_str().unwrap(),
+            false,  // allow_missing_env
+            false,  // detect_secrets
+            true,   // no_cache
+            true,   // watch = true
+            "json", // format = json (invalid with watch)
+            None,   // verify_hash
+            None,   // ca_cert
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("JSON format is not supported in watch mode"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&schema_path);
+        let _ = std::fs::remove_file(&env_path);
+    }
+
+    // =========================================================================
+    // Severity Level Tests (v0.3.5)
+    // =========================================================================
+
+    #[test]
+    fn test_severity_default_is_error() {
+        // VarSpec without severity should default to Error
+        let spec = VarSpec {
+            var_type: VarType::String,
+            required: true,
+            ..Default::default()
+        };
+        assert_eq!(spec.severity, crate::schema::Severity::Error);
+    }
+
+    #[test]
+    fn test_severity_warning_in_issues() {
+        // Test that severity is correctly converted from schema
+        let mut schema = Schema::new();
+        let spec = VarSpec {
+            var_type: VarType::Int,
+            required: true,
+            severity: crate::schema::Severity::Warning,
+            ..Default::default()
+        };
+        schema.insert("PORT".to_string(), spec);
+
+        let mut env_map = std::collections::HashMap::new();
+        env_map.insert("PORT".to_string(), "not_a_number".to_string());
+
+        let errors = validate(&schema, &env_map);
+        assert!(!errors.is_empty(), "Should have validation error");
+
+        // Convert to issues and check severity (errors_to_issues takes ownership)
+        let issues = errors_to_issues(errors, &schema);
+        assert!(!issues.is_empty());
+        assert_eq!(issues[0].severity, crate::schema::Severity::Warning);
+    }
+
+    #[test]
+    fn test_severity_error_in_issues() {
+        // Test default error severity
+        let mut schema = Schema::new();
+        let spec = VarSpec {
+            var_type: VarType::Int,
+            required: true,
+            ..Default::default()
+        };
+        schema.insert("PORT".to_string(), spec);
+
+        let mut env_map = std::collections::HashMap::new();
+        env_map.insert("PORT".to_string(), "invalid".to_string());
+
+        let errors = validate(&schema, &env_map);
+        let issues = errors_to_issues(errors, &schema);
+        assert!(!issues.is_empty());
+        assert_eq!(issues[0].severity, crate::schema::Severity::Error);
+    }
+
+    #[test]
+    fn test_severity_mixed_warning_and_error() {
+        // Schema with both warning and error severity fields
+        let mut schema = Schema::new();
+
+        let warn_spec = VarSpec {
+            var_type: VarType::Int,
+            required: true,
+            severity: crate::schema::Severity::Warning,
+            ..Default::default()
+        };
+        schema.insert("WARN_PORT".to_string(), warn_spec);
+
+        let error_spec = VarSpec {
+            var_type: VarType::Int,
+            required: true,
+            ..Default::default()
+        };
+        schema.insert("ERROR_PORT".to_string(), error_spec);
+
+        let mut env_map = std::collections::HashMap::new();
+        env_map.insert("WARN_PORT".to_string(), "invalid".to_string());
+        env_map.insert("ERROR_PORT".to_string(), "invalid".to_string());
+
+        let errors = validate(&schema, &env_map);
+        let issues = errors_to_issues(errors, &schema);
+
+        // Should have both warnings and errors
+        let warnings: Vec<_> = issues.iter()
+            .filter(|i| i.severity == crate::schema::Severity::Warning)
+            .collect();
+        let errors_list: Vec<_> = issues.iter()
+            .filter(|i| i.severity == crate::schema::Severity::Error)
+            .collect();
+
+        assert!(!warnings.is_empty(), "Should have warnings");
+        assert!(!errors_list.is_empty(), "Should have errors");
+    }
+
+    // =========================================================================
+    // Watch Mode Tests (v0.3.4) - Additional validation
+    // =========================================================================
+
+    #[test]
+    fn test_watch_state_content_hash_changes() {
+        // Test that WatchState tracks content changes
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        fn hash_content(content: &str) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            content.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let content1 = "FOO=bar\n";
+        let content2 = "FOO=baz\n";
+
+        let hash1 = hash_content(content1);
+        let hash2 = hash_content(content2);
+
+        assert_ne!(hash1, hash2, "Different content should produce different hashes");
+    }
+
+    #[test]
+    fn test_detect_changes_added_key() {
+        let old: std::collections::HashMap<String, String> = [
+            ("FOO".to_string(), "bar".to_string()),
+        ].into_iter().collect();
+
+        let new: std::collections::HashMap<String, String> = [
+            ("FOO".to_string(), "bar".to_string()),
+            ("BAZ".to_string(), "qux".to_string()),
+        ].into_iter().collect();
+
+        let changes = detect_changes(&old, &new);
+        assert!(!changes.is_empty(), "Should detect added key");
+        // Check that one of the changes is for the added key "BAZ"
+        assert_eq!(changes.len(), 1, "Should have exactly one change");
+    }
+
+    #[test]
+    fn test_detect_changes_removed_key() {
+        let old: std::collections::HashMap<String, String> = [
+            ("FOO".to_string(), "bar".to_string()),
+            ("BAZ".to_string(), "qux".to_string()),
+        ].into_iter().collect();
+
+        let new: std::collections::HashMap<String, String> = [
+            ("FOO".to_string(), "bar".to_string()),
+        ].into_iter().collect();
+
+        let changes = detect_changes(&old, &new);
+        assert!(!changes.is_empty(), "Should detect removed key");
+        assert_eq!(changes.len(), 1, "Should have exactly one change");
+    }
+
+    #[test]
+    fn test_detect_changes_modified_key() {
+        let old: std::collections::HashMap<String, String> = [
+            ("FOO".to_string(), "bar".to_string()),
+        ].into_iter().collect();
+
+        let new: std::collections::HashMap<String, String> = [
+            ("FOO".to_string(), "baz".to_string()),
+        ].into_iter().collect();
+
+        let changes = detect_changes(&old, &new);
+        assert!(!changes.is_empty(), "Should detect modified key");
+        assert_eq!(changes.len(), 1, "Should have exactly one change");
+    }
+
+    #[test]
+    fn test_detect_changes_no_changes() {
+        let old: std::collections::HashMap<String, String> = [
+            ("FOO".to_string(), "bar".to_string()),
+        ].into_iter().collect();
+
+        let new = old.clone();
+
+        let changes = detect_changes(&old, &new);
+        assert!(changes.is_empty(), "Should detect no changes for identical maps");
+    }
+
+    #[test]
+    fn test_detect_changes_multiple_changes() {
+        let old: std::collections::HashMap<String, String> = [
+            ("KEEP".to_string(), "same".to_string()),
+            ("REMOVE".to_string(), "gone".to_string()),
+            ("MODIFY".to_string(), "old".to_string()),
+        ].into_iter().collect();
+
+        let new: std::collections::HashMap<String, String> = [
+            ("KEEP".to_string(), "same".to_string()),
+            ("ADD".to_string(), "new".to_string()),
+            ("MODIFY".to_string(), "new".to_string()),
+        ].into_iter().collect();
+
+        let changes = detect_changes(&old, &new);
+        // Should have: 1 removed, 1 added, 1 modified = 3 changes
+        assert_eq!(changes.len(), 3, "Should detect all three types of changes");
+    }
+
+    // ====== Additional Watch Mode Tests ======
+
+    #[test]
+    fn test_watch_state_empty_maps() {
+        let empty: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let changes = detect_changes(&empty, &empty);
+        assert!(changes.is_empty(), "Empty maps should have no changes");
+    }
+
+    #[test]
+    fn test_watch_state_add_first_key() {
+        let empty: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let one_key: std::collections::HashMap<String, String> = [
+            ("FIRST".to_string(), "value".to_string()),
+        ].into_iter().collect();
+
+        let changes = detect_changes(&empty, &one_key);
+        assert_eq!(changes.len(), 1, "Adding first key should be one change");
+    }
+
+    #[test]
+    fn test_watch_state_remove_last_key() {
+        let one_key: std::collections::HashMap<String, String> = [
+            ("LAST".to_string(), "value".to_string()),
+        ].into_iter().collect();
+        let empty: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+        let changes = detect_changes(&one_key, &empty);
+        assert_eq!(changes.len(), 1, "Removing last key should be one change");
+    }
+
+    #[test]
+    fn test_watch_state_value_whitespace_change() {
+        let old: std::collections::HashMap<String, String> = [
+            ("KEY".to_string(), "value".to_string()),
+        ].into_iter().collect();
+
+        let new: std::collections::HashMap<String, String> = [
+            ("KEY".to_string(), "value ".to_string()), // trailing space
+        ].into_iter().collect();
+
+        let changes = detect_changes(&old, &new);
+        assert_eq!(changes.len(), 1, "Whitespace change should be detected");
+    }
+
+    #[test]
+    fn test_watch_state_case_sensitive_keys() {
+        let old: std::collections::HashMap<String, String> = [
+            ("KEY".to_string(), "value".to_string()),
+        ].into_iter().collect();
+
+        let new: std::collections::HashMap<String, String> = [
+            ("key".to_string(), "value".to_string()),
+        ].into_iter().collect();
+
+        let changes = detect_changes(&old, &new);
+        // KEY removed, key added = 2 changes
+        assert_eq!(changes.len(), 2, "Different case keys are different");
+    }
+
+    #[test]
+    fn test_watch_state_empty_value() {
+        let with_value: std::collections::HashMap<String, String> = [
+            ("KEY".to_string(), "value".to_string()),
+        ].into_iter().collect();
+
+        let empty_value: std::collections::HashMap<String, String> = [
+            ("KEY".to_string(), "".to_string()),
+        ].into_iter().collect();
+
+        let changes = detect_changes(&with_value, &empty_value);
+        assert_eq!(changes.len(), 1, "Value to empty should be a change");
+    }
+
+    // ====== Type Validation Edge Cases ======
+
+    #[test]
+    fn test_date_format_various_valid() {
+        // Regex validates format YYYY-MM-DD, not calendar logic
+        let schema = make_schema(vec![("DATE", date_spec(true))]);
+        let env = make_env(vec![("DATE", "2023-01-01")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty(), "Valid date format should pass");
+    }
+
+    #[test]
+    fn test_date_format_with_invalid_separator() {
+        // Using slashes instead of dashes
+        let schema = make_schema(vec![("DATE", date_spec(true))]);
+        let env = make_env(vec![("DATE", "2024/04/15")]);
+        let errors = validate(&schema, &env);
+        assert!(!errors.is_empty(), "Invalid separator should fail");
+    }
+
+    #[test]
+    fn test_hostname_with_numbers() {
+        let schema = make_schema(vec![("HOST", hostname_spec(true))]);
+        let env = make_env(vec![("HOST", "server01.example.com")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty(), "Hostname with numbers should be valid");
+    }
+
+    #[test]
+    fn test_hostname_single_label() {
+        let schema = make_schema(vec![("HOST", hostname_spec(true))]);
+        let env = make_env(vec![("HOST", "myserver")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty(), "Single label hostname should be valid");
+    }
+
+    #[test]
+    fn test_semver_prerelease_alpha() {
+        let schema = make_schema(vec![("VERSION", semver_spec(true))]);
+        let env = make_env(vec![("VERSION", "1.0.0-alpha")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty(), "Semver with alpha prerelease should be valid");
+    }
+
+    #[test]
+    fn test_semver_prerelease_with_numbers() {
+        let schema = make_schema(vec![("VERSION", semver_spec(true))]);
+        let env = make_env(vec![("VERSION", "2.1.0-beta.1")]);
+        let errors = validate(&schema, &env);
+        assert!(errors.is_empty(), "Semver with numbered prerelease should be valid");
     }
 }

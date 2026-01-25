@@ -48,11 +48,50 @@ pub struct Config {
     pub rate_limit_seconds: Option<u64>,
 }
 
+/// Known valid config keys
+const VALID_CONFIG_KEYS: &[&str] = &[
+    "schema",
+    "env",
+    "allow_missing_env",
+    "detect_secrets",
+    "no_cache",
+    "no_color",
+    "verify_hash",
+    "ca_cert",
+    "rate_limit_seconds",
+];
+
 impl Config {
     /// Load config from .zenvrc in current or parent directories
     pub fn load() -> Option<Self> {
         let config_path = find_config_file()?;
         let content = fs::read_to_string(&config_path).ok()?;
+
+        // First parse as Value to check for unknown keys
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(obj) = value.as_object() {
+                let unknown_keys: Vec<&String> = obj
+                    .keys()
+                    .filter(|k| !VALID_CONFIG_KEYS.contains(&k.as_str()))
+                    .collect();
+
+                if !unknown_keys.is_empty() {
+                    eprintln!(
+                        "zenv warning: unknown key(s) in {}: {}",
+                        config_path.display(),
+                        unknown_keys
+                            .iter()
+                            .map(|k| format!("'{}'", k))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    eprintln!(
+                        "  Valid keys: {}",
+                        VALID_CONFIG_KEYS.join(", ")
+                    );
+                }
+            }
+        }
 
         match serde_json::from_str::<Config>(&content) {
             Ok(config) => {
@@ -269,5 +308,132 @@ mod tests {
         let json = "not valid json";
         let result: Result<Config, _> = serde_json::from_str(json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_valid_config_keys_list() {
+        // Ensure all struct fields are in the valid keys list
+        assert!(VALID_CONFIG_KEYS.contains(&"schema"));
+        assert!(VALID_CONFIG_KEYS.contains(&"env"));
+        assert!(VALID_CONFIG_KEYS.contains(&"allow_missing_env"));
+        assert!(VALID_CONFIG_KEYS.contains(&"detect_secrets"));
+        assert!(VALID_CONFIG_KEYS.contains(&"no_cache"));
+        assert!(VALID_CONFIG_KEYS.contains(&"no_color"));
+        assert!(VALID_CONFIG_KEYS.contains(&"verify_hash"));
+        assert!(VALID_CONFIG_KEYS.contains(&"ca_cert"));
+        assert!(VALID_CONFIG_KEYS.contains(&"rate_limit_seconds"));
+    }
+
+    #[test]
+    fn test_unknown_keys_ignored_but_parseable() {
+        // Unknown keys should not prevent parsing
+        let json = r#"{"schema": "test.json", "unknown_key": "value"}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.schema, Some("test.json".to_string()));
+    }
+
+    // ====== Edge Case Tests ======
+
+    #[test]
+    fn test_config_exists_returns_bool() {
+        // Should return false when no config file exists in temp test environment
+        // Or true if one happens to exist - either way, it should not panic
+        let _ = config_exists();
+    }
+
+    #[test]
+    fn test_config_path_returns_option() {
+        // Should return None when no config file exists
+        // Or Some(path) if one exists - either way, it should not panic
+        let _ = config_path();
+    }
+
+    #[test]
+    fn test_config_default_values() {
+        let config = Config::default();
+        assert!(config.schema.is_none());
+        assert!(config.env.is_none());
+        assert!(config.allow_missing_env.is_none());
+        assert!(config.detect_secrets.is_none());
+        assert!(config.no_cache.is_none());
+        assert!(config.no_color.is_none());
+        assert!(config.verify_hash.is_none());
+        assert!(config.ca_cert.is_none());
+        assert!(config.rate_limit_seconds.is_none());
+    }
+
+    #[test]
+    fn test_config_all_fields_set() {
+        let config = Config {
+            schema: Some("test.json".to_string()),
+            env: Some(".env.test".to_string()),
+            allow_missing_env: Some(true),
+            detect_secrets: Some(true),
+            no_cache: Some(true),
+            no_color: Some(true),
+            verify_hash: Some("abc123".to_string()),
+            ca_cert: Some("/path/to/cert.pem".to_string()),
+            rate_limit_seconds: Some(60),
+        };
+
+        assert_eq!(config.schema_or("default"), "test.json");
+        assert_eq!(config.env_or("default"), ".env.test");
+        assert!(config.allow_missing_env_or(false));
+        assert!(config.detect_secrets_or(false));
+        assert!(config.no_cache_or(false));
+        assert!(config.no_color_or(false));
+    }
+
+    // ====== Config File Edge Cases ======
+
+    #[test]
+    fn test_config_with_unknown_keys_still_parses() {
+        // Unknown keys should not prevent parsing the valid keys
+        let json = r#"{
+            "schema": "test.json",
+            "unknown_key_1": "value1",
+            "another_unknown": 123,
+            "env": ".env.test"
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.schema, Some("test.json".to_string()));
+        assert_eq!(config.env, Some(".env.test".to_string()));
+    }
+
+    #[test]
+    fn test_config_all_valid_keys() {
+        // All valid keys should be recognized
+        for key in VALID_CONFIG_KEYS.iter() {
+            assert!(
+                ["schema", "env", "allow_missing_env", "detect_secrets",
+                 "no_cache", "no_color", "verify_hash", "ca_cert", "rate_limit_seconds"]
+                    .contains(key),
+                "Key '{}' is in VALID_CONFIG_KEYS but not in expected list",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn test_config_empty_values() {
+        // Empty string values should be allowed
+        let json = r#"{"schema": "", "env": ""}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.schema, Some("".to_string()));
+        assert_eq!(config.env, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_config_rate_limit_edge_values() {
+        // Zero rate limit should be valid
+        let json = r#"{"rate_limit_seconds": 0}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.rate_limit_seconds, Some(0));
+
+        // Large rate limit should be valid
+        let json2 = r#"{"rate_limit_seconds": 86400}"#;
+        let config2: Config = serde_json::from_str(json2).unwrap();
+        assert_eq!(config2.rate_limit_seconds, Some(86400));
     }
 }

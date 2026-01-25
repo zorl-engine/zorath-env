@@ -759,4 +759,71 @@ API_KEY:
         assert_eq!(key_validate.min_length, Some(32));
         assert_eq!(key_validate.pattern, Some("^sk_".to_string()));
     }
+
+    // ====== load_schema() Backward Compatibility Tests ======
+
+    #[test]
+    fn test_load_schema_wrapper_success() {
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let schema_path = dir.path().join("test_wrapper.schema.json");
+        let mut file = fs::File::create(&schema_path).unwrap();
+        writeln!(file, r#"{{"PORT": {{"type": "int", "required": true}}}}"#).unwrap();
+
+        let result = load_schema(schema_path.to_str().unwrap());
+        assert!(result.is_ok());
+        let schema = result.unwrap();
+        assert!(schema.contains_key("PORT"));
+    }
+
+    #[test]
+    fn test_load_schema_wrapper_file_not_found() {
+        let result = load_schema("nonexistent_schema_12345.json");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, SchemaError::Read(_)));
+    }
+
+    #[test]
+    fn test_load_schema_wrapper_invalid_json() {
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let schema_path = dir.path().join("invalid.schema.json");
+        let mut file = fs::File::create(&schema_path).unwrap();
+        writeln!(file, "{{ invalid json }}").unwrap();
+
+        let result = load_schema(schema_path.to_str().unwrap());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, SchemaError::Parse(_, _)));
+    }
+
+    #[test]
+    fn test_load_options_default() {
+        let opts = LoadOptions::default();
+        assert!(!opts.no_cache);
+        assert!(opts.verify_hash.is_none());
+        assert!(opts.ca_cert.is_none());
+        assert!(opts.rate_limit_seconds.is_none());
+    }
+
+    #[test]
+    fn test_schema_error_display() {
+        let read_err = SchemaError::Read("file not found".to_string());
+        assert!(read_err.to_string().contains("file not found"));
+
+        let parse_err = SchemaError::Parse("JSON".to_string(), "syntax error".to_string());
+        assert!(parse_err.to_string().contains("JSON"));
+        assert!(parse_err.to_string().contains("syntax error"));
+
+        let circular_err = SchemaError::CircularInheritance("schema.json".to_string());
+        assert!(circular_err.to_string().contains("circular"));
+
+        let depth_err = SchemaError::InheritanceDepthExceeded;
+        assert!(depth_err.to_string().contains("depth"));
+    }
 }

@@ -45,6 +45,18 @@ Instead, please report security issues via:
 - Information disclosure
 - Dependency vulnerabilities
 
+## Security Features
+
+### Secret Masking (v0.3.8+)
+
+zenv automatically masks sensitive values in output to prevent accidental exposure:
+
+- **Error messages**: Sensitive values shown as `***MASKED***`
+- **fix --dry-run**: Previewed fixes mask sensitive values
+- **Auto-detection**: Keys containing `password`, `secret`, `token`, `key`, `api_key` are masked
+
+This prevents secrets from appearing in terminal output, logs, or screenshots.
+
 ## Remote Schema Security (v0.3.5+)
 
 zenv provides security features for remote schema fetching:

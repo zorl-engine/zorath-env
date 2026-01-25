@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.8] - 2026-01-25
+
+### Added
+- **`zenv cache stats`**: New subcommand showing cache statistics
+  - Total schemas, size, TTL, age range, expired count
+  - Quick overview of cache health
+- **GitHub Secrets export format**: `zenv export --format github-secrets`
+  - Generates shell script with `gh secret set` commands
+  - Handles multiline values and special characters
+  - Ready-to-run with GitHub CLI
+- **Structured exit codes** for CI/CD integration
+  - Exit 1: Validation failures (check failed)
+  - Exit 2: Input/file errors (not found, failed to read)
+  - Exit 3: Schema errors (invalid JSON, parse failures)
+- **Typo detection in diff**: "Did you mean?" suggestions
+  - Detects possible typos between compared files
+  - Uses Levenshtein distance for smart matching
+- **Config key validation**: Warns about unknown keys in `.zenvrc`
+  - Lists valid configuration options
+  - Helps catch typos in config files
+- **Actionable fix suggestions**: Check command now suggests `zenv fix`
+  - Shows when validation fails with auto-fixable issues
+  - Includes hint about `--remove-unknown` flag
+- 250 new tests (630 total)
+
+### Changed
+- **Secret masking in fix --dry-run**: Sensitive values now display as `***MASKED***`
+  - Prevents accidental exposure in logs/screenshots
+  - Uses same detection as `--detect-secrets`
+- **Improved CLI help**: Added examples for security flags
+  - `--verify-hash` and `--ca-cert` usage examples
+  - Clearer documentation for cache, diff, fix, export commands
+- **Performance**: Regex patterns in scan command now use OnceLock caching
+  - Patterns compiled once and reused across calls
+  - Faster repeated scans in watch mode or library usage
+
 ## [0.3.7] - 2026-01-20
 
 ### Added

@@ -1,14 +1,14 @@
 # zenv - Tested and Verified
 
-**Version:** 0.3.7
+**Version:** 0.3.8
 **Status:** Verified Working
-**Test Date:** January 20, 2026
+**Test Date:** January 21, 2026
 
 ---
 
 ## Test Summary
 
-zenv was tested on production codebases and passed all tests. All 13 commands, 28 advertised features, and library APIs verified working. **380 total tests** (351 unit + 29 integration).
+zenv was tested on production codebases and passed all tests. All 13 commands, 31 advertised features, and library APIs verified working. **630 total tests** (547 unit + 83 integration).
 
 ---
 
@@ -37,10 +37,11 @@ Tested on production schema with 72 variables (database, cache, payments, email 
 | `zenv scan` | PASS | Scanned 493 files, found 99 env vars in code |
 | `zenv scan --show-unused` | PASS | Identified 4 unused schema variables |
 | `zenv cache list` | PASS | Listed cached remote schemas |
+| `zenv cache stats` | PASS | Displayed cache statistics (size, TTL, age) |
 | `zenv cache clear` | PASS | Cleared schema cache |
 | `zenv completions bash` | PASS | Valid bash completion script |
 | `zenv completions powershell` | PASS | Valid PowerShell completion script |
-| `zenv version` | PASS | Shows `zenv v0.3.7` |
+| `zenv version` | PASS | Shows `zenv v0.3.8` |
 | `zenv version --check-update` | PASS | Reports "latest version" with changelog links |
 | `zenv template --list` | PASS | Lists 3 available templates (github, gitlab, circleci) |
 | `zenv template github` | PASS | Generates GitHub Actions workflow |
@@ -82,21 +83,24 @@ All advertised features were individually tested and verified:
 | 26 | Framework Presets | PASS | 6 presets (nextjs, rails, django, fastapi, express, laravel) |
 | 27 | Code Scanning | PASS | Scanned 493 files for env var usage |
 | 28 | Auto-Fix | PASS | Preview and apply fixes with backup |
+| 29 | GitHub Secrets Export | PASS | `--format github-secrets` generates gh CLI commands |
+| 30 | Structured Exit Codes | PASS | Exit 1=validation, 2=file error, 3=schema error |
+| 31 | Typo Detection in Diff | PASS | "Did you mean?" suggestions between files |
 
 ### Unit Test Coverage
 
-**v0.3.7** includes 351 unit tests covering all core functionality:
+**v0.3.8** includes 547 unit tests covering all core functionality:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| `commands/check.rs` | 110 | Type validations (14 types), validation rules, secret masking, suggestions |
-| `schema.rs` | 77 | Type parsing, serialization, inheritance, error handling |
-| `commands/fix.rs` | 43 | Auto-fix, backup creation, dry-run mode |
-| `envfile.rs` | 40 | Parser, multiline, escapes, variable interpolation, duplicate key detection |
-| `commands/export.rs` | 29 | Export to shell/docker/k8s/json/systemd/dotenv |
-| `remote.rs` | 28 | URL detection, HTTP rejection, cache filename, URL resolution |
-| `commands/diff.rs` | 18 | File comparison, truncation, schema compliance, JSON output |
-| `config.rs` | 18 | Config loading, fallbacks, JSON parsing |
+| `commands/check.rs` | 128 | Type validations (14 types), validation rules, secret masking, suggestions, watch mode |
+| `schema.rs` | 82 | Type parsing, serialization, inheritance, error handling, edge cases |
+| `commands/fix.rs` | 47 | Auto-fix, backup creation, dry-run mode, sensitive keys, preserve lines |
+| `envfile.rs` | 48 | Parser, multiline, escapes, variable interpolation, duplicate key detection, I/O errors |
+| `commands/export.rs` | 34 | Export to shell/docker/k8s/json/systemd/dotenv/github-secrets |
+| `remote.rs` | 36 | URL detection, HTTP rejection, cache filename, URL resolution, TLS config |
+| `config.rs` | 26 | Config loading, fallbacks, JSON parsing, unknown keys, edge values |
+| `commands/diff.rs` | 25 | File comparison, truncation, schema compliance, JSON output, typo detection |
 | `secrets.rs` | 17 | Secret detection patterns, high-entropy strings, URL passwords, whitelist |
 | `commands/scan.rs` | 17 | Code scanning, language detection, pattern matching |
 | `suggestions.rs` | 14 | Levenshtein distance, variable/enum suggestions |
@@ -104,15 +108,17 @@ All advertised features were individually tested and verified:
 | `commands/example.rs` | 12 | .env.example generation, type-aware placeholders |
 | `commands/docs.rs` | 11 | Markdown and JSON output formats, sorting, validation rules display |
 | `commands/init.rs` | 8 | Type inference, smart description inference, service name extraction |
-| `commands/cache.rs` | 6 | Cache management (list, clear, path) |
-| `commands/doctor.rs` | 5 | Health check diagnostics |
-| `commands/completions.rs` | 4 | Shell completions for bash, zsh, fish, powershell |
+| `commands/cache.rs` | 17 | Cache management (list, clear, path, stats) |
+| `commands/doctor.rs` | 19 | Health check diagnostics, validation paths, file checks |
+| `commands/completions.rs` | 8 | Shell completions for bash, zsh, fish, powershell |
+| `commands/version.rs` | 11 | Version parsing, update checks, changelog URLs |
+| `commands/template.rs` | 9 | CI/CD templates (github, gitlab, circleci), aliases |
 
 All tests pass with zero warnings and zero clippy lints.
 
 ### Integration Test Coverage
 
-**v0.3.7** adds 29 integration tests in `tests/integration_tests.rs`:
+**v0.3.8** includes 83 integration tests in `tests/integration_tests.rs`:
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
@@ -852,7 +858,7 @@ $ zenv docs --schema child.schema.json
 | Remote schema inheritance | Working |
 | Circular reference detection | Working |
 | Custom file paths | Working |
-| Exit codes (0 = pass, 1 = fail) | Working |
+| Exit codes (0=valid, 1=validation, 2=file, 3=schema) | Working |
 | `--check-update` flag | Working |
 | Env file fallback (.env.local, etc.) | Working |
 | Shell completions (bash/zsh/fish/powershell) | Working |
@@ -868,14 +874,17 @@ $ zenv docs --schema child.schema.json
 | YAML schema format | Working |
 | Severity levels (warning/error) | Working |
 | `zenv check --format json` | Working |
-| `zenv export` (6 formats) | Working |
+| `zenv export` (7 formats) | Working |
+| `zenv cache stats` | Working |
+| Typo detection in diff | Working |
+| Config key validation warnings | Working |
 | `zenv doctor` | Working |
 
 ---
 
 ## Conclusion
 
-zenv v0.3.7 adds clean library APIs for embedding (validate_files, export_to_string, generate functions) and 29 integration tests for comprehensive coverage. v0.3.6 included CI bug fixes, webpki-roots 1.0 update, and improved GitHub Action reliability. v0.3.5 added 8 new validation types (uuid, email, ipv4, ipv6, semver, port, date, hostname), YAML schema format, severity levels (warning vs error), JSON output for check command, export to 6 formats (shell/docker/k8s/json/systemd/dotenv), doctor health check command, "Did You Mean?" suggestions, secret masking, config file support (.zenvrc), 6 framework presets, auto-fix command, code scanning (9 languages), and cache management. v0.3.4 added watch mode with delta detection. v0.3.3 added remote schema support. v0.3.2 added secret detection and diff command. v0.3.0 introduced shell completions, example command, and GitHub Action. **380 tests** (351 unit + 29 integration) and 40 features verified. Ready for production use.
+zenv v0.3.8 adds GitHub Secrets export format, cache stats subcommand, structured exit codes (1/2/3), typo detection in diff, config key validation warnings, fix suggestions in check output, and secret masking in fix --dry-run. v0.3.7 added clean library APIs for embedding (validate_files, export_to_string, generate functions) and integration tests for comprehensive coverage. v0.3.6 included CI bug fixes, webpki-roots 1.0 update, and improved GitHub Action reliability. v0.3.5 added 8 new validation types (uuid, email, ipv4, ipv6, semver, port, date, hostname), YAML schema format, severity levels (warning vs error), JSON output for check command, export to 6 formats, doctor health check, "Did You Mean?" suggestions, secret masking, config file support (.zenvrc), 6 framework presets, auto-fix command, code scanning (9 languages), and cache management. v0.3.4 added watch mode with delta detection. v0.3.3 added remote schema support. v0.3.2 added secret detection and diff command. v0.3.0 introduced shell completions, example command, and GitHub Action. **630 tests** (547 unit + 83 integration) and 43 features verified. Ready for production use.
 
 ---
 

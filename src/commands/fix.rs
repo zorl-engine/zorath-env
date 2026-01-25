@@ -4,6 +4,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+// Import cached regex functions and utilities from check module
+use super::check::{
+    date_regex, email_regex, hostname_regex, ipv4_regex, ipv6_regex, is_sensitive_key,
+    semver_regex, uuid_regex,
+};
+
 /// Actions that can be automatically fixed
 #[derive(Debug, Clone)]
 enum FixAction {
@@ -238,11 +244,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             }
         }
         VarType::Uuid => {
-            // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-            let uuid_re = regex::Regex::new(
-                r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-            ).unwrap();
-            if !uuid_re.is_match(value) {
+            // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (using cached regex)
+            if !uuid_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'",
                     key, value
@@ -250,11 +253,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             }
         }
         VarType::Email => {
-            // Simplified RFC 5322 email regex
-            let email_re = regex::Regex::new(
-                r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
-            ).unwrap();
-            if !email_re.is_match(value) {
+            // Simplified RFC 5322 email (using cached regex)
+            if !email_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected email (user@domain.tld), got '{}'",
                     key, value
@@ -262,9 +262,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             }
         }
         VarType::Ipv4 => {
-            // IPv4 format with octet range check
-            let ipv4_re = regex::Regex::new(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$").unwrap();
-            if let Some(caps) = ipv4_re.captures(value) {
+            // IPv4 format with octet range check (using cached regex)
+            if let Some(caps) = ipv4_regex().captures(value) {
                 for i in 1..=4 {
                     if let Some(m) = caps.get(i) {
                         if let Ok(octet) = m.as_str().parse::<u16>() {
@@ -285,11 +284,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             }
         }
         VarType::Semver => {
-            // Semantic versioning format: x.y.z[-prerelease][+build]
-            let semver_re = regex::Regex::new(
-                r"^\d+\.\d+\.\d+(-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?(\+[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?$"
-            ).unwrap();
-            if !semver_re.is_match(value) {
+            // Semantic versioning format: x.y.z[-prerelease][+build] (using cached regex)
+            if !semver_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected semver (x.y.z[-prerelease][+build]), got '{}'",
                     key, value
@@ -297,11 +293,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             }
         }
         VarType::Ipv6 => {
-            // IPv6 format
-            let ipv6_re = regex::Regex::new(
-                r"^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^(([0-9a-fA-F]{1,4}:)*)?::(([0-9a-fA-F]{1,4}:)*[0-9a-fA-F]{1,4})?$"
-            ).unwrap();
-            if !ipv6_re.is_match(value) {
+            // IPv6 format (using cached regex)
+            if !ipv6_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected ipv6 address, got '{}'",
                     key, value
@@ -321,9 +314,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             }
         }
         VarType::Date => {
-            // ISO 8601 date format: YYYY-MM-DD
-            let date_re = regex::Regex::new(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$").unwrap();
-            if !date_re.is_match(value) {
+            // ISO 8601 date format: YYYY-MM-DD (using cached regex)
+            if !date_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected date (YYYY-MM-DD), got '{}'",
                     key, value
@@ -331,11 +323,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             }
         }
         VarType::Hostname => {
-            // RFC 1123 hostname
-            let hostname_re = regex::Regex::new(
-                r"^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$"
-            ).unwrap();
-            if value.len() > 253 || !hostname_re.is_match(value) {
+            // RFC 1123 hostname (using cached regex)
+            if value.len() > 253 || !hostname_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected hostname (RFC 1123), got '{}'",
                     key, value
@@ -426,7 +415,13 @@ fn print_dry_run(analysis: &FixAnalysis, env_path: &str) {
                 } = action
                 {
                     if *has_default {
-                        println!("  + {}={} (schema default)", key, value);
+                        // Mask sensitive values for safe display
+                        let display_value = if is_sensitive_key(key) {
+                            "***MASKED***".to_string()
+                        } else {
+                            value.clone()
+                        };
+                        println!("  + {}={} (schema default)", key, display_value);
                     } else {
                         println!("  + {}= (empty placeholder)", key);
                     }
@@ -837,5 +832,205 @@ mod tests {
         // Backup should exist
         let backup_path = format!("{}.backup", env_path.to_str().unwrap());
         assert!(Path::new(&backup_path).exists());
+    }
+
+    #[test]
+    fn test_check_value_error_url() {
+        let spec = VarSpec {
+            var_type: VarType::Url,
+            ..Default::default()
+        };
+
+        assert!(check_value_error("API_URL", "https://example.com", &spec).is_none());
+        assert!(check_value_error("API_URL", "http://localhost:8080", &spec).is_none());
+        assert!(check_value_error("API_URL", "not-a-url", &spec).is_some());
+    }
+
+    #[test]
+    fn test_check_value_error_enum() {
+        let spec = VarSpec {
+            var_type: VarType::Enum,
+            values: Some(vec!["dev".to_string(), "staging".to_string(), "prod".to_string()]),
+            ..Default::default()
+        };
+
+        assert!(check_value_error("ENV", "dev", &spec).is_none());
+        assert!(check_value_error("ENV", "staging", &spec).is_none());
+        assert!(check_value_error("ENV", "invalid", &spec).is_some());
+    }
+
+    #[test]
+    fn test_check_value_error_float() {
+        let spec = VarSpec {
+            var_type: VarType::Float,
+            ..Default::default()
+        };
+
+        assert!(check_value_error("RATE", "3.14", &spec).is_none());
+        assert!(check_value_error("RATE", "-1.5", &spec).is_none());
+        assert!(check_value_error("RATE", "not-a-float", &spec).is_some());
+    }
+
+    #[test]
+    fn test_build_line_map_with_multiline() {
+        let content = "FOO=bar\nMULTI=\"line1\nline2\"\nBAZ=qux";
+        let map = build_line_map(content);
+
+        assert_eq!(map.get("FOO"), Some(&1));
+        assert_eq!(map.get("MULTI"), Some(&2));
+        assert_eq!(map.get("BAZ"), Some(&4));
+    }
+
+    #[test]
+    fn test_build_line_map_with_export() {
+        let content = "export FOO=bar\nexport BAZ=qux";
+        let map = build_line_map(content);
+
+        assert_eq!(map.get("FOO"), Some(&1));
+        assert_eq!(map.get("BAZ"), Some(&2));
+    }
+
+    #[test]
+    fn test_needs_quotes_with_special_chars() {
+        assert!(needs_quotes("value with space"));
+        assert!(needs_quotes("value\twith\ttab"));
+        assert!(needs_quotes("value#with#hash"));
+        // Equals signs don't need quoting - they're fine in values
+        assert!(!needs_quotes("value=with=equals"));
+        assert!(!needs_quotes("simplevalue123"));
+    }
+
+    #[test]
+    fn test_analyze_multiple_missing_required() {
+        let env_map = HashMap::new();
+        let mut schema = Schema::new();
+        schema.insert("KEY1".to_string(), VarSpec {
+            var_type: VarType::String,
+            required: true,
+            default: Some(serde_json::json!("val1")),
+            ..Default::default()
+        });
+        schema.insert("KEY2".to_string(), VarSpec {
+            var_type: VarType::String,
+            required: true,
+            default: Some(serde_json::json!("val2")),
+            ..Default::default()
+        });
+
+        let analysis = analyze_fixes(&env_map, "", &schema, false);
+
+        assert_eq!(analysis.fixable.len(), 2);
+    }
+
+    // ====== Fix Command Edge Cases ======
+
+    #[test]
+    fn test_fix_with_sensitive_key_default() {
+        // Test that sensitive keys like API_KEY work correctly
+        let dir = tempdir().unwrap();
+
+        let schema_path = dir.path().join("schema.json");
+        fs::write(
+            &schema_path,
+            r#"{"API_SECRET": {"type": "string", "required": true, "default": "secret_value_123"}}"#,
+        )
+        .unwrap();
+
+        let env_path = dir.path().join(".env");
+        fs::write(&env_path, "").unwrap();
+
+        let result = run(
+            env_path.to_str().unwrap(),
+            schema_path.to_str().unwrap(),
+            false,
+            true, // dry_run
+            false,
+            None,
+            None,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fix_preserves_existing_lines() {
+        let dir = tempdir().unwrap();
+
+        let schema_path = dir.path().join("schema.json");
+        fs::write(
+            &schema_path,
+            r#"{
+                "EXISTING": {"type": "string"},
+                "NEW_KEY": {"type": "string", "required": true, "default": "new_value"}
+            }"#,
+        )
+        .unwrap();
+
+        let env_path = dir.path().join(".env");
+        fs::write(&env_path, "EXISTING=keep_this\n# Comment to preserve\n").unwrap();
+
+        let result = run(
+            env_path.to_str().unwrap(),
+            schema_path.to_str().unwrap(),
+            false,
+            false, // not dry_run
+            false,
+            None,
+            None,
+        );
+
+        assert!(result.is_ok());
+
+        let content = fs::read_to_string(&env_path).unwrap();
+        assert!(content.contains("EXISTING=keep_this"));
+        assert!(content.contains("NEW_KEY=new_value"));
+    }
+
+    #[test]
+    fn test_fix_remove_unknown_flag() {
+        let dir = tempdir().unwrap();
+
+        let schema_path = dir.path().join("schema.json");
+        fs::write(
+            &schema_path,
+            r#"{"KNOWN": {"type": "string"}}"#,
+        )
+        .unwrap();
+
+        let env_path = dir.path().join(".env");
+        fs::write(&env_path, "KNOWN=value\nUNKNOWN=should_be_removed\n").unwrap();
+
+        // With remove_unknown = true
+        let result = run(
+            env_path.to_str().unwrap(),
+            schema_path.to_str().unwrap(),
+            true, // remove_unknown
+            false, // not dry_run
+            false,
+            None,
+            None,
+        );
+
+        assert!(result.is_ok());
+
+        let content = fs::read_to_string(&env_path).unwrap();
+        assert!(content.contains("KNOWN=value"));
+        assert!(!content.contains("UNKNOWN"));
+    }
+
+    #[test]
+    fn test_fix_analysis_empty_env_file() {
+        let env_map = HashMap::new();
+        let mut schema = Schema::new();
+        schema.insert("OPTIONAL".to_string(), VarSpec {
+            var_type: VarType::String,
+            required: false,
+            ..Default::default()
+        });
+
+        let analysis = analyze_fixes(&env_map, "", &schema, false);
+
+        // Optional var without default should not create a fix
+        assert!(analysis.fixable.is_empty());
     }
 }

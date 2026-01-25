@@ -992,4 +992,94 @@ mod tests {
         assert_eq!(result.duplicates[0].previous_line, 2);
         assert_eq!(result.duplicates[0].line, 5);
     }
+
+    // ====== File I/O Tests ======
+
+    #[test]
+    fn test_parse_env_file_not_found() {
+        let result = parse_env_file("nonexistent_file_12345.env");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, EnvError::Read(_)));
+        let err_msg = err.to_string();
+        assert!(err_msg.contains("failed to read"));
+    }
+
+    #[test]
+    fn test_parse_env_file_detailed_not_found() {
+        let result = parse_env_file_detailed("nonexistent_file_67890.env");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, EnvError::Read(_)));
+    }
+
+    #[test]
+    fn test_parse_env_file_success() {
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("test_parse_success.env");
+        std::fs::write(&file_path, "FOO=bar\nBAZ=qux").unwrap();
+
+        let result = parse_env_file(file_path.to_str().unwrap());
+        assert!(result.is_ok());
+        let map = result.unwrap();
+        assert_eq!(map.get("FOO"), Some(&"bar".to_string()));
+        assert_eq!(map.get("BAZ"), Some(&"qux".to_string()));
+
+        let _ = std::fs::remove_file(&file_path);
+    }
+
+    #[test]
+    fn test_parse_env_file_detailed_success() {
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("test_parse_detailed_success.env");
+        std::fs::write(&file_path, "FOO=bar\nFOO=baz").unwrap();
+
+        let result = parse_env_file_detailed(file_path.to_str().unwrap());
+        assert!(result.is_ok());
+        let parse_result = result.unwrap();
+        assert_eq!(parse_result.values.get("FOO"), Some(&"baz".to_string()));
+        assert_eq!(parse_result.duplicates.len(), 1);
+
+        let _ = std::fs::remove_file(&file_path);
+    }
+
+    #[test]
+    fn test_parse_env_file_empty_file() {
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("test_parse_empty.env");
+        std::fs::write(&file_path, "").unwrap();
+
+        let result = parse_env_file(file_path.to_str().unwrap());
+        assert!(result.is_ok());
+        let map = result.unwrap();
+        assert!(map.is_empty());
+
+        let _ = std::fs::remove_file(&file_path);
+    }
+
+    #[test]
+    fn test_env_error_display() {
+        let read_err = EnvError::Read("file not found".to_string());
+        assert!(read_err.to_string().contains("failed to read"));
+        assert!(read_err.to_string().contains("file not found"));
+
+        let circular_err = EnvError::CircularRef("VAR_A".to_string());
+        assert!(circular_err.to_string().contains("circular"));
+        assert!(circular_err.to_string().contains("VAR_A"));
+    }
+
+    #[test]
+    fn test_parse_env_file_with_special_characters() {
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("test_special_chars.env");
+        std::fs::write(&file_path, "URL=https://example.com?foo=bar&baz=qux\nKEY=\"value with spaces\"").unwrap();
+
+        let result = parse_env_file(file_path.to_str().unwrap());
+        assert!(result.is_ok());
+        let map = result.unwrap();
+        assert_eq!(map.get("URL"), Some(&"https://example.com?foo=bar&baz=qux".to_string()));
+        assert_eq!(map.get("KEY"), Some(&"value with spaces".to_string()));
+
+        let _ = std::fs::remove_file(&file_path);
+    }
 }

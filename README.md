@@ -111,8 +111,13 @@ zenv docs > ENVIRONMENT.md
 
 Validates `.env` against `env.schema.json`.
 
-* exits `0` if valid
-* exits `1` if invalid (CI-friendly)
+**Exit codes (CI-friendly):**
+* `0` - Valid
+* `1` - Validation failed (invalid values, missing required)
+* `2` - Input/file error (file not found, failed to read)
+* `3` - Schema error (invalid JSON, parse failure)
+
+When fixable issues are found, check suggests running `zenv fix`.
 
 ```bash
 zenv check                       # Basic validation
@@ -222,6 +227,7 @@ Shows:
 - Variables only in first file
 - Variables only in second file
 - Variables with different values
+- Possible typos ("Did you mean?" suggestions)
 - Optional schema compliance check for both files
 
 ### `zenv fix`
@@ -237,6 +243,8 @@ zenv fix --remove-unknown         # Also remove keys not in schema
 **What it fixes:**
 - Missing optional variables (adds with schema defaults)
 - Unknown keys (with `--remove-unknown`)
+
+**Security:** `--dry-run` masks sensitive values (passwords, keys, tokens) as `***MASKED***`.
 
 **What it reports but doesn't fix:**
 - Invalid types (needs human input)
@@ -262,6 +270,7 @@ Manage remote schema cache.
 
 ```bash
 zenv cache list                   # Show cached schemas
+zenv cache stats                  # Show cache statistics
 zenv cache clear                  # Clear all cached schemas
 zenv cache clear https://...      # Clear specific cached schema
 zenv cache path                   # Show cache directory location
@@ -272,15 +281,16 @@ zenv cache path                   # Show cache directory location
 Export `.env` to various formats for deployment.
 
 ```bash
-zenv export .env --format shell       # Shell script (export FOO="bar")
-zenv export .env --format docker      # Dockerfile (ENV FOO=bar)
-zenv export .env --format k8s         # Kubernetes ConfigMap YAML
-zenv export .env --format json        # JSON object
-zenv export .env --format systemd     # systemd Environment directives
-zenv export .env --format dotenv      # Standard .env format
+zenv export .env --format shell          # Shell script (export FOO="bar")
+zenv export .env --format docker         # Dockerfile (ENV FOO=bar)
+zenv export .env --format k8s            # Kubernetes ConfigMap YAML
+zenv export .env --format json           # JSON object
+zenv export .env --format systemd        # systemd Environment directives
+zenv export .env --format dotenv         # Standard .env format
+zenv export .env --format github-secrets # GitHub CLI (gh secret set)
 
-zenv export .env --schema s.json      # Only export vars in schema
-zenv export .env -f shell -o setup.sh # Write to file
+zenv export .env --schema s.json         # Only export vars in schema
+zenv export .env -f shell -o setup.sh    # Write to file
 ```
 
 ### `zenv doctor`

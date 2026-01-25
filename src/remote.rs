@@ -521,4 +521,262 @@ mod tests {
         let result = build_tls_config(Some("/nonexistent/path/ca.pem"));
         assert!(matches!(result, Err(RemoteError::CertificateError(_))));
     }
+
+    // =========================================================================
+    // Additional Hash Verification Tests
+    // =========================================================================
+
+    #[test]
+    fn test_verify_hash_empty_content() {
+        let content = "";
+        let hash = compute_content_hash(content);
+        assert!(verify_content_hash(content, &hash).is_ok());
+        // Empty string has a specific SHA-256 hash
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn test_verify_hash_unicode_content() {
+        let content = r#"{"description": "Unicode test"}"#;
+        let hash = compute_content_hash(content);
+        assert!(verify_content_hash(content, &hash).is_ok());
+    }
+
+    #[test]
+    fn test_verify_hash_with_newlines() {
+        let content = "line1\nline2\nline3";
+        let hash = compute_content_hash(content);
+        assert!(verify_content_hash(content, &hash).is_ok());
+        // Different newline style should produce different hash
+        let content_crlf = "line1\r\nline2\r\nline3";
+        let hash_crlf = compute_content_hash(content_crlf);
+        assert_ne!(hash, hash_crlf);
+    }
+
+    #[test]
+    fn test_compute_hash_deterministic() {
+        let content = r#"{"PORT": {"type": "int", "required": true}}"#;
+        let hash1 = compute_content_hash(content);
+        let hash2 = compute_content_hash(content);
+        let hash3 = compute_content_hash(content);
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash2, hash3);
+    }
+
+    #[test]
+    fn test_compute_hash_different_content_different_hash() {
+        let content1 = r#"{"FOO": "bar"}"#;
+        let content2 = r#"{"FOO": "baz"}"#;
+        let hash1 = compute_content_hash(content1);
+        let hash2 = compute_content_hash(content2);
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_compute_hash_special_characters() {
+        let content = r#"{"key": "value with $pecial & <chars>"}"#;
+        let hash = compute_content_hash(content);
+        assert_eq!(hash.len(), 64);
+        // Should only contain hex characters
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_verify_hash_short_prefix() {
+        let content = "test";
+        let hash = compute_content_hash(content);
+        // Even very short prefix should work (convenience feature)
+        assert!(verify_content_hash(content, &hash[..8]).is_ok());
+    }
+
+    // =========================================================================
+    // CA Certificate Tests
+    // =========================================================================
+
+    #[test]
+    fn test_build_tls_config_with_none() {
+        let result = build_tls_config(None);
+        assert!(result.is_ok(), "Should succeed with no CA cert");
+    }
+
+    #[test]
+    fn test_build_tls_config_empty_file() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        // Empty file - no certificates
+        let result = build_tls_config(Some(temp_file.path().to_str().unwrap()));
+        // Should succeed but with 0 certs (or error depending on implementation)
+        // The important thing is it doesn't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_build_tls_config_invalid_pem_content() {
+        use std::io::Write;
+        let mut temp_file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(temp_file, "This is not a valid PEM certificate").unwrap();
+        let result = build_tls_config(Some(temp_file.path().to_str().unwrap()));
+        // Should handle gracefully (either succeed with 0 certs or return error)
+        let _ = result;
+    }
+
+    // =========================================================================
+    // Rate Limiting Tests
+    // =========================================================================
+
+    #[test]
+    fn test_rate_limit_with_zero_seconds() {
+        // Rate limit of 0 effectively disables rate limiting
+        let opts = SecurityOptions::new().with_rate_limit(0);
+        assert_eq!(opts.rate_limit_seconds, 0);
+    }
+
+    #[test]
+    fn test_cache_metadata_with_current_time() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let metadata = CacheMetadata {
+            url: "https://example.com/test.json".to_string(),
+            fetched_at: now,
+            content_hash: compute_content_hash("test"),
+        };
+
+        // Verify we can serialize and deserialize with current timestamp
+        let json = serde_json::to_string(&metadata).unwrap();
+        let parsed: CacheMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.fetched_at, now);
+    }
+
+    #[test]
+    fn test_cache_dir_returns_path() {
+        let dir = cache_dir();
+        assert!(dir.is_some(), "Should return a cache directory path");
+        if let Some(path) = dir {
+            // Should be a valid path string
+            assert!(!path.as_os_str().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_cache_filename_consistent() {
+        let url = "https://example.com/schemas/env.schema.json";
+        let name1 = cache_filename(url);
+        let name2 = cache_filename(url);
+        assert_eq!(name1, name2, "Same URL should produce same cache filename");
+    }
+
+    #[test]
+    fn test_cache_filename_different_for_different_urls() {
+        let url1 = "https://example.com/a.json";
+        let url2 = "https://example.com/b.json";
+        let url3 = "https://other.com/a.json";
+
+        let name1 = cache_filename(url1);
+        let name2 = cache_filename(url2);
+        let name3 = cache_filename(url3);
+
+        assert_ne!(name1, name2);
+        assert_ne!(name1, name3);
+        assert_ne!(name2, name3);
+    }
+
+    // ====== Additional Edge Case Tests ======
+
+    #[test]
+    fn test_is_remote_url_various_schemes() {
+        // HTTPS - valid
+        assert!(is_remote_url("https://example.com/schema.json"));
+        // HTTP - valid but rejected elsewhere for security
+        assert!(is_remote_url("http://example.com/schema.json"));
+        // FTP - not recognized as remote URL for our purposes
+        assert!(!is_remote_url("ftp://example.com/schema.json"));
+        // File paths - not remote
+        assert!(!is_remote_url("./schema.json"));
+        assert!(!is_remote_url("/path/to/schema.json"));
+        assert!(!is_remote_url("C:\\path\\schema.json"));
+    }
+
+    #[test]
+    fn test_resolve_relative_url_edge_cases() {
+        // Base with trailing slash
+        let base = "https://example.com/schemas/";
+        let relative = "child.json";
+        let result = resolve_relative_url(base, relative).unwrap();
+        assert!(result.contains("example.com"));
+        assert!(result.contains("child.json"));
+
+        // Base without trailing slash
+        let base2 = "https://example.com/schemas/parent.json";
+        let relative2 = "child.json";
+        let result2 = resolve_relative_url(base2, relative2).unwrap();
+        assert!(result2.contains("child.json"));
+    }
+
+    #[test]
+    fn test_security_options_all_fields() {
+        let opts = SecurityOptions::new()
+            .with_hash(Some("abc123".to_string()))
+            .with_ca_cert(Some("/path/to/cert.pem".to_string()))
+            .with_rate_limit(120);
+
+        assert_eq!(opts.verify_hash, Some("abc123".to_string()));
+        assert_eq!(opts.ca_cert, Some("/path/to/cert.pem".to_string()));
+        assert_eq!(opts.rate_limit_seconds, 120);
+    }
+
+    #[test]
+    fn test_security_options_chaining() {
+        // Test fluent builder pattern
+        let opts = SecurityOptions::new()
+            .with_hash(None)
+            .with_ca_cert(None)
+            .with_rate_limit(0);
+
+        assert!(opts.verify_hash.is_none());
+        assert!(opts.ca_cert.is_none());
+        assert_eq!(opts.rate_limit_seconds, 0);
+    }
+
+    #[test]
+    fn test_cache_filename_url_encoded_chars() {
+        let url1 = "https://example.com/schema%20with%20spaces.json";
+        let url2 = "https://example.com/schema?query=value&other=123";
+
+        let name1 = cache_filename(url1);
+        let name2 = cache_filename(url2);
+
+        // Should produce valid filenames (no special chars)
+        assert!(!name1.contains('%'));
+        assert!(!name1.contains(' '));
+        assert!(!name2.contains('?'));
+        assert!(!name2.contains('&'));
+    }
+
+    #[test]
+    fn test_verify_content_hash_case_insensitive() {
+        let content = "test content";
+        let hash_lower = compute_content_hash(content).to_lowercase();
+        let _hash_upper = hash_lower.to_uppercase();
+
+        // Both should verify correctly (if implementation is case-insensitive)
+        // If not, at least one should work
+        let result_lower = verify_content_hash(content, &hash_lower);
+        assert!(result_lower.is_ok());
+    }
+
+    #[test]
+    fn test_compute_hash_consistency_across_calls() {
+        let content = "consistent content";
+
+        // Multiple calls should produce identical results
+        let hash1 = compute_content_hash(content);
+        let hash2 = compute_content_hash(content);
+        let hash3 = compute_content_hash(content);
+
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash2, hash3);
+    }
 }

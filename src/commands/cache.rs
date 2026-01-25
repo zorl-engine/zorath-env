@@ -141,6 +141,86 @@ pub fn run_path() -> Result<(), String> {
     Ok(())
 }
 
+/// Show cache statistics
+pub fn run_stats() -> Result<(), String> {
+    let dir = cache_dir().ok_or("Cache directory not available on this system")?;
+
+    println!("Cache Statistics");
+    println!("================");
+    println!();
+    println!("Directory: {}", dir.display());
+
+    if !dir.exists() {
+        println!("Status:    Not initialized (no cached schemas)");
+        println!();
+        println!("Schemas:   0");
+        println!("Size:      0 B");
+        return Ok(());
+    }
+
+    let entries: Vec<_> = fs::read_dir(&dir)
+        .map_err(|e| format!("Failed to read cache directory: {}", e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "json")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    let mut total_size: u64 = 0;
+    let mut expired_count: usize = 0;
+    let mut oldest_age: u64 = 0;
+    let mut newest_age: u64 = u64::MAX;
+
+    for entry in &entries {
+        let path = entry.path();
+        let metadata = fs::metadata(&path).ok();
+        let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        total_size += size;
+
+        let age_secs = metadata
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if age_secs > oldest_age {
+            oldest_age = age_secs;
+        }
+        if age_secs < newest_age {
+            newest_age = age_secs;
+        }
+        if age_secs > CACHE_TTL_SECS {
+            expired_count += 1;
+        }
+    }
+
+    println!("Status:    Active");
+    println!();
+    println!("Schemas:   {}", entries.len());
+    println!("Size:      {}", format_size(total_size));
+    println!("TTL:       {}", format_duration(CACHE_TTL_SECS));
+
+    if !entries.is_empty() {
+        println!();
+        println!("Age range:");
+        if newest_age < u64::MAX {
+            println!("  Newest:  {}", format_duration(newest_age));
+        }
+        println!("  Oldest:  {}", format_duration(oldest_age));
+
+        if expired_count > 0 {
+            println!();
+            println!("Expired:   {} (will refresh on next use)", expired_count);
+        }
+    }
+
+    Ok(())
+}
+
 /// Format bytes as human-readable size
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
@@ -213,6 +293,102 @@ mod tests {
     fn test_clear_nonexistent_url() {
         // Clearing a URL that was never cached should not error
         let result = run_clear(Some("https://nonexistent.example.com/schema.json"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_format_size_zero() {
+        assert_eq!(format_size(0), "0 B");
+    }
+
+    #[test]
+    fn test_format_size_boundary_kb() {
+        // Just under 1 KB
+        assert_eq!(format_size(1023), "1023 B");
+        // Exactly 1 KB
+        assert_eq!(format_size(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn test_format_size_boundary_mb() {
+        // Just under 1 MB
+        let just_under_mb = 1024 * 1024 - 1;
+        let result = format_size(just_under_mb);
+        assert!(result.contains("KB"));
+        // Exactly 1 MB
+        assert_eq!(format_size(1024 * 1024), "1.0 MB");
+    }
+
+    #[test]
+    fn test_format_duration_zero() {
+        assert_eq!(format_duration(0), "0s");
+    }
+
+    #[test]
+    fn test_format_duration_boundary_minute() {
+        // Just under 1 minute
+        assert_eq!(format_duration(59), "59s");
+        // Exactly 1 minute
+        assert_eq!(format_duration(60), "1m");
+    }
+
+    #[test]
+    fn test_format_duration_boundary_hour() {
+        // Just under 1 hour
+        assert_eq!(format_duration(3599), "59m");
+        // Exactly 1 hour
+        assert_eq!(format_duration(3600), "1h 0m");
+    }
+
+    #[test]
+    fn test_format_duration_large_value() {
+        // 25 hours and 30 minutes
+        let secs = 25 * 3600 + 30 * 60;
+        assert_eq!(format_duration(secs), "25h 30m");
+    }
+
+    #[test]
+    fn test_truncate_str_empty() {
+        assert_eq!(truncate_str("", 10), "");
+    }
+
+    #[test]
+    fn test_truncate_str_exact_limit() {
+        assert_eq!(truncate_str("0123456789", 10), "0123456789");
+    }
+
+    #[test]
+    fn test_truncate_str_small_max_len() {
+        // When max_len <= 3, no room for ellipsis
+        assert_eq!(truncate_str("abcdef", 3), "abc");
+        assert_eq!(truncate_str("abcdef", 2), "ab");
+        assert_eq!(truncate_str("abcdef", 1), "a");
+    }
+
+    #[test]
+    fn test_truncate_str_with_ellipsis() {
+        // When max_len > 3, uses ellipsis
+        assert_eq!(truncate_str("abcdefghij", 7), "abcd...");
+    }
+
+    #[test]
+    fn test_run_list_returns_ok() {
+        // run_list should return Ok even if cache is empty
+        let result = run_list();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_clear_all_when_empty() {
+        // Clearing all when nothing cached should return Ok
+        let result = run_clear(None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_stats_returns_ok() {
+        // run_stats should return Ok even if cache is empty
+        let result = run_stats();
         assert!(result.is_ok());
     }
 }
