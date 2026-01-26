@@ -57,6 +57,42 @@ zenv automatically masks sensitive values in output to prevent accidental exposu
 
 This prevents secrets from appearing in terminal output, logs, or screenshots.
 
+### Secret Detection Patterns (--detect-secrets)
+
+When `--detect-secrets` is enabled, zenv scans for 15+ known secret patterns plus high-entropy strings:
+
+| Pattern | Detects | Example Match |
+|---------|---------|---------------|
+| AWS Access Key ID | AWS access keys | `AKIAIOSFODNN7EXAMPLE` |
+| AWS Secret Key | 40-char AWS secrets | Base64-encoded 40-char strings |
+| Stripe API Key | Stripe keys | `sk_live_...`, `pk_test_...` |
+| GitHub Token | GitHub PATs | `ghp_...`, `gho_...`, `ghs_...` |
+| GitLab Token | GitLab PATs | `glpat-...` |
+| Slack Token | Slack bot/app tokens | `xoxb-...`, `xoxa-...` |
+| Private Key | PEM-encoded keys | `-----BEGIN RSA PRIVATE KEY-----` |
+| JWT Token | JSON Web Tokens | `eyJhbGciOiJIUzI1NiIs...` |
+| Google API Key | Google Cloud keys | `AIza...` |
+| Heroku API Key | Heroku UUIDs | UUID format credentials |
+| Generic API Key | Common prefixes | `api_key_...`, `apikey...` |
+| npm Token | npm auth tokens | `npm_...` |
+| SendGrid Key | SendGrid API keys | `SG....` |
+| Twilio Credentials | Twilio SID/tokens | `AC...`, `SK...` |
+| Mailchimp Key | Mailchimp keys | `...-us1`, `...-us2` |
+| High-Entropy | Statistical detection | Strings with entropy > 4.0 |
+
+**Usage:**
+```bash
+zenv check --detect-secrets
+zenv check --detect-secrets true   # explicit
+```
+
+**Configure in .zenvrc:**
+```json
+{
+  "detect_secrets": true
+}
+```
+
 ## Remote Schema Security (v0.3.5+)
 
 zenv provides security features for remote schema fetching:

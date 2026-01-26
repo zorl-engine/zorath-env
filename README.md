@@ -518,6 +518,50 @@ zenv check --schema https://internal.corp/schema.json --ca-cert /path/to/ca.pem
 - Bypassed by `--no-cache`
 - Configure in `.zenvrc`: `"rate_limit_seconds": 120`
 
+## Configuration File (.zenvrc)
+
+Create a `.zenvrc` file in your project root to set default options. CLI arguments always override `.zenvrc` settings.
+
+```json
+{
+  "schema": "env.schema.json",
+  "env": ".env.local",
+  "detect_secrets": true
+}
+```
+
+### All Configuration Keys
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `schema` | string | Path to schema file (default: `env.schema.json`) |
+| `env` | string | Path to .env file (default: `.env`) |
+| `allow_missing_env` | boolean | Allow validation when .env file is missing |
+| `detect_secrets` | boolean | Enable secret detection during validation |
+| `no_cache` | boolean | Skip cache when fetching remote schemas |
+| `no_color` | boolean | Disable colored terminal output |
+| `verify_hash` | string | SHA-256 hash to verify remote schema integrity |
+| `ca_cert` | string | Path to custom CA certificate (PEM format) |
+| `rate_limit_seconds` | number | Seconds between remote schema fetches (default: 60) |
+
+### Example: Full Configuration
+
+```json
+{
+  "schema": "config/env.schema.json",
+  "env": ".env.local",
+  "allow_missing_env": false,
+  "detect_secrets": true,
+  "no_cache": false,
+  "no_color": false,
+  "verify_hash": "a1b2c3d4e5f6...",
+  "ca_cert": "/etc/ssl/certs/internal-ca.pem",
+  "rate_limit_seconds": 120
+}
+```
+
+**Note:** Unknown keys in `.zenvrc` will trigger a warning but won't cause failures.
+
 ## .env features
 
 ### Comments and Blank Lines

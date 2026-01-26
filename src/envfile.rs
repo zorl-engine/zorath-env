@@ -32,6 +32,13 @@ pub struct ParseResult {
 /// - supports multiline values in quoted strings
 /// - handles escape sequences in double-quoted strings: \", \\, \n, \t, \r
 /// - single-quoted strings are literal (no escape processing)
+///
+/// # Unclosed Quote Behavior
+/// If a quoted value is never closed (missing closing quote), the parser will
+/// silently accept the value, capturing everything from the opening quote to
+/// the end of the file. This behavior is intentional for robustness - malformed
+/// files still parse rather than failing entirely. Users should validate their
+/// .env files if strict syntax checking is required.
 pub fn parse_env_file(path: &str) -> Result<HashMap<String, String>, EnvError> {
     let content = fs::read_to_string(path).map_err(|e| EnvError::Read(e.to_string()))?;
     Ok(parse_env_str(&content))

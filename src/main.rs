@@ -318,7 +318,7 @@ Aliases:
         /// Path to .env file to export (default: .env, or from .zenvrc)
         #[arg(long)]
         env: Option<String>,
-        /// Output format (shell, docker, k8s, json, systemd, dotenv)
+        /// Output format: shell (bash/sh), docker (dockerfile), k8s (kubernetes/configmap), json, systemd (service), dotenv (env), github-secrets (gh-secrets/github)
         #[arg(short = 'f', long, default_value = "shell")]
         format: String,
         /// Optional schema to filter variables
