@@ -685,7 +685,7 @@ Validate `.env` files in your CI/CD pipeline:
 **Inputs:**
 - `schema` - Path to schema file (default: `env.schema.json`)
 - `env-file` - Path to .env file (default: `.env`)
-- `allow-missing-env` - Allow missing .env (default: `true`)
+- `allow-missing-env` - Allow missing .env (default: `false`)
 - `version` - zenv version to use (default: `latest`)
 
 **Outputs:**
