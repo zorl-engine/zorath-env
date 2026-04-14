@@ -158,19 +158,7 @@ fn output_result(result: &str, output: Option<&str>) -> Result<(), String> {
 }
 
 fn export(env_map: &HashMap<String, String>, format: ExportFormat) -> Result<String, String> {
-    // Sort keys for consistent output
-    let mut keys: Vec<&String> = env_map.keys().collect();
-    keys.sort();
-
-    match format {
-        ExportFormat::Shell => export_shell(&keys, env_map),
-        ExportFormat::Docker => export_docker(&keys, env_map),
-        ExportFormat::K8s => export_k8s(&keys, env_map),
-        ExportFormat::Json => export_json(&keys, env_map),
-        ExportFormat::Systemd => export_systemd(&keys, env_map),
-        ExportFormat::Dotenv => export_dotenv(&keys, env_map),
-        ExportFormat::GithubSecrets => export_github_secrets(&keys, env_map),
-    }
+    export_to_string(env_map, format)
 }
 
 /// Export as shell script (export FOO="bar")

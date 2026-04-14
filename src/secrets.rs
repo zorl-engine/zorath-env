@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use regex::Regex;
 
 use crate::schema::Schema;
@@ -60,7 +61,7 @@ pub fn detect_secrets(
 
         // Check against all patterns
         let mut pattern_matched = false;
-        for pattern in &patterns {
+        for pattern in patterns {
             if pattern.pattern.is_match(value) {
                 let line = line_numbers.get(key).copied().unwrap_or(0);
                 warnings.push(SecretWarning {
@@ -94,8 +95,9 @@ pub fn detect_secrets(
     warnings
 }
 
-fn get_secret_patterns() -> Vec<SecretPattern> {
-    vec![
+fn get_secret_patterns() -> &'static [SecretPattern] {
+    static PATTERNS: OnceLock<Vec<SecretPattern>> = OnceLock::new();
+    PATTERNS.get_or_init(|| vec![
         // AWS Access Key ID
         SecretPattern {
             name: "AWS Access Key ID",
@@ -171,7 +173,7 @@ fn get_secret_patterns() -> Vec<SecretPattern> {
             name: "Mailchimp API key",
             pattern: Regex::new(r"^[a-z0-9]{32}-us[0-9]{1,2}$").unwrap(),
         },
-    ]
+    ])
 }
 
 /// Check if a string has high entropy (randomness) - indicator of secrets
@@ -239,12 +241,14 @@ fn has_mixed_chars(s: &str) -> bool {
 
 /// Check if a URL contains an embedded password
 fn contains_url_password(value: &str) -> bool {
-    // Match URLs with user:password@host pattern
-    let url_with_pass = Regex::new(r"://[^:]+:[^@]+@").unwrap();
+    static URL_PASS_DETECT: OnceLock<Regex> = OnceLock::new();
+    static URL_PASS_CAPTURE: OnceLock<Regex> = OnceLock::new();
+
+    let url_with_pass = URL_PASS_DETECT.get_or_init(|| Regex::new(r"://[^:]+:[^@]+@").unwrap());
+    let url_pass_capture = URL_PASS_CAPTURE.get_or_init(|| Regex::new(r"://[^:]+:([^@]+)@").unwrap());
 
     if url_with_pass.is_match(value) {
-        // Extract the password part and check it's not a placeholder
-        if let Some(caps) = Regex::new(r"://[^:]+:([^@]+)@").unwrap().captures(value) {
+        if let Some(caps) = url_pass_capture.captures(value) {
             if let Some(password) = caps.get(1) {
                 let pass = password.as_str().to_lowercase();
                 // Skip common placeholders
