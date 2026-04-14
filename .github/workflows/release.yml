@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -51,6 +53,11 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           mv target/${{ matrix.target }}/release/zenv.exe ${{ matrix.name }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ matrix.name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
