@@ -44,7 +44,7 @@ fn github_actions_template(use_binary: bool) -> String {
     let install_step = if use_binary {
         r#"      - name: Install zenv
         run: |
-          curl -fsSL https://github.com/zorath-net/zorath-env/releases/latest/download/zenv-linux-x64.tar.gz | tar xz
+          curl -fsSL https://github.com/zorl-engine/zorath-env/releases/latest/download/zenv-linux-x64.tar.gz | tar xz
           sudo mv zenv /usr/local/bin/"#
     } else {
         r#"      - name: Install zenv
@@ -91,7 +91,7 @@ jobs:
 /// GitLab CI template
 fn gitlab_ci_template(use_binary: bool) -> String {
     let install_script = if use_binary {
-        r#"    - curl -fsSL https://github.com/zorath-net/zorath-env/releases/latest/download/zenv-linux-x64.tar.gz | tar xz
+        r#"    - curl -fsSL https://github.com/zorl-engine/zorath-env/releases/latest/download/zenv-linux-x64.tar.gz | tar xz
     - mv zenv /usr/local/bin/"#
     } else {
         "    - cargo install zorath-env"
@@ -155,7 +155,7 @@ jobs:
       - run:
           name: Install zenv
           command: |
-            curl -fsSL https://github.com/zorath-net/zorath-env/releases/latest/download/zenv-linux-x64.tar.gz | tar xz
+            curl -fsSL https://github.com/zorl-engine/zorath-env/releases/latest/download/zenv-linux-x64.tar.gz | tar xz
             mv zenv /usr/local/bin/
       - run:
           name: Validate .env

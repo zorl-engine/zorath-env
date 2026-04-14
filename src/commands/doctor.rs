@@ -175,7 +175,7 @@ fn check_env_path(env_path: &str) -> HealthItem {
 }
 
 fn check_config_file() -> HealthItem {
-    let config_paths = [".zenvrc", ".zenv.json"];
+    let config_paths = [".zenvrc"];
 
     for path in &config_paths {
         if Path::new(path).exists() {

@@ -1,12 +1,11 @@
 use std::fs;
-use std::io::{BufReader, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rustls::pki_types::CertificateDer;
 use sha2::{Sha256, Digest};
 use thiserror::Error;
-use ureq::tls::TlsConfig;
+use ureq::tls::{TlsConfig, RootCerts, PemItem, parse_pem};
 
 #[derive(Error, Debug)]
 pub enum RemoteError {
@@ -197,16 +196,20 @@ fn fetch_url_secure(url: &str, ca_cert_path: Option<&str>) -> Result<String, Rem
 
 /// Build TLS configuration with optional custom CA certificate
 fn build_tls_config(ca_cert_path: Option<&str>) -> Result<TlsConfig, RemoteError> {
-    // If custom CA cert is specified, validate it exists (for future use)
     if let Some(ca_path) = ca_cert_path {
-        // Verify the file exists and contains valid certificates
-        let ca_file = fs::File::open(ca_path)
-            .map_err(|e| RemoteError::CertificateError(format!("failed to open {}: {}", ca_path, e)))?;
-        let mut ca_reader = BufReader::new(ca_file);
+        let pem_data = fs::read(ca_path)
+            .map_err(|e| RemoteError::CertificateError(format!("failed to read {}: {}", ca_path, e)))?;
 
-        let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut ca_reader)
-            .filter_map(|r| r.ok())
-            .collect();
+        let mut certs = Vec::new();
+        for item in parse_pem(&pem_data) {
+            match item {
+                Ok(PemItem::Certificate(cert)) => certs.push(cert),
+                Ok(_) => {} // skip non-certificate PEM items (keys, etc.)
+                Err(e) => return Err(RemoteError::CertificateError(
+                    format!("failed to parse PEM from {}: {}", ca_path, e)
+                )),
+            }
+        }
 
         if certs.is_empty() {
             return Err(RemoteError::CertificateError(
@@ -214,15 +217,17 @@ fn build_tls_config(ca_cert_path: Option<&str>) -> Result<TlsConfig, RemoteError
             ));
         }
 
-        // Note: Custom CA certificate loading is validated but ureq 3.x
-        // uses system trust store by default. For internal/self-signed certs,
-        // add them to your system's trust store.
-        eprintln!("zenv: CA certificate validated from {} ({} cert(s))", ca_path, certs.len());
-        eprintln!("zenv: Note: Add CA to system trust store for full support");
-    }
+        let count = certs.len();
+        let root_certs = RootCerts::new_with_certs(&certs);
 
-    // Default TLS config (uses system root certificates)
-    Ok(TlsConfig::default())
+        eprintln!("zenv: using CA certificate from {} ({} cert(s))", ca_path, count);
+
+        Ok(TlsConfig::builder()
+            .root_certs(root_certs)
+            .build())
+    } else {
+        Ok(TlsConfig::default())
+    }
 }
 
 /// Check rate limit for a URL

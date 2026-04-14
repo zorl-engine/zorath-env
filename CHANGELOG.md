@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.9] - 2026-04-13
+
+### Fixed
+- **CI template URLs**: Fixed GitHub/GitLab/CircleCI templates pointing to old org `zorath-net` instead of `zorl-engine`
+- **GitHub Action fallback version**: Updated from hardcoded `0.3.7` to `0.3.8`
+- **`--ca-cert` now works**: Custom CA certificates are actually applied to TLS connections instead of being validated and discarded
+- **Doctor config check**: Removed false `.zenv.json` lookup (config only uses `.zenvrc`)
+
+### Changed
+- Removed unused direct dependencies: `rustls`, `rustls-pemfile`, `webpki-roots` (provided transitively by `ureq`)
+
 ## [0.3.8] - 2026-01-25
 
 ### Added
