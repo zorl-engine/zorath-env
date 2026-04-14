@@ -12,6 +12,9 @@ on:
       - '.github/workflows/test-action.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test-action-valid:
     name: Test with valid .env
