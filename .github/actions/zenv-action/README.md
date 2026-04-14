@@ -41,7 +41,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Validate .env
         uses: zorl-engine/zorath-env/.github/actions/zenv-action@main
@@ -60,7 +60,7 @@ jobs:
       matrix:
         env: [development, staging, production]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Validate ${{ matrix.env }}
         uses: zorl-engine/zorath-env/.github/actions/zenv-action@main
@@ -95,5 +95,5 @@ jobs:
   with:
     schema: env.schema.json
     env-file: .env
-    version: '0.3.8'
+    version: '0.3.9'
 ```
