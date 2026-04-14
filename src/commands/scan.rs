@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use ignore::WalkBuilder;
 use regex::Regex;
 
+use crate::errors::CliError;
 use crate::schema::{self, LoadOptions, Schema};
 
 /// Language-specific pattern for detecting environment variable access
@@ -46,6 +47,7 @@ struct ScanResults {
 }
 
 /// Run the scan command
+#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     path: &str,
@@ -56,7 +58,7 @@ pub fn run(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     // Load schema
     let options = LoadOptions {
         no_cache,
@@ -65,7 +67,7 @@ pub fn run(
         rate_limit_seconds: None,
     };
     let schema = schema::load_schema_with_options(schema_path, &options)
-        .map_err(|e| format!("failed to load schema: {}", e))?;
+        .map_err(|e| CliError::Schema(format!("failed to load schema: {}", e)))?;
 
     // Get cached regex patterns (compiled once, reused for performance)
     let patterns = get_patterns();
@@ -73,10 +75,10 @@ pub fn run(
     // Scan directory
     let scan_path = Path::new(path);
     if !scan_path.exists() {
-        return Err(format!("path does not exist: {}", path));
+        return Err(CliError::Input(format!("path does not exist: {}", path)));
     }
 
-    let results = scan_directory(scan_path, patterns, &schema)?;
+    let results = scan_directory(scan_path, patterns, &schema).map_err(CliError::Input)?;
 
     // Output results
     match format {
@@ -86,10 +88,10 @@ pub fn run(
 
     // Exit with error if there are missing vars (for CI)
     if !results.missing_from_schema.is_empty() {
-        return Err(format!(
+        return Err(CliError::Validation(format!(
             "{} environment variable(s) used in code but not in schema",
             results.missing_from_schema.len()
-        ));
+        )));
     }
 
     Ok(())

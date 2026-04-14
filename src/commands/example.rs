@@ -1,3 +1,4 @@
+use crate::errors::CliError;
 use crate::schema::{load_schema_with_options, LoadOptions, Schema, VarSpec, VarType};
 use std::fs;
 
@@ -39,6 +40,7 @@ pub fn generate(schema: &Schema, include_defaults: bool) -> String {
 }
 
 /// Generate .env.example from schema (CLI function)
+#[doc(hidden)]
 pub fn run(
     schema_path: &str,
     output_path: Option<&str>,
@@ -46,21 +48,21 @@ pub fn run(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     let options = LoadOptions {
         no_cache,
         verify_hash: verify_hash.map(|s| s.to_string()),
         ca_cert: ca_cert.map(|s| s.to_string()),
         rate_limit_seconds: None,
     };
-    let schema = load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
+    let schema = load_schema_with_options(schema_path, &options).map_err(|e| CliError::Schema(e.to_string()))?;
 
     // Use the library function
     let output = generate(&schema, include_defaults);
 
     // Output to file or stdout
     if let Some(path) = output_path {
-        fs::write(path, &output).map_err(|e| format!("failed to write output: {}", e))?;
+        fs::write(path, &output).map_err(|e| CliError::Input(format!("failed to write output: {}", e)))?;
         println!("Generated: {}", path);
     } else {
         print!("{}", output);

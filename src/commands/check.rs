@@ -13,6 +13,7 @@ use url::Url;
 use regex::Regex;
 
 use crate::envfile;
+use crate::errors::CliError;
 use crate::schema::{self, LoadOptions, Schema, Severity, VarSpec, VarType};
 use crate::secrets;
 use crate::suggestions;
@@ -280,6 +281,7 @@ fn missing_env_error(primary: &str) -> String {
     msg
 }
 
+#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     env_path: &str,
@@ -291,10 +293,10 @@ pub fn run(
     format: &str,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     if watch {
         if format == "json" {
-            return Err("JSON format is not supported in watch mode".into());
+            return Err(CliError::Input("JSON format is not supported in watch mode".into()));
         }
         run_watch_mode(env_path, schema_path, allow_missing_env, detect_secrets, no_cache, verify_hash, ca_cert)
     } else {
@@ -313,24 +315,23 @@ fn run_once(
     format: &str,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     let options = LoadOptions {
         no_cache,
         verify_hash: verify_hash.map(|s| s.to_string()),
         ca_cert: ca_cert.map(|s| s.to_string()),
         rate_limit_seconds: None,
     };
-    let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
+    let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| CliError::Schema(e.to_string()))?;
 
     let resolved_path = resolve_env_file(env_path);
-    let (env_map, raw_content, duplicates): (HashMap<String, String>, Option<String>, Vec<envfile::DuplicateKey>) = match &resolved_path {
+    let (env_map, line_numbers, duplicates): (HashMap<String, String>, HashMap<String, usize>, Vec<envfile::DuplicateKey>) = match &resolved_path {
         Some(resolved) => {
             if resolved != env_path && format != "json" {
                 eprintln!("Note: Using {} (fallback)\n", resolved);
             }
-            let content = fs::read_to_string(resolved).map_err(|e| e.to_string())?;
-            let parse_result = envfile::parse_env_file_detailed(resolved).map_err(|e| e.to_string())?;
-            (parse_result.values, Some(content), parse_result.duplicates)
+            let parse_result = envfile::parse_env_file_detailed(resolved).map_err(|e| CliError::Input(e.to_string()))?;
+            (parse_result.values, parse_result.line_numbers, parse_result.duplicates)
         }
         None if allow_missing_env => {
             // When env file is missing and flag is set, validate schema only (no env values)
@@ -357,11 +358,11 @@ fn run_once(
             }
             return Ok(());
         }
-        None => return Err(missing_env_error(env_path)),
+        None => return Err(CliError::Input(missing_env_error(env_path))),
     };
 
     // Interpolate variable references (${VAR} and $VAR)
-    let env_map = envfile::interpolate_env(env_map).map_err(|e| e.to_string())?;
+    let env_map = envfile::interpolate_env(env_map).map_err(|e| CliError::Input(e.to_string()))?;
 
     let raw_errors = validate(&schema, &env_map);
 
@@ -378,11 +379,7 @@ fn run_once(
 
     // Check for secrets if flag is set
     let secret_warnings = if detect_secrets {
-        if let Some(content) = &raw_content {
-            secrets::detect_secrets(&env_map, content, Some(&schema))
-        } else {
-            Vec::new()
-        }
+        secrets::detect_secrets(&env_map, &line_numbers, Some(&schema))
     } else {
         Vec::new()
     };
@@ -439,7 +436,7 @@ fn run_once(
         println!("{}", serde_json::to_string_pretty(&result).unwrap());
 
         if has_errors {
-            return Err("validation failed".into());
+            return Err(CliError::Validation("validation failed".into()));
         }
         return Ok(());
     }
@@ -520,7 +517,7 @@ fn run_once(
     }
 
     if has_errors {
-        return Err("validation failed".into());
+        return Err(CliError::Validation("validation failed".into()));
     }
 
     // Build success message
@@ -573,7 +570,7 @@ fn run_watch_mode(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     // Check if schema is a remote URL - can't watch remote schemas
     let is_remote_schema = schema_path.starts_with("http://") || schema_path.starts_with("https://");
 
@@ -616,7 +613,7 @@ fn run_watch_mode(
         rate_limit_seconds: None,
     };
     let schema = schema::load_schema_with_options(schema_path, &options)
-        .map_err(|e| format!("Schema error: {}", e))?;
+        .map_err(|e| CliError::Schema(format!("Schema error: {}", e)))?;
 
     // Run initial validation and capture state
     let mut state = run_initial_validation(env_path, &schema, allow_missing_env, detect_secrets, schema_path)?;
@@ -632,7 +629,7 @@ fn run_watch_mode(
         },
         Config::default(),
     )
-    .map_err(|e| format!("Failed to create file watcher: {}", e))?;
+    .map_err(|e| CliError::Input(format!("Failed to create file watcher: {}", e)))?;
 
     // Watch each path
     for path in &watch_paths {
@@ -712,9 +709,9 @@ fn run_watch_mode(
                             }
 
                             // Parse new env file
-                            match envfile::parse_env_file(resolved) {
-                                Ok(new_env_raw) => {
-                                    match envfile::interpolate_env(new_env_raw) {
+                            match envfile::parse_env_file_detailed(resolved) {
+                                Ok(parse_result) => {
+                                    match envfile::interpolate_env(parse_result.values) {
                                         Ok(new_env) => {
                                             // Reload schema for validation
                                             let schema = match schema::load_schema_with_options(schema_path, &options) {
@@ -741,7 +738,7 @@ fn run_watch_mode(
                                                 &new_env,
                                                 &schema,
                                                 detect_secrets,
-                                                &content,
+                                                &parse_result.line_numbers,
                                             );
 
                                             if had_errors {
@@ -777,7 +774,7 @@ fn run_watch_mode(
                 // No event, continue waiting
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err("File watcher disconnected".into());
+                return Err(CliError::Input("File watcher disconnected".into()));
             }
         }
     }
@@ -790,7 +787,7 @@ fn run_initial_validation(
     allow_missing_env: bool,
     detect_secrets: bool,
     schema_path: &str,
-) -> Result<WatchState, String> {
+) -> Result<WatchState, CliError> {
     let timestamp = local_timestamp();
 
     // Read schema content for hash
@@ -802,31 +799,27 @@ fn run_initial_validation(
 
     // Load env file
     let resolved_path = resolve_env_file(env_path);
-    let (env_map, raw_content, content_hash): (HashMap<String, String>, Option<String>, u64) =
+    let (env_map, line_numbers, content_hash): (HashMap<String, String>, HashMap<String, usize>, u64) =
         match &resolved_path {
             Some(resolved) => {
-                let content = fs::read_to_string(resolved).map_err(|e| e.to_string())?;
+                let content = fs::read_to_string(resolved).map_err(|e| CliError::Input(e.to_string()))?;
                 let hash = compute_hash(&content);
-                let map = envfile::parse_env_file(resolved).map_err(|e| e.to_string())?;
-                (map, Some(content), hash)
+                let parse_result = envfile::parse_env_file_detailed(resolved).map_err(|e| CliError::Input(e.to_string()))?;
+                (parse_result.values, parse_result.line_numbers, hash)
             }
-            None if allow_missing_env => (HashMap::new(), None, 0),
-            None => return Err(missing_env_error(env_path)),
+            None if allow_missing_env => (HashMap::new(), HashMap::new(), 0),
+            None => return Err(CliError::Input(missing_env_error(env_path))),
         };
 
     // Interpolate
-    let env_map = envfile::interpolate_env(env_map).map_err(|e| e.to_string())?;
+    let env_map = envfile::interpolate_env(env_map).map_err(|e| CliError::Input(e.to_string()))?;
 
     // Validate all
     let errors = validate(schema, &env_map);
 
     // Check for secrets
     let secret_warnings = if detect_secrets {
-        if let Some(content) = &raw_content {
-            secrets::detect_secrets(&env_map, content, Some(schema))
-        } else {
-            Vec::new()
-        }
+        secrets::detect_secrets(&env_map, &line_numbers, Some(schema))
     } else {
         Vec::new()
     };
@@ -920,7 +913,7 @@ fn print_delta_validation(
     env_map: &HashMap<String, String>,
     schema: &Schema,
     detect_secrets: bool,
-    raw_content: &str,
+    line_numbers: &HashMap<String, usize>,
 ) -> bool {
     let timestamp = local_timestamp();
     let mut had_errors = false;
@@ -1003,7 +996,7 @@ fn print_delta_validation(
             .map(|c| c.key.clone())
             .collect();
 
-        let secret_warnings = secrets::detect_secrets(env_map, raw_content, Some(schema));
+        let secret_warnings = secrets::detect_secrets(env_map, line_numbers, Some(schema));
         for warning in secret_warnings {
             if changed_keys.contains(&warning.key) {
                 eprintln!("[{}] ! {}: potential secret detected", timestamp, warning.key);
@@ -2721,7 +2714,7 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("JSON format is not supported in watch mode"));
+        assert!(result.unwrap_err().to_string().contains("JSON format is not supported in watch mode"));
 
         // Cleanup
         let _ = std::fs::remove_file(&schema_path);

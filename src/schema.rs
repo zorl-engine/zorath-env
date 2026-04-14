@@ -17,6 +17,8 @@ pub enum SchemaError {
     CircularInheritance(String),
     #[error("inheritance depth exceeded (max 10)")]
     InheritanceDepthExceeded,
+    #[error("failed to write schema file: {0}")]
+    Write(String),
     #[error("remote schema error: {0}")]
     Remote(#[from] RemoteError),
 }
@@ -183,14 +185,6 @@ impl LoadOptions {
     }
 }
 
-/// Load schema from file or URL, resolving inheritance chain.
-/// Convenience wrapper for `load_schema_with_options` with default options.
-/// Kept as public API for library consumers who don't need custom options.
-#[allow(dead_code)]
-pub fn load_schema(path: &str) -> Result<Schema, SchemaError> {
-    load_schema_with_options(path, &LoadOptions::default())
-}
-
 /// Load schema with options (e.g., no_cache for remote schemas)
 pub fn load_schema_with_options(path: &str, options: &LoadOptions) -> Result<Schema, SchemaError> {
     load_schema_with_chain(path, &mut Vec::new(), options)
@@ -293,12 +287,17 @@ pub fn save_schema(path: &str, schema: &Schema) -> Result<(), SchemaError> {
                 .map_err(|e| SchemaError::Parse(format.name().to_string(), e.to_string()))?
         }
     };
-    fs::write(path, content).map_err(|e| SchemaError::Read(e.to_string()))
+    fs::write(path, content).map_err(|e| SchemaError::Write(e.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test helper: load schema with default options
+    fn load_schema(path: &str) -> Result<Schema, SchemaError> {
+        load_schema_with_options(path, &LoadOptions::default())
+    }
 
     #[test]
     fn test_parse_string_type() {
@@ -758,48 +757,6 @@ API_KEY:
         let key_validate = api_key.validate.as_ref().unwrap();
         assert_eq!(key_validate.min_length, Some(32));
         assert_eq!(key_validate.pattern, Some("^sk_".to_string()));
-    }
-
-    // ====== load_schema() Backward Compatibility Tests ======
-
-    #[test]
-    fn test_load_schema_wrapper_success() {
-        use std::io::Write;
-        use tempfile::tempdir;
-
-        let dir = tempdir().unwrap();
-        let schema_path = dir.path().join("test_wrapper.schema.json");
-        let mut file = fs::File::create(&schema_path).unwrap();
-        writeln!(file, r#"{{"PORT": {{"type": "int", "required": true}}}}"#).unwrap();
-
-        let result = load_schema(schema_path.to_str().unwrap());
-        assert!(result.is_ok());
-        let schema = result.unwrap();
-        assert!(schema.contains_key("PORT"));
-    }
-
-    #[test]
-    fn test_load_schema_wrapper_file_not_found() {
-        let result = load_schema("nonexistent_schema_12345.json");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, SchemaError::Read(_)));
-    }
-
-    #[test]
-    fn test_load_schema_wrapper_invalid_json() {
-        use std::io::Write;
-        use tempfile::tempdir;
-
-        let dir = tempdir().unwrap();
-        let schema_path = dir.path().join("invalid.schema.json");
-        let mut file = fs::File::create(&schema_path).unwrap();
-        writeln!(file, "{{ invalid json }}").unwrap();
-
-        let result = load_schema(schema_path.to_str().unwrap());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, SchemaError::Parse(_, _)));
     }
 
     #[test]

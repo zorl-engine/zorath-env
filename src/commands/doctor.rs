@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::envfile;
+use crate::errors::CliError;
 use crate::remote;
 use crate::schema::{self, LoadOptions, SchemaFormat};
 
@@ -31,12 +32,20 @@ impl HealthStatus {
     }
 }
 
-pub fn run(env_path: &str, schema_path: &str) -> Result<(), String> {
+#[doc(hidden)]
+pub fn run(env_path: &str, schema_path: &str, no_cache: bool, verify_hash: Option<&str>, ca_cert: Option<&str>) -> Result<(), CliError> {
     println!("zenv doctor - Health Check\n");
+
+    let load_options = LoadOptions {
+        no_cache,
+        verify_hash: verify_hash.map(|s| s.to_string()),
+        ca_cert: ca_cert.map(|s| s.to_string()),
+        rate_limit_seconds: None,
+    };
 
     let mut items = vec![
         // 1. Check schema file
-        check_schema_path(schema_path),
+        check_schema_path(schema_path, &load_options),
         // 2. Check .env file
         check_env_path(env_path),
         // 3. Check config file
@@ -46,7 +55,7 @@ pub fn run(env_path: &str, schema_path: &str) -> Result<(), String> {
     ];
 
     // 5. Validation test (if both schema and env exist)
-    if let Some(validation_result) = check_validation_paths(env_path, schema_path) {
+    if let Some(validation_result) = check_validation_paths(env_path, schema_path, &load_options) {
         items.push(validation_result);
     }
 
@@ -73,7 +82,7 @@ pub fn run(env_path: &str, schema_path: &str) -> Result<(), String> {
     println!();
     if has_errors {
         println!("Health check completed with errors.");
-        Err("doctor found issues".into())
+        Err(CliError::Validation("doctor found issues".into()))
     } else if has_warnings {
         println!("Health check completed with warnings.");
         Ok(())
@@ -83,7 +92,7 @@ pub fn run(env_path: &str, schema_path: &str) -> Result<(), String> {
     }
 }
 
-fn check_schema_path(schema_path: &str) -> HealthItem {
+fn check_schema_path(schema_path: &str, load_options: &LoadOptions) -> HealthItem {
     // Check for common schema file locations
     let possible_paths = [
         schema_path,
@@ -96,13 +105,7 @@ fn check_schema_path(schema_path: &str) -> HealthItem {
     for path in &possible_paths {
         if Path::new(path).exists() {
             // Try to parse it
-            let options = LoadOptions {
-                no_cache: true,
-                verify_hash: None,
-                ca_cert: None,
-                rate_limit_seconds: None,
-            };
-            match schema::load_schema_with_options(path, &options) {
+            match schema::load_schema_with_options(path, load_options) {
                 Ok(schema) => {
                     let format = SchemaFormat::from_path(path);
                     return HealthItem {
@@ -272,7 +275,7 @@ fn check_cache() -> HealthItem {
     }
 }
 
-fn check_validation_paths(env_path: &str, schema_path: &str) -> Option<HealthItem> {
+fn check_validation_paths(env_path: &str, schema_path: &str, load_options: &LoadOptions) -> Option<HealthItem> {
     // Both must exist for validation
     let schema_exists = Path::new(schema_path).exists();
     let env_exists = find_env_file(env_path).is_some();
@@ -284,13 +287,7 @@ fn check_validation_paths(env_path: &str, schema_path: &str) -> Option<HealthIte
     let resolved_env = find_env_file(env_path)?;
 
     // Load schema
-    let options = LoadOptions {
-        no_cache: true,
-        verify_hash: None,
-        ca_cert: None,
-        rate_limit_seconds: None,
-    };
-    let schema = match schema::load_schema_with_options(schema_path, &options) {
+    let schema = match schema::load_schema_with_options(schema_path, load_options) {
         Ok(s) => s,
         Err(_) => return None,
     };
@@ -349,6 +346,15 @@ fn find_env_file(primary: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn default_load_options() -> LoadOptions {
+        LoadOptions {
+            no_cache: true,
+            verify_hash: None,
+            ca_cert: None,
+            rate_limit_seconds: None,
+        }
+    }
+
     #[test]
     fn test_health_status_symbol() {
         assert_eq!(HealthStatus::Ok.symbol(), "[OK]");
@@ -360,7 +366,7 @@ mod tests {
     fn test_check_schema_path_not_found() {
         // Note: If run from a directory with env.schema.json (like zenv root),
         // the function will find the fallback file and return Ok instead of Warning
-        let result = check_schema_path("nonexistent_schema_12345.json");
+        let result = check_schema_path("nonexistent_schema_12345.json", &default_load_options());
         // Either file not found (Warning) or fallback found (Ok/Error)
         assert!(
             result.status == HealthStatus::Warning
@@ -376,7 +382,7 @@ mod tests {
         let schema_path = temp_dir.join("test_doctor_schema.json");
         std::fs::write(&schema_path, r#"{"FOO": {"type": "string"}}"#).unwrap();
 
-        let result = check_schema_path(schema_path.to_str().unwrap());
+        let result = check_schema_path(schema_path.to_str().unwrap(), &default_load_options());
         assert_eq!(result.status, HealthStatus::Ok);
         assert!(result.message.contains("Found"));
         assert!(result.message.contains("1 variables"));
@@ -390,7 +396,7 @@ mod tests {
         let schema_path = temp_dir.join("test_doctor_invalid_schema.json");
         std::fs::write(&schema_path, "{ invalid json }").unwrap();
 
-        let result = check_schema_path(schema_path.to_str().unwrap());
+        let result = check_schema_path(schema_path.to_str().unwrap(), &default_load_options());
         assert_eq!(result.status, HealthStatus::Error);
         assert!(result.message.contains("failed to parse"));
         assert!(result.suggestion.is_some());
@@ -483,7 +489,8 @@ mod tests {
         // When neither schema nor env exists, should return None
         let result = check_validation_paths(
             "nonexistent_env_12345.env",
-            "nonexistent_schema_12345.json"
+            "nonexistent_schema_12345.json",
+            &default_load_options(),
         );
         assert!(result.is_none());
     }
@@ -496,7 +503,7 @@ mod tests {
         let schema_path = temp_dir.join("test_doctor_schema.yaml");
         std::fs::write(&schema_path, "FOO:\n  type: string\n  required: true\n").unwrap();
 
-        let result = check_schema_path(schema_path.to_str().unwrap());
+        let result = check_schema_path(schema_path.to_str().unwrap(), &default_load_options());
         assert_eq!(result.status, HealthStatus::Ok);
         assert!(result.message.contains("YAML") || result.message.contains("yaml"));
 
@@ -517,7 +524,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = check_schema_path(schema_path.to_str().unwrap());
+        let result = check_schema_path(schema_path.to_str().unwrap(), &default_load_options());
         assert_eq!(result.status, HealthStatus::Ok);
         assert!(result.message.contains("3 variables"));
 
@@ -554,6 +561,7 @@ mod tests {
         let result = check_validation_paths(
             env_path.to_str().unwrap(),
             schema_path.to_str().unwrap(),
+            &default_load_options(),
         );
 
         assert!(result.is_some());
@@ -581,6 +589,7 @@ mod tests {
         let result = check_validation_paths(
             env_path.to_str().unwrap(),
             schema_path.to_str().unwrap(),
+            &default_load_options(),
         );
 
         assert!(result.is_some());
@@ -605,6 +614,7 @@ mod tests {
         let result = check_validation_paths(
             env_path.to_str().unwrap(),
             schema_path.to_str().unwrap(),
+            &default_load_options(),
         );
 
         assert!(result.is_some());
@@ -662,7 +672,7 @@ PLAIN=noquotes
         let schema_path = temp_dir.join("test_doctor_empty_schema.json");
         std::fs::write(&schema_path, "{}").unwrap();
 
-        let result = check_schema_path(schema_path.to_str().unwrap());
+        let result = check_schema_path(schema_path.to_str().unwrap(), &default_load_options());
         assert_eq!(result.status, HealthStatus::Ok);
         assert!(result.message.contains("0 variables"));
 
@@ -715,6 +725,7 @@ ANOTHER=final
         let result = check_validation_paths(
             env_path.to_str().unwrap(),
             schema_path.to_str().unwrap(),
+            &default_load_options(),
         );
 
         // Should pass if interpolation works correctly

@@ -1,10 +1,12 @@
+use crate::errors::CliError;
 use crate::remote::{cache_dir, cache_filename, CACHE_TTL_SECS};
 use std::fs;
 use std::time::SystemTime;
 
 /// List all cached remote schemas
-pub fn run_list() -> Result<(), String> {
-    let dir = cache_dir().ok_or("Cache directory not available on this system")?;
+#[doc(hidden)]
+pub fn run_list() -> Result<(), CliError> {
+    let dir = cache_dir().ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
 
     if !dir.exists() {
         println!("Cache directory: {}", dir.display());
@@ -16,7 +18,7 @@ pub fn run_list() -> Result<(), String> {
     println!();
 
     let entries: Vec<_> = fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to read cache directory: {}", e))?
+        .map_err(|e| CliError::Input(format!("Failed to read cache directory: {}", e)))?
         .filter_map(|e| e.ok())
         .filter(|e| {
             e.path()
@@ -84,8 +86,9 @@ pub fn run_list() -> Result<(), String> {
 }
 
 /// Clear cached schemas
-pub fn run_clear(url: Option<&str>) -> Result<(), String> {
-    let dir = cache_dir().ok_or("Cache directory not available on this system")?;
+#[doc(hidden)]
+pub fn run_clear(url: Option<&str>) -> Result<(), CliError> {
+    let dir = cache_dir().ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
 
     if !dir.exists() {
         println!("Cache is already empty.");
@@ -100,7 +103,7 @@ pub fn run_clear(url: Option<&str>) -> Result<(), String> {
 
             if cache_path.exists() {
                 fs::remove_file(&cache_path)
-                    .map_err(|e| format!("Failed to remove cached schema: {}", e))?;
+                    .map_err(|e| CliError::Input(format!("Failed to remove cached schema: {}", e)))?;
                 println!("Cleared: {}", url);
                 println!("  ({})", filename);
             } else {
@@ -112,7 +115,7 @@ pub fn run_clear(url: Option<&str>) -> Result<(), String> {
             // Clear all
             let mut count = 0;
             for entry in fs::read_dir(&dir)
-                .map_err(|e| format!("Failed to read cache directory: {}", e))?
+                .map_err(|e| CliError::Input(format!("Failed to read cache directory: {}", e)))?
                 .filter_map(|e| e.ok())
             {
                 let path = entry.path();
@@ -135,15 +138,17 @@ pub fn run_clear(url: Option<&str>) -> Result<(), String> {
 }
 
 /// Print cache directory path
-pub fn run_path() -> Result<(), String> {
-    let dir = cache_dir().ok_or("Cache directory not available on this system")?;
+#[doc(hidden)]
+pub fn run_path() -> Result<(), CliError> {
+    let dir = cache_dir().ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
     println!("{}", dir.display());
     Ok(())
 }
 
 /// Show cache statistics
-pub fn run_stats() -> Result<(), String> {
-    let dir = cache_dir().ok_or("Cache directory not available on this system")?;
+#[doc(hidden)]
+pub fn run_stats() -> Result<(), CliError> {
+    let dir = cache_dir().ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
 
     println!("Cache Statistics");
     println!("================");
@@ -159,7 +164,7 @@ pub fn run_stats() -> Result<(), String> {
     }
 
     let entries: Vec<_> = fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to read cache directory: {}", e))?
+        .map_err(|e| CliError::Input(format!("Failed to read cache directory: {}", e)))?
         .filter_map(|e| e.ok())
         .filter(|e| {
             e.path()

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::envfile;
+use crate::errors::CliError;
 use crate::schema::{self, LoadOptions};
 use crate::suggestions::find_closest_match;
 use serde::Serialize;
@@ -44,6 +45,7 @@ struct FileCompliance {
     unknown_keys: Vec<String>,
 }
 
+#[doc(hidden)]
 pub fn run(
     env_a: &str,
     env_b: &str,
@@ -52,10 +54,10 @@ pub fn run(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     // Parse both env files
-    let map_a = envfile::parse_env_file(env_a).map_err(|e| format!("Error reading {}: {}", env_a, e))?;
-    let map_b = envfile::parse_env_file(env_b).map_err(|e| format!("Error reading {}: {}", env_b, e))?;
+    let map_a = envfile::parse_env_file(env_a).map_err(|e| CliError::Input(format!("Error reading {}: {}", env_a, e)))?;
+    let map_b = envfile::parse_env_file(env_b).map_err(|e| CliError::Input(format!("Error reading {}: {}", env_b, e)))?;
 
     // Convert to BTreeMap for sorted output
     let map_a: BTreeMap<String, String> = map_a.into_iter().collect();
@@ -81,11 +83,12 @@ pub fn run(
 
     // Handle JSON output format
     if format == "json" {
-        return output_json(env_a, env_b, &map_a, &map_b, &only_in_a, &only_in_b, &different_values, schema_path, no_cache, verify_hash, ca_cert);
+        return output_json(env_a, env_b, &map_a, &map_b, &only_in_a, &only_in_b, &different_values, schema_path, no_cache, verify_hash, ca_cert)
+            .map_err(CliError::Input);
     }
 
     if format != "text" {
-        return Err(format!("unknown format '{}'. Use 'text' or 'json'", format));
+        return Err(CliError::Input(format!("unknown format '{}'. Use 'text' or 'json'", format)));
     }
 
     // Print header
@@ -419,7 +422,7 @@ mod tests {
 
         let result = run(&env_a, &env_b, None, "xml", false, None, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown format"));
+        assert!(result.unwrap_err().to_string().contains("unknown format"));
     }
 
     #[test]

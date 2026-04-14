@@ -1,10 +1,25 @@
 use std::path::Path;
 
 use crate::envfile;
+use crate::errors::CliError;
 use crate::presets;
 use crate::schema::{self, Schema, VarSpec, VarType};
 
-pub fn run(example_path: &str, schema_path: &str, preset: Option<&str>) -> Result<(), String> {
+#[doc(hidden)]
+pub fn run(example_path: &str, schema_path: &str, preset: Option<&str>) -> Result<(), CliError> {
+    run_with_options(example_path, schema_path, preset, false)
+}
+
+#[doc(hidden)]
+pub fn run_with_options(example_path: &str, schema_path: &str, preset: Option<&str>, list_presets: bool) -> Result<(), CliError> {
+    if list_presets {
+        println!("Available presets:");
+        for name in presets::AVAILABLE_PRESETS {
+            println!("  {}", name);
+        }
+        return Ok(());
+    }
+
     // Start with preset schema if provided
     let mut schema_map: Schema = if let Some(preset_name) = preset {
         match presets::get_preset(preset_name) {
@@ -13,11 +28,11 @@ pub fn run(example_path: &str, schema_path: &str, preset: Option<&str>) -> Resul
                 preset_schema
             }
             None => {
-                return Err(format!(
+                return Err(CliError::Input(format!(
                     "unknown preset '{}'. Available: {}",
                     preset_name,
-                    presets::list_presets().join(", ")
-                ));
+                    presets::AVAILABLE_PRESETS.join(", ")
+                )));
             }
         }
     } else {
@@ -26,7 +41,7 @@ pub fn run(example_path: &str, schema_path: &str, preset: Option<&str>) -> Resul
 
     // If example file exists, merge inferred types (inferred takes precedence for existing keys)
     if Path::new(example_path).exists() {
-        let env = envfile::parse_env_file(example_path).map_err(|e| e.to_string())?;
+        let env = envfile::parse_env_file(example_path).map_err(|e| CliError::Input(e.to_string()))?;
 
         for (k, v) in env {
             // Only add if not already in preset
@@ -48,7 +63,7 @@ pub fn run(example_path: &str, schema_path: &str, preset: Option<&str>) -> Resul
         }
     } else if preset.is_none() {
         // No preset and no example file - provide helpful suggestion
-        return Err(format!(
+        return Err(CliError::Input(format!(
             "example file not found: {example_path}\n\n\
             To create a schema, either:\n  \
             1. Create a {} file with your environment variables\n  \
@@ -56,14 +71,14 @@ pub fn run(example_path: &str, schema_path: &str, preset: Option<&str>) -> Resul
             Available presets: nextjs, rails, django, fastapi, express, laravel\n\
             List presets with: zenv init --list-presets",
             example_path
-        ));
+        )));
     }
 
     if Path::new(schema_path).exists() {
         eprintln!("warning: overwriting existing {schema_path}");
     }
 
-    schema::save_schema(schema_path, &schema_map).map_err(|e| e.to_string())?;
+    schema::save_schema(schema_path, &schema_map).map_err(|e| CliError::Schema(e.to_string()))?;
     println!("zenv: wrote schema to {schema_path} ({} variables)", schema_map.len());
     Ok(())
 }

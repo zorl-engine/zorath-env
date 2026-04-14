@@ -24,6 +24,8 @@ pub struct DuplicateKey {
 pub struct ParseResult {
     pub values: HashMap<String, String>,
     pub duplicates: Vec<DuplicateKey>,
+    /// Maps each key to the line number where it was defined (1-indexed)
+    pub line_numbers: HashMap<String, usize>,
 }
 
 /// .env parser with multiline and escape support:
@@ -284,6 +286,7 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
     ParseResult {
         values: map,
         duplicates,
+        line_numbers: key_lines,
     }
 }
 

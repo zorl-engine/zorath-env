@@ -1472,7 +1472,7 @@ fn test_diff_run_file_not_found() {
         None,
     );
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("Error reading"));
+    assert!(result.unwrap_err().to_string().contains("Error reading"));
 }
 
 #[test]
@@ -1561,7 +1561,7 @@ fn test_check_watch_mode_rejects_json_format() {
 
     assert!(result.is_err());
     assert!(
-        result.unwrap_err().contains("JSON format is not supported in watch mode"),
+        result.unwrap_err().to_string().contains("JSON format is not supported in watch mode"),
         "Watch mode should reject JSON format"
     );
 }
@@ -1804,6 +1804,9 @@ fn test_doctor_healthy_setup() {
     let result = zorath_env::commands::doctor::run(
         env.env_str(),
         env.schema_str(),
+        false,
+        None,
+        None,
     );
 
     // Should succeed with valid setup
@@ -1819,6 +1822,9 @@ fn test_doctor_missing_schema_reports_issue() {
     let result = zorath_env::commands::doctor::run(
         env.env_str(),
         env.schema_str(), // Points to non-existent file
+        false,
+        None,
+        None,
     );
 
     // Doctor may return Ok (if fallback found) or Err (if not found)
@@ -1835,6 +1841,9 @@ fn test_doctor_missing_env_reports_issue() {
     let result = zorath_env::commands::doctor::run(
         env.env_str(), // Points to non-existent file
         env.schema_str(),
+        false,
+        None,
+        None,
     );
 
     // Doctor may find fallback .env files and return Ok or Err
@@ -1851,6 +1860,9 @@ fn test_doctor_invalid_schema_reports_error() {
     let result = zorath_env::commands::doctor::run(
         env.env_str(),
         env.schema_str(),
+        false,
+        None,
+        None,
     );
 
     // Doctor returns Err when schema is invalid (has errors)
@@ -1987,7 +1999,7 @@ fn test_check_graceful_on_malformed_json_schema() {
     );
 
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = result.unwrap_err().to_string();
     assert!(err.contains("schema") || err.contains("parse") || err.contains("JSON"),
             "Error should mention schema/parse issue: {}", err);
 }
@@ -2455,4 +2467,308 @@ fn test_envfile_circular_interpolation_detected() {
         format!("{:?}", err).contains("ircular") || format!("{:?}", err).contains("VAR_"),
         "Error should mention circular reference: {:?}", err
     );
+}
+
+// ====================================================================
+// CLI-level tests: exercise the actual binary via std::process::Command
+// ====================================================================
+
+mod cli_tests {
+    use std::fs;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn zenv_bin() -> Command {
+        Command::new(env!("CARGO_BIN_EXE_zenv"))
+    }
+
+    fn setup_env_and_schema(dir: &std::path::Path, env_content: &str, schema_content: &str) {
+        fs::write(dir.join(".env"), env_content).unwrap();
+        fs::write(dir.join("env.schema.json"), schema_content).unwrap();
+    }
+
+    #[test]
+    fn test_cli_version_flag() {
+        let output = zenv_bin().arg("version").output().unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("zenv"), "version output should contain 'zenv': {}", stdout);
+    }
+
+    #[test]
+    fn test_cli_help_flag() {
+        let output = zenv_bin().arg("--help").output().unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("schema"), "help should mention schema");
+        assert!(stdout.contains("check"), "help should mention check command");
+    }
+
+    #[test]
+    fn test_cli_check_valid_env() {
+        let dir = TempDir::new().unwrap();
+        setup_env_and_schema(
+            dir.path(),
+            "PORT=3000\nNODE_ENV=production\n",
+            r#"{"PORT": {"type": "int", "required": true}, "NODE_ENV": {"type": "string"}}"#,
+        );
+
+        let output = zenv_bin()
+            .args(["check",
+                "--env", dir.path().join(".env").to_str().unwrap(),
+                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet"])
+            .output().unwrap();
+
+        assert!(output.status.success(), "check should pass for valid env: {}",
+            String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[test]
+    fn test_cli_check_invalid_env_exits_1() {
+        let dir = TempDir::new().unwrap();
+        setup_env_and_schema(
+            dir.path(),
+            "PORT=not_a_number\n",
+            r#"{"PORT": {"type": "int", "required": true}}"#,
+        );
+
+        let output = zenv_bin()
+            .args(["check",
+                "--env", dir.path().join(".env").to_str().unwrap(),
+                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet"])
+            .output().unwrap();
+
+        assert_eq!(output.status.code(), Some(1), "validation failure should exit 1");
+    }
+
+    #[test]
+    fn test_cli_check_missing_env_exits_2() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("env.schema.json"), r#"{"PORT": {"type": "int"}}"#).unwrap();
+
+        let output = zenv_bin()
+            .args(["check",
+                "--env", dir.path().join(".env").to_str().unwrap(),
+                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet"])
+            .output().unwrap();
+
+        assert_eq!(output.status.code(), Some(2), "missing env file should exit 2");
+    }
+
+    #[test]
+    fn test_cli_check_bad_schema_exits_3() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(".env"), "PORT=3000\n").unwrap();
+        fs::write(dir.path().join("bad.schema.json"), "not valid json {{{").unwrap();
+
+        let output = zenv_bin()
+            .args(["check",
+                "--env", dir.path().join(".env").to_str().unwrap(),
+                "--schema", dir.path().join("bad.schema.json").to_str().unwrap(),
+                "--quiet"])
+            .output().unwrap();
+
+        assert_eq!(output.status.code(), Some(3), "bad schema should exit 3");
+    }
+
+    #[test]
+    fn test_cli_check_json_format() {
+        let dir = TempDir::new().unwrap();
+        setup_env_and_schema(
+            dir.path(),
+            "PORT=3000\n",
+            r#"{"PORT": {"type": "int", "required": true}}"#,
+        );
+
+        let output = zenv_bin()
+            .args(["check",
+                "--env", dir.path().join(".env").to_str().unwrap(),
+                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
+                "--format", "json",
+                "--quiet"])
+            .output().unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parsed: serde_json::Value = serde_json::from_str(&stdout)
+            .expect("check --format json should produce valid JSON");
+        assert_eq!(parsed["valid"], true);
+    }
+
+    #[test]
+    fn test_cli_quiet_flag_suppresses_config_output() {
+        let dir = TempDir::new().unwrap();
+        setup_env_and_schema(
+            dir.path(),
+            "PORT=3000\n",
+            r#"{"PORT": {"type": "int"}}"#,
+        );
+        // Write a .zenvrc so config loading would normally print
+        fs::write(dir.path().join(".zenvrc"), r#"{"schema": "env.schema.json"}"#).unwrap();
+
+        let output = zenv_bin()
+            .args(["check",
+                "--env", dir.path().join(".env").to_str().unwrap(),
+                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet"])
+            .current_dir(dir.path())
+            .output().unwrap();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("loaded config from"),
+            "quiet mode should suppress config loading message: {}", stderr);
+    }
+
+    #[test]
+    fn test_cli_config_flag_loads_custom_config() {
+        let dir = TempDir::new().unwrap();
+        setup_env_and_schema(
+            dir.path(),
+            "PORT=3000\n",
+            r#"{"PORT": {"type": "int"}}"#,
+        );
+        // Create custom config that sets format to json
+        let config_path = dir.path().join("custom.zenvrc");
+        fs::write(&config_path, r#"{"format": "json"}"#).unwrap();
+
+        let output = zenv_bin()
+            .args(["check",
+                "--env", dir.path().join(".env").to_str().unwrap(),
+                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
+                "--config", config_path.to_str().unwrap(),
+                "--quiet"])
+            .output().unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Config set format=json, so output should be JSON
+        let parsed: serde_json::Value = serde_json::from_str(&stdout)
+            .expect("custom config format=json should produce JSON output");
+        assert_eq!(parsed["valid"], true);
+    }
+
+    #[test]
+    fn test_cli_export_shell_format() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(".env"), "PORT=3000\nNODE_ENV=prod\n").unwrap();
+
+        let output = zenv_bin()
+            .args(["export",
+                "--env", dir.path().join(".env").to_str().unwrap(),
+                "--format", "shell",
+                "--quiet"])
+            .output().unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("export "), "shell format should contain 'export '");
+    }
+
+    #[test]
+    fn test_cli_docs_command() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("env.schema.json"),
+            r#"{"PORT": {"type": "int", "required": true, "description": "Server port"}}"#).unwrap();
+
+        let output = zenv_bin()
+            .args(["docs",
+                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet"])
+            .output().unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("PORT"), "docs should contain variable name");
+    }
+
+    #[test]
+    fn test_cli_example_command() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("env.schema.json"),
+            r#"{"PORT": {"type": "int", "required": true}, "NODE_ENV": {"type": "string"}}"#).unwrap();
+
+        let output = zenv_bin()
+            .args(["example",
+                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet"])
+            .output().unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("PORT="), "example should contain PORT=");
+    }
+
+    #[test]
+    fn test_cli_doctor_command() {
+        let dir = TempDir::new().unwrap();
+        setup_env_and_schema(
+            dir.path(),
+            "PORT=3000\n",
+            r#"{"PORT": {"type": "int"}}"#,
+        );
+
+        let output = zenv_bin()
+            .args(["doctor",
+                "--env", dir.path().join(".env").to_str().unwrap(),
+                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet"])
+            .output().unwrap();
+
+        assert!(output.status.success(), "doctor should succeed: {}",
+            String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[test]
+    fn test_cli_verbose_and_quiet_conflict() {
+        let output = zenv_bin()
+            .args(["--verbose", "--quiet", "version"])
+            .output().unwrap();
+
+        assert!(!output.status.success(),
+            "verbose + quiet should conflict and fail");
+    }
+
+    #[test]
+    fn test_cli_diff_command() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.env"), "PORT=3000\nHOST=localhost\n").unwrap();
+        fs::write(dir.path().join("b.env"), "PORT=8080\nDEBUG=true\n").unwrap();
+
+        let output = zenv_bin()
+            .args(["diff",
+                dir.path().join("a.env").to_str().unwrap(),
+                dir.path().join("b.env").to_str().unwrap(),
+                "--quiet"])
+            .output().unwrap();
+
+        // diff exits 0 even with differences
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("PORT") || stdout.contains("HOST") || stdout.contains("DEBUG"),
+            "diff should show differences");
+    }
+
+    #[test]
+    fn test_cli_init_list_presets() {
+        let output = zenv_bin()
+            .args(["init", "--list-presets", "--quiet"])
+            .output().unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("node") || stdout.contains("django") || stdout.contains("rails"),
+            "list-presets should show available presets: {}", stdout);
+    }
+
+    #[test]
+    fn test_cli_no_color_flag() {
+        let output = zenv_bin()
+            .args(["--no-color", "version"])
+            .output().unwrap();
+
+        assert!(output.status.success(), "--no-color flag should be accepted");
+    }
 }

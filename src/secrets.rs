@@ -22,13 +22,10 @@ struct SecretPattern {
 /// Pass schema to respect `"secret": false` whitelist entries
 pub fn detect_secrets(
     env_map: &HashMap<String, String>,
-    content: &str,
+    line_numbers: &HashMap<String, usize>,
     schema: Option<&Schema>,
 ) -> Vec<SecretWarning> {
     let mut warnings = Vec::new();
-
-    // Build line number lookup
-    let line_numbers = build_line_lookup(content);
 
     // Define secret patterns
     let patterns = get_secret_patterns();
@@ -264,32 +261,6 @@ fn contains_url_password(value: &str) -> bool {
     false
 }
 
-/// Build a map of key -> line number from raw content
-fn build_line_lookup(content: &str) -> HashMap<String, usize> {
-    let mut lookup = HashMap::new();
-
-    for (line_num, line) in content.lines().enumerate() {
-        let trimmed = line.trim();
-
-        // Skip comments and empty lines
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // Handle export prefix
-        let key_line = trimmed.strip_prefix("export ").unwrap_or(trimmed);
-
-        // Extract key (before =)
-        if let Some(eq_pos) = key_line.find('=') {
-            let key = key_line[..eq_pos].trim().to_string();
-            if !key.is_empty() {
-                lookup.insert(key, line_num + 1); // 1-indexed lines
-            }
-        }
-    }
-
-    lookup
-}
 
 #[cfg(test)]
 mod tests {
@@ -299,11 +270,15 @@ mod tests {
         pairs.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
+    fn make_lines(content: &str) -> HashMap<String, usize> {
+        crate::envfile::parse_env_str_detailed(content).line_numbers
+    }
+
     #[test]
     fn test_detects_aws_access_key() {
         let env = make_env(vec![("AWS_KEY", "AKIAIOSFODNN7EXAMPLE")]);
         let content = "AWS_KEY=AKIAIOSFODNN7EXAMPLE";
-        let warnings = detect_secrets(&env, content, None);
+        let warnings = detect_secrets(&env, &make_lines(content), None);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].reason.contains("AWS"));
     }
@@ -312,7 +287,7 @@ mod tests {
     fn test_detects_stripe_key() {
         let env = make_env(vec![("STRIPE_KEY", "sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxx")]);
         let content = "STRIPE_KEY=sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxx";
-        let warnings = detect_secrets(&env, content, None);
+        let warnings = detect_secrets(&env, &make_lines(content), None);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].reason.contains("Stripe"));
     }
@@ -321,7 +296,7 @@ mod tests {
     fn test_detects_github_token() {
         let env = make_env(vec![("GH_TOKEN", "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")]);
         let content = "GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
-        let warnings = detect_secrets(&env, content, None);
+        let warnings = detect_secrets(&env, &make_lines(content), None);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].reason.contains("GitHub"));
     }
@@ -330,7 +305,7 @@ mod tests {
     fn test_detects_private_key() {
         let env = make_env(vec![("KEY", "-----BEGIN RSA PRIVATE KEY-----")]);
         let content = "KEY=-----BEGIN RSA PRIVATE KEY-----";
-        let warnings = detect_secrets(&env, content, None);
+        let warnings = detect_secrets(&env, &make_lines(content), None);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].reason.contains("Private key"));
     }
@@ -339,7 +314,7 @@ mod tests {
     fn test_detects_url_with_password() {
         let env = make_env(vec![("DB_URL", "postgres://user:actualPassword123@host/db")]);
         let content = "DB_URL=postgres://user:actualPassword123@host/db";
-        let warnings = detect_secrets(&env, content, None);
+        let warnings = detect_secrets(&env, &make_lines(content), None);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].reason.contains("password"));
     }
@@ -348,7 +323,7 @@ mod tests {
     fn test_ignores_url_with_placeholder_password() {
         let env = make_env(vec![("DB_URL", "postgres://user:password@host/db")]);
         let content = "DB_URL=postgres://user:password@host/db";
-        let warnings = detect_secrets(&env, content, None);
+        let warnings = detect_secrets(&env, &make_lines(content), None);
         assert!(warnings.is_empty());
     }
 
@@ -356,7 +331,7 @@ mod tests {
     fn test_ignores_empty_values() {
         let env = make_env(vec![("EMPTY", "")]);
         let content = "EMPTY=";
-        let warnings = detect_secrets(&env, content, None);
+        let warnings = detect_secrets(&env, &make_lines(content), None);
         assert!(warnings.is_empty());
     }
 
@@ -368,7 +343,7 @@ mod tests {
             ("DEBUG", "true"),
         ]);
         let content = "NODE_ENV=production\nPORT=3000\nDEBUG=true";
-        let warnings = detect_secrets(&env, content, None);
+        let warnings = detect_secrets(&env, &make_lines(content), None);
         assert!(warnings.is_empty());
     }
 
@@ -380,7 +355,7 @@ mod tests {
             ("TOKEN", "xxx-placeholder-xxx"),
         ]);
         let content = "API_KEY=your_api_key_here\nSECRET=changeme\nTOKEN=xxx-placeholder-xxx";
-        let warnings = detect_secrets(&env, content, None);
+        let warnings = detect_secrets(&env, &make_lines(content), None);
         assert!(warnings.is_empty());
     }
 
@@ -388,7 +363,7 @@ mod tests {
     fn test_line_numbers() {
         let env = make_env(vec![("STRIPE_KEY", "sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxx")]);
         let content = "# Comment\nNODE_ENV=prod\nSTRIPE_KEY=sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxx";
-        let warnings = detect_secrets(&env, content, None);
+        let warnings = detect_secrets(&env, &make_lines(content), None);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].line, 3);
     }
@@ -424,11 +399,11 @@ mod tests {
         let schema = make_schema(vec![("STRIPE_KEY", true)]); // secret: false = safe
 
         // Without schema - detected
-        let warnings = detect_secrets(&env, content, None);
+        let warnings = detect_secrets(&env, &make_lines(content), None);
         assert_eq!(warnings.len(), 1);
 
         // With schema whitelist - skipped
-        let warnings = detect_secrets(&env, content, Some(&schema));
+        let warnings = detect_secrets(&env, &make_lines(content), Some(&schema));
         assert!(warnings.is_empty());
     }
 
@@ -441,7 +416,7 @@ mod tests {
         let content = "SAFE_KEY=sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxx\nREAL_SECRET=sk_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         let schema = make_schema(vec![("SAFE_KEY", true)]); // Only SAFE_KEY is whitelisted
 
-        let warnings = detect_secrets(&env, content, Some(&schema));
+        let warnings = detect_secrets(&env, &make_lines(content), Some(&schema));
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].key, "REAL_SECRET");
     }
@@ -452,7 +427,7 @@ mod tests {
         let content = "STRIPE_KEY=sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         let schema = make_schema(vec![("STRIPE_KEY", false)]); // secret: None (not whitelisted)
 
-        let warnings = detect_secrets(&env, content, Some(&schema));
+        let warnings = detect_secrets(&env, &make_lines(content), Some(&schema));
         assert_eq!(warnings.len(), 1);
     }
 }

@@ -1,3 +1,4 @@
+use crate::errors::CliError;
 use crate::schema::{self, LoadOptions, Schema, VarType};
 
 /// Generate documentation from a Schema (library function)
@@ -20,23 +21,24 @@ pub fn generate(schema: &Schema, format: &str) -> Result<String, String> {
 }
 
 /// Run the docs command (CLI function)
+#[doc(hidden)]
 pub fn run(
     schema_path: &str,
     format: &str,
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     let options = LoadOptions {
         no_cache,
         verify_hash: verify_hash.map(|s| s.to_string()),
         ca_cert: ca_cert.map(|s| s.to_string()),
         rate_limit_seconds: None,
     };
-    let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
+    let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| CliError::Schema(e.to_string()))?;
 
     // Use the library function
-    let output = generate(&schema, format)?;
+    let output = generate(&schema, format).map_err(CliError::Input)?;
 
     print!("{}", output);
     Ok(())

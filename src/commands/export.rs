@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 
 use crate::envfile;
+use crate::errors::CliError;
 use crate::schema::{self, LoadOptions};
 
 /// Supported export formats
@@ -97,6 +98,7 @@ pub fn export_to_string(env_map: &HashMap<String, String>, format: ExportFormat)
     }
 }
 
+#[doc(hidden)]
 pub fn run(
     env_path: &str,
     schema_path: Option<&str>,
@@ -105,17 +107,17 @@ pub fn run(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     // Parse format
-    let export_format: ExportFormat = format.parse()?;
+    let export_format: ExportFormat = format.parse().map_err(CliError::Input)?;
 
     // Load and parse env file
     let env_map = envfile::parse_env_file(env_path)
-        .map_err(|e| format!("Failed to parse {}: {}", env_path, e))?;
+        .map_err(|e| CliError::Input(format!("Failed to parse {}: {}", env_path, e)))?;
 
     // Interpolate variables
     let env_map = envfile::interpolate_env(env_map)
-        .map_err(|e| format!("Interpolation error: {}", e))?;
+        .map_err(|e| CliError::Input(format!("Interpolation error: {}", e)))?;
 
     // Optionally validate against schema
     if let Some(schema_path) = schema_path {
@@ -126,7 +128,7 @@ pub fn run(
             rate_limit_seconds: None,
         };
         let schema = schema::load_schema_with_options(schema_path, &options)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| CliError::Schema(e.to_string()))?;
 
         // Filter to only include keys that are in the schema
         let filtered: HashMap<String, String> = env_map
@@ -134,19 +136,19 @@ pub fn run(
             .filter(|(k, _)| schema.contains_key(k))
             .collect();
 
-        let result = export(&filtered, export_format)?;
+        let result = export(&filtered, export_format).map_err(CliError::Input)?;
         output_result(&result, output)
     } else {
-        let result = export(&env_map, export_format)?;
+        let result = export(&env_map, export_format).map_err(CliError::Input)?;
         output_result(&result, output)
     }
 }
 
-fn output_result(result: &str, output: Option<&str>) -> Result<(), String> {
+fn output_result(result: &str, output: Option<&str>) -> Result<(), CliError> {
     match output {
         Some(path) => {
             fs::write(path, result)
-                .map_err(|e| format!("Failed to write {}: {}", path, e))?;
+                .map_err(|e| CliError::Input(format!("Failed to write {}: {}", path, e)))?;
             eprintln!("Exported to {}", path);
             Ok(())
         }

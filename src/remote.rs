@@ -34,7 +34,7 @@ pub const CACHE_TTL_SECS: u64 = 3600;
 pub const DEFAULT_RATE_LIMIT_SECS: u64 = 60;
 
 /// Security options for remote schema fetching
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SecurityOptions {
     /// Expected SHA-256 hash of the schema content (hex-encoded)
     pub verify_hash: Option<String>,
@@ -44,13 +44,19 @@ pub struct SecurityOptions {
     pub rate_limit_seconds: u64,
 }
 
-impl SecurityOptions {
-    pub fn new() -> Self {
+impl Default for SecurityOptions {
+    fn default() -> Self {
         Self {
             verify_hash: None,
             ca_cert: None,
             rate_limit_seconds: DEFAULT_RATE_LIMIT_SECS,
         }
+    }
+}
+
+impl SecurityOptions {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn with_hash(mut self, hash: Option<String>) -> Self {
@@ -487,7 +493,7 @@ mod tests {
         let opts = SecurityOptions::default();
         assert_eq!(opts.verify_hash, None);
         assert_eq!(opts.ca_cert, None);
-        assert_eq!(opts.rate_limit_seconds, 0); // Default trait gives 0
+        assert_eq!(opts.rate_limit_seconds, DEFAULT_RATE_LIMIT_SECS);
     }
 
     #[test]

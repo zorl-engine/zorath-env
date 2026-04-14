@@ -2,11 +2,14 @@
 
 use std::fs;
 
+use crate::errors::CliError;
+
 /// Available template names
 pub const TEMPLATES: &[&str] = &["github", "gitlab", "circleci"];
 
 /// Generate CI/CD template for the given platform
-pub fn run(template: &str, output: Option<&str>, list: bool, use_binary: bool) -> Result<(), String> {
+#[doc(hidden)]
+pub fn run(template: &str, output: Option<&str>, list: bool, use_binary: bool) -> Result<(), CliError> {
     if list {
         println!("Available templates:");
         for name in TEMPLATES {
@@ -19,16 +22,16 @@ pub fn run(template: &str, output: Option<&str>, list: bool, use_binary: bool) -
         "github" | "gh" | "github-actions" => github_actions_template(use_binary),
         "gitlab" | "gl" | "gitlab-ci" => gitlab_ci_template(use_binary),
         "circleci" | "circle" => circleci_template(use_binary),
-        _ => return Err(format!(
+        _ => return Err(CliError::Input(format!(
             "Unknown template: '{}'. Available: {}",
             template,
             TEMPLATES.join(", ")
-        )),
+        ))),
     };
 
     match output {
         Some(path) => {
-            fs::write(path, &content).map_err(|e| format!("Failed to write {}: {}", path, e))?;
+            fs::write(path, &content).map_err(|e| CliError::Input(format!("Failed to write {}: {}", path, e)))?;
             println!("Template written to {}", path);
         }
         None => {
@@ -273,7 +276,7 @@ mod tests {
     fn test_run_unknown_template() {
         let result = run("unknown", None, false, false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Unknown template"));
+        assert!(result.unwrap_err().to_string().contains("Unknown template"));
     }
 
     #[test]

@@ -23,10 +23,6 @@ pub fn get_preset(name: &str) -> Option<Schema> {
     }
 }
 
-/// List all available preset names
-pub fn list_presets() -> &'static [&'static str] {
-    AVAILABLE_PRESETS
-}
 
 /// Next.js preset
 fn nextjs_preset() -> Schema {
@@ -364,14 +360,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_list_presets() {
-        let presets = list_presets();
-        assert!(presets.contains(&"nextjs"));
-        assert!(presets.contains(&"rails"));
-        assert!(presets.contains(&"django"));
-        assert!(presets.contains(&"fastapi"));
-        assert!(presets.contains(&"express"));
-        assert!(presets.contains(&"laravel"));
+    fn test_available_presets() {
+        assert!(AVAILABLE_PRESETS.contains(&"nextjs"));
+        assert!(AVAILABLE_PRESETS.contains(&"rails"));
+        assert!(AVAILABLE_PRESETS.contains(&"django"));
+        assert!(AVAILABLE_PRESETS.contains(&"fastapi"));
+        assert!(AVAILABLE_PRESETS.contains(&"express"));
+        assert!(AVAILABLE_PRESETS.contains(&"laravel"));
     }
 
     #[test]

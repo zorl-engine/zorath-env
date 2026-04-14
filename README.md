@@ -12,25 +12,30 @@
 
 **Built by Zorath -- infrastructure for builders.**
 
-A fast, zero-dependency CLI that makes `.env` sane.
+A fast, single-binary CLI that validates `.env` files against typed schemas, detects secrets, scans your code, generates docs, exports to 7 deployment formats, and auto-fixes issues. No runtime dependencies. Works with any stack.
 
-`zenv` validates environment variables from a schema, generates docs, and helps keep config consistent across dev/staging/prod.
+`14 types` -- `7 export formats` -- `9 language scan` -- `15 secret patterns` -- `6 framework presets` -- `686 tests`
 
-## Why
+## Why zenv
 
-`.env` files drift. Teams copy/paste secrets. CI fails late. Docs go stale.
+`.env` files drift. Teams copy/paste secrets. CI fails at 3am. Docs go stale. Nobody catches the typo until production.
 
-`zenv` makes your schema the source of truth.
+`zenv` catches config bugs at build time, not runtime. Your schema is the single source of truth -- docs, examples, and validation are all generated from it.
 
-> **Schema is the source of truth.** Docs and examples should be generated from it.
+**What makes zenv different:**
+
+- **Validate with real types** -- 14 validators (url, email, port, semver, uuid, ipv4, ipv6, date, hostname, and more), not just "is it a string?"
+- **Scan your code** -- find env vars used in source code across 9 languages that aren't in your schema yet
+- **Export anywhere** -- shell, Docker, Kubernetes, systemd, GitHub Secrets, JSON, dotenv
+- **Detect secrets** -- 15 patterns (AWS, Stripe, GitHub, Slack, JWT, PGP keys) plus entropy analysis
+- **Auto-fix** -- add missing vars, remove unknown keys, preview changes safely with `--dry-run`
+- **One binary, any stack** -- Rust binary with no runtime deps. Node, Python, Go, Ruby, Java, PHP, Kotlin -- doesn't matter
+
+> See how zenv compares to dotenv-linter, envalid, dotenvx, and others: [docs/comparison.md](docs/comparison.md)
 
 ## Privacy
 
-zenv runs locally. No uploads, no secrets fetching, no phoning home.
-
-## Works with any stack
-
-`zenv` is language-agnostic. Use it with Node.js, Python, Go, Ruby, Rust, Java, PHP, or any project that uses `.env` files. It's a single-binary CLI with no runtime dependencies.
+zenv runs locally. No uploads, no telemetry, no phoning home.
 
 ## Install
 
@@ -87,22 +92,41 @@ zorath-env = "0.3"
 
 ## Quick start
 
-1. Create a schema:
+**1. Create a schema from your existing .env:**
 
 ```bash
-zenv init
+zenv init                       # Infers types from .env.example
+zenv init --preset nextjs       # Or start from a framework preset
 ```
 
-2. Validate your `.env`:
+**2. Validate your .env against the schema:**
 
 ```bash
-zenv check
+zenv check                      # Text output for humans
+zenv check --format json        # JSON output for CI/CD
+zenv check --detect-secrets     # Also scan for leaked credentials
+zenv check --watch              # Re-validate on every file save
 ```
 
-3. Generate docs:
+**3. Find env vars in your code that aren't in your schema:**
 
 ```bash
-zenv docs > ENVIRONMENT.md
+zenv scan --show-unused         # JS, Python, Go, Rust, PHP, Ruby, Java, C#, Kotlin
+```
+
+**4. Export to deployment formats:**
+
+```bash
+zenv export .env --format k8s           # Kubernetes ConfigMap
+zenv export .env --format docker        # Dockerfile ENV directives
+zenv export .env --format github-secrets # GitHub CLI gh secret set
+```
+
+**5. Generate docs and examples:**
+
+```bash
+zenv docs > ENVIRONMENT.md      # Markdown documentation from schema
+zenv example -o .env.example    # Generate .env.example from schema
 ```
 
 ## Commands

@@ -10,8 +10,30 @@ All notable changes to this project will be documented in this file.
 - **`--ca-cert` now works**: Custom CA certificates are actually applied to TLS connections instead of being validated and discarded
 - **Doctor config check**: Removed false `.zenv.json` lookup (config only uses `.zenvrc`)
 
+### Added
+- **`--config` global flag**: Load custom `.zenvrc` from any path (`zenv --config path/to/.zenvrc check`)
+- **`--verbose`/`--quiet` global flags**: Control diagnostic output across all commands (mutually exclusive)
+- **`--no-color` global flag**: Disable colored output via CLI flag (also respects `NO_COLOR` env var and `.zenvrc`)
+- **`format` in `.zenvrc`**: Set default output format in config (`{"format": "json"}`) -- CLI `--format` still overrides
+- **`CliError` structured error enum**: Replaced string-based exit code detection with typed error variants (`Validation`/`Input`/`Schema` -> exit 1/2/3). Removed brittle `determine_exit_code()` string matching.
+- **`#[doc(hidden)]` on CLI internals**: All command `run()` functions marked as internal, keeping `cargo doc` output focused on the stable library API
+- **16 CLI-level integration tests**: End-to-end binary tests via `std::process::Command` covering exit codes, JSON output, global flags, config merge, and all major commands
+- 686 total tests (545 unit + 141 integration)
+
+### Fixed
+- **`--allow-missing-env` default**: Changed from `true` to `false` -- missing `.env` now fails by default (safe default)
+- **Secret detection line numbers**: Removed duplicate line-number parser from `secrets.rs`; now uses envfile parser's `line_numbers` directly (single source of truth)
+
 ### Changed
 - Removed unused direct dependencies: `rustls`, `rustls-pemfile`, `webpki-roots` (provided transitively by `ureq`)
+- **Dead code cleanup**: Removed `config_exists()`, `config_path()`, `load_schema()` dead code wrappers; unwired `#[allow(dead_code)]` from `no_color`/`rate_limit_seconds`
+- **`SchemaError::Write`**: `save_schema()` now uses proper `Write` error variant instead of misusing `Read`
+- **Short flags**: Added `-f` (format) to `docs`, `-o` (output) to `example` for consistency with `export`
+- **`--list-presets` moved**: Logic moved from `main.rs` to `init.rs` where it belongs
+- **`SecurityOptions::default()`**: Now uses `DEFAULT_RATE_LIMIT_SECS` (60s) matching `::new()` -- no more silent mismatch
+- **Doctor remote flags**: Added `--no-cache`, `--verify-hash`, `--ca-cert` to `doctor` command for remote schema support
+- **Removed redundant `list_presets()`**: Callers use `AVAILABLE_PRESETS` constant directly
+- **`detect_secrets` signature**: Takes `&HashMap<String, usize>` (line numbers) instead of raw `&str` content
 
 ## [0.3.8] - 2026-01-25
 

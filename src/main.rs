@@ -2,13 +2,28 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use zorath_env::config::Config;
 use zorath_env::commands;
-use zorath_env::presets;
 
 #[derive(Parser, Debug)]
 #[command(name="zenv", version, about="Validate .env files with a schema and generate docs.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
+
+    /// Path to config file (default: .zenvrc in current or parent directories)
+    #[arg(long, global = true)]
+    config: Option<String>,
+
+    /// Show verbose diagnostic output
+    #[arg(long, global = true, conflicts_with = "quiet")]
+    verbose: bool,
+
+    /// Suppress all diagnostic output
+    #[arg(long, global = true, conflicts_with = "verbose")]
+    quiet: bool,
+
+    /// Disable colored output (also respects NO_COLOR env var and .zenvrc)
+    #[arg(long, global = true)]
+    no_color: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -50,9 +65,9 @@ Config file:
         /// Watch for file changes and re-run validation
         #[arg(long, default_value_t = false)]
         watch: bool,
-        /// Output format: text or json
-        #[arg(long, default_value = "text")]
-        format: String,
+        /// Output format: text or json (default: text, or from .zenvrc)
+        #[arg(long)]
+        format: Option<String>,
         /// Verify remote schema integrity with SHA-256 hash
         #[arg(long)]
         verify_hash: Option<String>,
@@ -72,9 +87,9 @@ Examples:
         /// Path to schema file (default: env.schema.json, or from .zenvrc)
         #[arg(long)]
         schema: Option<String>,
-        /// Output format: markdown or json
-        #[arg(long, default_value = "markdown")]
-        format: String,
+        /// Output format: markdown or json (default: markdown, or from .zenvrc)
+        #[arg(short = 'f', long)]
+        format: Option<String>,
         /// Skip cache when fetching remote schemas
         #[arg(long)]
         no_cache: Option<bool>,
@@ -153,7 +168,7 @@ Examples:
         #[arg(long)]
         schema: Option<String>,
         /// Output file path (defaults to stdout)
-        #[arg(long)]
+        #[arg(short = 'o', long)]
         output: Option<String>,
         /// Include default values in output
         #[arg(long, default_value_t = false)]
@@ -186,9 +201,9 @@ Remote schema with integrity verification:
         /// Optional schema to check compliance
         #[arg(long)]
         schema: Option<String>,
-        /// Output format: text or json
-        #[arg(long, default_value = "text")]
-        format: String,
+        /// Output format: text or json (default: text, or from .zenvrc)
+        #[arg(long)]
+        format: Option<String>,
         /// Skip cache when fetching remote schemas
         #[arg(long)]
         no_cache: Option<bool>,
@@ -265,9 +280,9 @@ Supported languages:
         /// Show file:line paths for all found variables
         #[arg(long, default_value_t = false)]
         show_paths: bool,
-        /// Output format: text or json
-        #[arg(long, default_value = "text")]
-        format: String,
+        /// Output format: text or json (default: text, or from .zenvrc)
+        #[arg(long)]
+        format: Option<String>,
         /// Skip cache when fetching remote schemas
         #[arg(long)]
         no_cache: Option<bool>,
@@ -318,9 +333,9 @@ Aliases:
         /// Path to .env file to export (default: .env, or from .zenvrc)
         #[arg(long)]
         env: Option<String>,
-        /// Output format: shell (bash/sh), docker (dockerfile), k8s (kubernetes/configmap), json, systemd (service), dotenv (env), github-secrets (gh-secrets/github)
-        #[arg(short = 'f', long, default_value = "shell")]
-        format: String,
+        /// Output format: shell, docker, k8s, json, systemd, dotenv, github-secrets (default: shell, or from .zenvrc)
+        #[arg(short = 'f', long)]
+        format: Option<String>,
         /// Optional schema to filter variables
         #[arg(long)]
         schema: Option<String>,
@@ -344,6 +359,8 @@ Examples:
   zenv doctor                           Run full health check
   zenv doctor --schema custom.json      Use custom schema path
   zenv doctor --env .env.local          Use specific env file
+  zenv doctor --schema https://... --verify-hash abc123...
+  zenv doctor --schema https://... --ca-cert /path/to/ca.pem
 
 Checks:
   - Schema file exists and is valid
@@ -363,6 +380,15 @@ Each check shows:
         /// Path to schema file (default: env.schema.json, or from .zenvrc)
         #[arg(long)]
         schema: Option<String>,
+        /// Skip cache when fetching remote schemas
+        #[arg(long)]
+        no_cache: Option<bool>,
+        /// Verify remote schema integrity with SHA-256 hash
+        #[arg(long)]
+        verify_hash: Option<String>,
+        /// Custom CA certificate for enterprise TLS (PEM format)
+        #[arg(long)]
+        ca_cert: Option<String>,
     },
 
     /// Generate CI/CD configuration templates
@@ -412,19 +438,33 @@ enum CacheAction {
 fn main() {
     let cli = Cli::parse();
 
-    // Load config from .zenvrc (if present)
-    let config = Config::load().unwrap_or_default();
+    // Set verbosity via env vars so modules can check without threading args
+    if cli.quiet {
+        std::env::set_var("ZENV_QUIET", "1");
+    }
+    if cli.verbose {
+        std::env::set_var("ZENV_VERBOSE", "1");
+    }
+
+    // Load config from specified path or .zenvrc (if present)
+    let config = Config::load_from(cli.config.as_deref()).unwrap_or_default();
+
+    // Set NO_COLOR if flag or config requests it
+    if cli.no_color || config.no_color_or(false) {
+        std::env::set_var("NO_COLOR", "1");
+    }
 
     let result = match cli.command {
         Command::Check { env, schema, allow_missing_env, detect_secrets, no_cache, watch, format, verify_hash, ca_cert } => {
             // CLI args override config, config overrides defaults
             let env = env.unwrap_or_else(|| config.env_or(".env"));
             let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
-            let allow_missing_env = allow_missing_env.unwrap_or_else(|| config.allow_missing_env_or(true));
+            let allow_missing_env = allow_missing_env.unwrap_or_else(|| config.allow_missing_env_or(false));
             let detect_secrets = detect_secrets.unwrap_or_else(|| config.detect_secrets_or(false));
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
+            let format = format.unwrap_or_else(|| config.format_or("text"));
             commands::check::run(&env, &schema, allow_missing_env, detect_secrets, no_cache, watch, &format, verify_hash.as_deref(), ca_cert.as_deref())
         }
         Command::Docs { schema, format, no_cache, verify_hash, ca_cert } => {
@@ -432,19 +472,12 @@ fn main() {
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
+            let format = format.unwrap_or_else(|| config.format_or("markdown"));
             commands::docs::run(&schema, &format, no_cache, verify_hash.as_deref(), ca_cert.as_deref())
         }
         Command::Init { example, schema, preset, list_presets } => {
-            if list_presets {
-                println!("Available presets:");
-                for name in presets::list_presets() {
-                    println!("  {}", name);
-                }
-                Ok(())
-            } else {
-                let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
-                commands::init::run(&example, &schema, preset.as_deref())
-            }
+            let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
+            commands::init::run_with_options(&example, &schema, preset.as_deref(), list_presets)
         }
         Command::Version { check_update } => commands::version::run(check_update),
         Command::Completions { shell } => commands::completions::run(shell, &mut Cli::command()),
@@ -460,6 +493,7 @@ fn main() {
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
+            let format = format.unwrap_or_else(|| config.format_or("text"));
             commands::diff::run(&env_a, &env_b, schema.as_deref(), &format, no_cache, verify_hash.as_deref(), ca_cert.as_deref())
         }
         Command::Fix { env, schema, remove_unknown, dry_run, no_cache, verify_hash, ca_cert } => {
@@ -475,6 +509,7 @@ fn main() {
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
+            let format = format.unwrap_or_else(|| config.format_or("text"));
             commands::scan::run(&path, &schema, show_unused, show_paths, &format, no_cache, verify_hash.as_deref(), ca_cert.as_deref())
         }
         Command::Cache { action } => match action {
@@ -488,12 +523,16 @@ fn main() {
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
+            let format = format.unwrap_or_else(|| config.format_or("shell"));
             commands::export::run(&env, schema.as_deref(), &format, output.as_deref(), no_cache, verify_hash.as_deref(), ca_cert.as_deref())
         }
-        Command::Doctor { env, schema } => {
+        Command::Doctor { env, schema, no_cache, verify_hash, ca_cert } => {
             let env = env.unwrap_or_else(|| config.env_or(".env"));
             let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
-            commands::doctor::run(&env, &schema)
+            let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
+            let verify_hash = verify_hash.or_else(|| config.verify_hash());
+            let ca_cert = ca_cert.or_else(|| config.ca_cert());
+            commands::doctor::run(&env, &schema, no_cache, verify_hash.as_deref(), ca_cert.as_deref())
         }
         Command::Template { name, output, list, use_binary } => {
             commands::template::run(&name, output.as_deref(), list, use_binary)
@@ -502,43 +541,6 @@ fn main() {
 
     if let Err(e) = result {
         eprintln!("zenv error: {e}");
-        // Exit with specific codes for CI/CD integration:
-        //   1 = validation failed (check command found errors)
-        //   2 = input/file error (file not found, parse error)
-        //   3 = schema error (invalid schema, failed to load)
-        let exit_code = determine_exit_code(&e);
-        std::process::exit(exit_code);
+        std::process::exit(e.exit_code());
     }
-}
-
-/// Determine appropriate exit code based on error message
-fn determine_exit_code(error: &str) -> i32 {
-    let lower = error.to_lowercase();
-
-    // Validation failures (exit code 1)
-    if lower.contains("validation failed") || lower.contains("check failed") {
-        return 1;
-    }
-
-    // Schema errors (exit code 3)
-    if lower.contains("schema")
-        || lower.contains("invalid json")
-        || lower.contains("invalid yaml")
-        || lower.contains("failed to parse")
-    {
-        return 3;
-    }
-
-    // Input/file errors (exit code 2)
-    if lower.contains("not found")
-        || lower.contains("failed to read")
-        || lower.contains("failed to write")
-        || lower.contains("unknown format")
-        || lower.contains("unknown template")
-    {
-        return 2;
-    }
-
-    // Default to 1 for any other error
-    1
 }

@@ -2,11 +2,14 @@ use clap::Command;
 use clap_complete::{generate, Shell};
 use std::io;
 
+use crate::errors::CliError;
+
 /// Generate shell completions for the specified shell.
 ///
 /// Takes a clap Command instance from the caller (main.rs provides Cli::command()).
 /// This decouples the library from the CLI definition.
-pub fn run(shell: Shell, cmd: &mut Command) -> Result<(), String> {
+#[doc(hidden)]
+pub fn run(shell: Shell, cmd: &mut Command) -> Result<(), CliError> {
     generate(shell, cmd, "zenv", &mut io::stdout());
     Ok(())
 }

@@ -30,7 +30,6 @@ pub struct Config {
 
     /// Disable colored output (also respects NO_COLOR env var)
     #[serde(default)]
-    #[allow(dead_code)]
     pub no_color: Option<bool>,
 
     // Security options for remote schemas
@@ -46,6 +45,10 @@ pub struct Config {
     /// Rate limit in seconds between remote schema fetches (default: 60)
     #[serde(default)]
     pub rate_limit_seconds: Option<u64>,
+
+    /// Default output format (text, json, markdown, etc.)
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 /// Known valid config keys
@@ -59,12 +62,27 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "verify_hash",
     "ca_cert",
     "rate_limit_seconds",
+    "format",
 ];
 
 impl Config {
-    /// Load config from .zenvrc in current or parent directories
+    /// Load config from a specific path or .zenvrc in current or parent directories
     pub fn load() -> Option<Self> {
-        let config_path = find_config_file()?;
+        Self::load_from(None)
+    }
+
+    /// Load config from a specific path, or search current/parent directories
+    pub fn load_from(path: Option<&str>) -> Option<Self> {
+        let config_path = if let Some(p) = path {
+            let pb = PathBuf::from(p);
+            if !pb.exists() {
+                eprintln!("zenv warning: config file not found: {}", p);
+                return None;
+            }
+            pb
+        } else {
+            find_config_file()?
+        };
         let content = fs::read_to_string(&config_path).ok()?;
 
         // First parse as Value to check for unknown keys
@@ -75,7 +93,7 @@ impl Config {
                     .filter(|k| !VALID_CONFIG_KEYS.contains(&k.as_str()))
                     .collect();
 
-                if !unknown_keys.is_empty() {
+                if !unknown_keys.is_empty() && env::var("ZENV_QUIET").is_err() {
                     eprintln!(
                         "zenv warning: unknown key(s) in {}: {}",
                         config_path.display(),
@@ -96,13 +114,17 @@ impl Config {
         match serde_json::from_str::<Config>(&content) {
             Ok(config) => {
                 // Only print if config was successfully loaded and has content
-                if config.schema.is_some() || config.env.is_some() {
+                if (config.schema.is_some() || config.env.is_some())
+                    && env::var("ZENV_QUIET").is_err()
+                {
                     eprintln!("zenv: loaded config from {}", config_path.display());
                 }
                 Some(config)
             }
             Err(e) => {
-                eprintln!("zenv warning: invalid .zenvrc at {}: {}", config_path.display(), e);
+                if env::var("ZENV_QUIET").is_err() {
+                    eprintln!("zenv warning: invalid .zenvrc at {}: {}", config_path.display(), e);
+                }
                 None
             }
         }
@@ -134,7 +156,6 @@ impl Config {
     }
 
     /// Get no_color setting (also respects NO_COLOR env var)
-    #[allow(dead_code)]
     pub fn no_color_or(&self, default: bool) -> bool {
         // NO_COLOR environment variable takes precedence (https://no-color.org/)
         if env::var("NO_COLOR").is_ok() {
@@ -154,9 +175,13 @@ impl Config {
     }
 
     /// Get rate_limit_seconds setting
-    #[allow(dead_code)]
     pub fn rate_limit_seconds(&self) -> Option<u64> {
         self.rate_limit_seconds
+    }
+
+    /// Get format with fallback to default
+    pub fn format_or(&self, default: &str) -> String {
+        self.format.clone().unwrap_or_else(|| default.to_string())
     }
 }
 
@@ -177,20 +202,6 @@ fn find_config_file() -> Option<PathBuf> {
     }
 
     None
-}
-
-/// Check if a config file exists.
-/// Kept for debugging and potential future CLI command (e.g., `zenv config show`).
-#[allow(dead_code)]
-pub fn config_exists() -> bool {
-    find_config_file().is_some()
-}
-
-/// Get the path where config would be loaded from.
-/// Kept for debugging and potential future CLI command (e.g., `zenv config path`).
-#[allow(dead_code)]
-pub fn config_path() -> Option<PathBuf> {
-    find_config_file()
 }
 
 #[cfg(test)]
@@ -322,6 +333,7 @@ mod tests {
         assert!(VALID_CONFIG_KEYS.contains(&"verify_hash"));
         assert!(VALID_CONFIG_KEYS.contains(&"ca_cert"));
         assert!(VALID_CONFIG_KEYS.contains(&"rate_limit_seconds"));
+        assert!(VALID_CONFIG_KEYS.contains(&"format"));
     }
 
     #[test]
@@ -335,20 +347,6 @@ mod tests {
     // ====== Edge Case Tests ======
 
     #[test]
-    fn test_config_exists_returns_bool() {
-        // Should return false when no config file exists in temp test environment
-        // Or true if one happens to exist - either way, it should not panic
-        let _ = config_exists();
-    }
-
-    #[test]
-    fn test_config_path_returns_option() {
-        // Should return None when no config file exists
-        // Or Some(path) if one exists - either way, it should not panic
-        let _ = config_path();
-    }
-
-    #[test]
     fn test_config_default_values() {
         let config = Config::default();
         assert!(config.schema.is_none());
@@ -360,6 +358,7 @@ mod tests {
         assert!(config.verify_hash.is_none());
         assert!(config.ca_cert.is_none());
         assert!(config.rate_limit_seconds.is_none());
+        assert!(config.format.is_none());
     }
 
     #[test]
@@ -374,6 +373,7 @@ mod tests {
             verify_hash: Some("abc123".to_string()),
             ca_cert: Some("/path/to/cert.pem".to_string()),
             rate_limit_seconds: Some(60),
+            format: Some("json".to_string()),
         };
 
         assert_eq!(config.schema_or("default"), "test.json");
@@ -407,7 +407,7 @@ mod tests {
         for key in VALID_CONFIG_KEYS.iter() {
             assert!(
                 ["schema", "env", "allow_missing_env", "detect_secrets",
-                 "no_cache", "no_color", "verify_hash", "ca_cert", "rate_limit_seconds"]
+                 "no_cache", "no_color", "verify_hash", "ca_cert", "rate_limit_seconds", "format"]
                     .contains(key),
                 "Key '{}' is in VALID_CONFIG_KEYS but not in expected list",
                 key

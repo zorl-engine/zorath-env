@@ -1,4 +1,5 @@
 use crate::envfile;
+use crate::errors::CliError;
 use crate::schema::{load_schema_with_options, LoadOptions, Schema, VarSpec};
 use std::collections::HashMap;
 use std::fs;
@@ -32,6 +33,7 @@ struct FixAnalysis {
 }
 
 /// Run the fix command
+#[doc(hidden)]
 pub fn run(
     env_path: &str,
     schema_path: &str,
@@ -40,7 +42,7 @@ pub fn run(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), CliError> {
     // Load schema
     let options = LoadOptions {
         no_cache,
@@ -48,11 +50,11 @@ pub fn run(
         ca_cert: ca_cert.map(|s| s.to_string()),
         rate_limit_seconds: None,
     };
-    let schema = load_schema_with_options(schema_path, &options).map_err(|e| e.to_string())?;
+    let schema = load_schema_with_options(schema_path, &options).map_err(|e| CliError::Schema(e.to_string()))?;
 
     // Read original file content
     let original_content = if Path::new(env_path).exists() {
-        fs::read_to_string(env_path).map_err(|e| format!("failed to read {}: {}", env_path, e))?
+        fs::read_to_string(env_path).map_err(|e| CliError::Input(format!("failed to read {}: {}", env_path, e)))?
     } else {
         String::new()
     };
@@ -73,7 +75,7 @@ pub fn run(
     if dry_run {
         print_dry_run(&analysis, env_path);
     } else {
-        apply_fixes(env_path, &original_content, &analysis)?;
+        apply_fixes(env_path, &original_content, &analysis).map_err(CliError::Input)?;
     }
 
     // Always print unfixable issues

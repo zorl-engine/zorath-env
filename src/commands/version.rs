@@ -1,8 +1,11 @@
 const CHANGELOG_URL: &str = "https://github.com/zorl-engine/zorath-env/blob/main/CHANGELOG.md";
 const RELEASES_URL: &str = "https://github.com/zorl-engine/zorath-env/releases";
 
+use crate::errors::CliError;
+
 /// Show version information
-pub fn run(check_update: bool) -> Result<(), String> {
+#[doc(hidden)]
+pub fn run(check_update: bool) -> Result<(), CliError> {
     let version = env!("CARGO_PKG_VERSION");
     println!("zenv v{version}");
 
