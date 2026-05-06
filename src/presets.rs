@@ -1,14 +1,8 @@
 use crate::schema::{Schema, ValidationRule, VarSpec, VarType};
 
 /// Available framework presets
-pub const AVAILABLE_PRESETS: &[&str] = &[
-    "nextjs",
-    "rails",
-    "django",
-    "fastapi",
-    "express",
-    "laravel",
-];
+pub const AVAILABLE_PRESETS: &[&str] =
+    &["nextjs", "rails", "django", "fastapi", "express", "laravel"];
 
 /// Get a preset schema by name
 pub fn get_preset(name: &str) -> Option<Schema> {
@@ -23,51 +17,71 @@ pub fn get_preset(name: &str) -> Option<Schema> {
     }
 }
 
-
 /// Next.js preset
 fn nextjs_preset() -> Schema {
     let mut schema = Schema::new();
 
-    schema.insert("NODE_ENV".to_string(), VarSpec {
-        var_type: VarType::Enum,
-        required: false,
-        description: Some("Node.js environment".to_string()),
-        values: Some(vec!["development".to_string(), "production".to_string(), "test".to_string()]),
-        default: Some(serde_json::json!("development")),
-        ..Default::default()
-    });
-
-    schema.insert("NEXT_PUBLIC_APP_URL".to_string(), VarSpec {
-        var_type: VarType::Url,
-        required: true,
-        description: Some("Public application URL".to_string()),
-        ..Default::default()
-    });
-
-    schema.insert("DATABASE_URL".to_string(), VarSpec {
-        var_type: VarType::Url,
-        required: true,
-        description: Some("Database connection string".to_string()),
-        ..Default::default()
-    });
-
-    schema.insert("NEXTAUTH_SECRET".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: true,
-        description: Some("NextAuth.js secret for JWT signing".to_string()),
-        validate: Some(ValidationRule {
-            min_length: Some(32),
+    schema.insert(
+        "NODE_ENV".to_string(),
+        VarSpec {
+            var_type: VarType::Enum,
+            required: false,
+            description: Some("Node.js environment".to_string()),
+            values: Some(vec![
+                "development".to_string(),
+                "production".to_string(),
+                "test".to_string(),
+            ]),
+            default: Some(serde_json::json!("development")),
             ..Default::default()
-        }),
-        ..Default::default()
-    });
+        },
+    );
 
-    schema.insert("NEXTAUTH_URL".to_string(), VarSpec {
-        var_type: VarType::Url,
-        required: false,
-        description: Some("NextAuth.js callback URL (defaults to NEXT_PUBLIC_APP_URL)".to_string()),
-        ..Default::default()
-    });
+    schema.insert(
+        "NEXT_PUBLIC_APP_URL".to_string(),
+        VarSpec {
+            var_type: VarType::Url,
+            required: true,
+            description: Some("Public application URL".to_string()),
+            ..Default::default()
+        },
+    );
+
+    schema.insert(
+        "DATABASE_URL".to_string(),
+        VarSpec {
+            var_type: VarType::Url,
+            required: true,
+            description: Some("Database connection string".to_string()),
+            ..Default::default()
+        },
+    );
+
+    schema.insert(
+        "NEXTAUTH_SECRET".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: Some("NextAuth.js secret for JWT signing".to_string()),
+            validate: Some(ValidationRule {
+                min_length: Some(32),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+
+    schema.insert(
+        "NEXTAUTH_URL".to_string(),
+        VarSpec {
+            var_type: VarType::Url,
+            required: false,
+            description: Some(
+                "NextAuth.js callback URL (defaults to NEXT_PUBLIC_APP_URL)".to_string(),
+            ),
+            ..Default::default()
+        },
+    );
 
     schema
 }
@@ -76,50 +90,69 @@ fn nextjs_preset() -> Schema {
 fn rails_preset() -> Schema {
     let mut schema = Schema::new();
 
-    schema.insert("RAILS_ENV".to_string(), VarSpec {
-        var_type: VarType::Enum,
-        required: false,
-        description: Some("Rails environment".to_string()),
-        values: Some(vec!["development".to_string(), "production".to_string(), "test".to_string()]),
-        default: Some(serde_json::json!("development")),
-        ..Default::default()
-    });
-
-    schema.insert("DATABASE_URL".to_string(), VarSpec {
-        var_type: VarType::Url,
-        required: true,
-        description: Some("Database connection string".to_string()),
-        ..Default::default()
-    });
-
-    schema.insert("SECRET_KEY_BASE".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: true,
-        description: Some("Rails secret key for session encryption".to_string()),
-        validate: Some(ValidationRule {
-            min_length: Some(64),
+    schema.insert(
+        "RAILS_ENV".to_string(),
+        VarSpec {
+            var_type: VarType::Enum,
+            required: false,
+            description: Some("Rails environment".to_string()),
+            values: Some(vec![
+                "development".to_string(),
+                "production".to_string(),
+                "test".to_string(),
+            ]),
+            default: Some(serde_json::json!("development")),
             ..Default::default()
-        }),
-        ..Default::default()
-    });
+        },
+    );
 
-    schema.insert("REDIS_URL".to_string(), VarSpec {
-        var_type: VarType::Url,
-        required: false,
-        description: Some("Redis connection string for caching/jobs".to_string()),
-        ..Default::default()
-    });
-
-    schema.insert("RAILS_MASTER_KEY".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: false,
-        description: Some("Rails credentials master key".to_string()),
-        validate: Some(ValidationRule {
-            min_length: Some(32),
+    schema.insert(
+        "DATABASE_URL".to_string(),
+        VarSpec {
+            var_type: VarType::Url,
+            required: true,
+            description: Some("Database connection string".to_string()),
             ..Default::default()
-        }),
-        ..Default::default()
-    });
+        },
+    );
+
+    schema.insert(
+        "SECRET_KEY_BASE".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: Some("Rails secret key for session encryption".to_string()),
+            validate: Some(ValidationRule {
+                min_length: Some(64),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+
+    schema.insert(
+        "REDIS_URL".to_string(),
+        VarSpec {
+            var_type: VarType::Url,
+            required: false,
+            description: Some("Redis connection string for caching/jobs".to_string()),
+            ..Default::default()
+        },
+    );
+
+    schema.insert(
+        "RAILS_MASTER_KEY".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: Some("Rails credentials master key".to_string()),
+            validate: Some(ValidationRule {
+                min_length: Some(32),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
 
     schema
 }
@@ -128,45 +161,60 @@ fn rails_preset() -> Schema {
 fn django_preset() -> Schema {
     let mut schema = Schema::new();
 
-    schema.insert("DJANGO_SECRET_KEY".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: true,
-        description: Some("Django secret key for cryptographic signing".to_string()),
-        validate: Some(ValidationRule {
-            min_length: Some(50),
+    schema.insert(
+        "DJANGO_SECRET_KEY".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: Some("Django secret key for cryptographic signing".to_string()),
+            validate: Some(ValidationRule {
+                min_length: Some(50),
+                ..Default::default()
+            }),
             ..Default::default()
-        }),
-        ..Default::default()
-    });
+        },
+    );
 
-    schema.insert("DEBUG".to_string(), VarSpec {
-        var_type: VarType::Bool,
-        required: false,
-        description: Some("Enable Django debug mode".to_string()),
-        default: Some(serde_json::json!(false)),
-        ..Default::default()
-    });
+    schema.insert(
+        "DEBUG".to_string(),
+        VarSpec {
+            var_type: VarType::Bool,
+            required: false,
+            description: Some("Enable Django debug mode".to_string()),
+            default: Some(serde_json::json!(false)),
+            ..Default::default()
+        },
+    );
 
-    schema.insert("DATABASE_URL".to_string(), VarSpec {
-        var_type: VarType::Url,
-        required: true,
-        description: Some("Database connection string".to_string()),
-        ..Default::default()
-    });
+    schema.insert(
+        "DATABASE_URL".to_string(),
+        VarSpec {
+            var_type: VarType::Url,
+            required: true,
+            description: Some("Database connection string".to_string()),
+            ..Default::default()
+        },
+    );
 
-    schema.insert("ALLOWED_HOSTS".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: true,
-        description: Some("Comma-separated list of allowed hosts".to_string()),
-        ..Default::default()
-    });
+    schema.insert(
+        "ALLOWED_HOSTS".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: Some("Comma-separated list of allowed hosts".to_string()),
+            ..Default::default()
+        },
+    );
 
-    schema.insert("DJANGO_SETTINGS_MODULE".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: false,
-        description: Some("Python path to Django settings module".to_string()),
-        ..Default::default()
-    });
+    schema.insert(
+        "DJANGO_SETTINGS_MODULE".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: Some("Python path to Django settings module".to_string()),
+            ..Default::default()
+        },
+    );
 
     schema
 }
@@ -175,47 +223,62 @@ fn django_preset() -> Schema {
 fn fastapi_preset() -> Schema {
     let mut schema = Schema::new();
 
-    schema.insert("DATABASE_URL".to_string(), VarSpec {
-        var_type: VarType::Url,
-        required: true,
-        description: Some("Database connection string".to_string()),
-        ..Default::default()
-    });
-
-    schema.insert("SECRET_KEY".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: true,
-        description: Some("Secret key for JWT tokens".to_string()),
-        validate: Some(ValidationRule {
-            min_length: Some(32),
+    schema.insert(
+        "DATABASE_URL".to_string(),
+        VarSpec {
+            var_type: VarType::Url,
+            required: true,
+            description: Some("Database connection string".to_string()),
             ..Default::default()
-        }),
-        ..Default::default()
-    });
+        },
+    );
 
-    schema.insert("DEBUG".to_string(), VarSpec {
-        var_type: VarType::Bool,
-        required: false,
-        description: Some("Enable debug mode".to_string()),
-        default: Some(serde_json::json!(false)),
-        ..Default::default()
-    });
+    schema.insert(
+        "SECRET_KEY".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: Some("Secret key for JWT tokens".to_string()),
+            validate: Some(ValidationRule {
+                min_length: Some(32),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
 
-    schema.insert("CORS_ORIGINS".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: false,
-        description: Some("Comma-separated list of allowed CORS origins".to_string()),
-        default: Some(serde_json::json!("http://localhost:3000")),
-        ..Default::default()
-    });
+    schema.insert(
+        "DEBUG".to_string(),
+        VarSpec {
+            var_type: VarType::Bool,
+            required: false,
+            description: Some("Enable debug mode".to_string()),
+            default: Some(serde_json::json!(false)),
+            ..Default::default()
+        },
+    );
 
-    schema.insert("API_PREFIX".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: false,
-        description: Some("API route prefix".to_string()),
-        default: Some(serde_json::json!("/api/v1")),
-        ..Default::default()
-    });
+    schema.insert(
+        "CORS_ORIGINS".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: Some("Comma-separated list of allowed CORS origins".to_string()),
+            default: Some(serde_json::json!("http://localhost:3000")),
+            ..Default::default()
+        },
+    );
+
+    schema.insert(
+        "API_PREFIX".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: Some("API route prefix".to_string()),
+            default: Some(serde_json::json!("/api/v1")),
+            ..Default::default()
+        },
+    );
 
     schema
 }
@@ -224,53 +287,72 @@ fn fastapi_preset() -> Schema {
 fn express_preset() -> Schema {
     let mut schema = Schema::new();
 
-    schema.insert("NODE_ENV".to_string(), VarSpec {
-        var_type: VarType::Enum,
-        required: false,
-        description: Some("Node.js environment".to_string()),
-        values: Some(vec!["development".to_string(), "production".to_string(), "test".to_string()]),
-        default: Some(serde_json::json!("development")),
-        ..Default::default()
-    });
-
-    schema.insert("PORT".to_string(), VarSpec {
-        var_type: VarType::Int,
-        required: false,
-        description: Some("Server port".to_string()),
-        default: Some(serde_json::json!(3000)),
-        validate: Some(ValidationRule {
-            min: Some(1),
-            max: Some(65535),
+    schema.insert(
+        "NODE_ENV".to_string(),
+        VarSpec {
+            var_type: VarType::Enum,
+            required: false,
+            description: Some("Node.js environment".to_string()),
+            values: Some(vec![
+                "development".to_string(),
+                "production".to_string(),
+                "test".to_string(),
+            ]),
+            default: Some(serde_json::json!("development")),
             ..Default::default()
-        }),
-        ..Default::default()
-    });
+        },
+    );
 
-    schema.insert("DATABASE_URL".to_string(), VarSpec {
-        var_type: VarType::Url,
-        required: true,
-        description: Some("Database connection string".to_string()),
-        ..Default::default()
-    });
-
-    schema.insert("SESSION_SECRET".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: true,
-        description: Some("Express session secret".to_string()),
-        validate: Some(ValidationRule {
-            min_length: Some(32),
+    schema.insert(
+        "PORT".to_string(),
+        VarSpec {
+            var_type: VarType::Int,
+            required: false,
+            description: Some("Server port".to_string()),
+            default: Some(serde_json::json!(3000)),
+            validate: Some(ValidationRule {
+                min: Some(1),
+                max: Some(65535),
+                ..Default::default()
+            }),
             ..Default::default()
-        }),
-        ..Default::default()
-    });
+        },
+    );
 
-    schema.insert("CORS_ORIGIN".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: false,
-        description: Some("Allowed CORS origin".to_string()),
-        default: Some(serde_json::json!("*")),
-        ..Default::default()
-    });
+    schema.insert(
+        "DATABASE_URL".to_string(),
+        VarSpec {
+            var_type: VarType::Url,
+            required: true,
+            description: Some("Database connection string".to_string()),
+            ..Default::default()
+        },
+    );
+
+    schema.insert(
+        "SESSION_SECRET".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: Some("Express session secret".to_string()),
+            validate: Some(ValidationRule {
+                min_length: Some(32),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+
+    schema.insert(
+        "CORS_ORIGIN".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: Some("Allowed CORS origin".to_string()),
+            default: Some(serde_json::json!("*")),
+            ..Default::default()
+        },
+    );
 
     schema
 }
@@ -279,78 +361,114 @@ fn express_preset() -> Schema {
 fn laravel_preset() -> Schema {
     let mut schema = Schema::new();
 
-    schema.insert("APP_ENV".to_string(), VarSpec {
-        var_type: VarType::Enum,
-        required: false,
-        description: Some("Application environment".to_string()),
-        values: Some(vec!["local".to_string(), "staging".to_string(), "production".to_string()]),
-        default: Some(serde_json::json!("local")),
-        ..Default::default()
-    });
-
-    schema.insert("APP_KEY".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: true,
-        description: Some("Laravel application key (base64:...)".to_string()),
-        validate: Some(ValidationRule {
-            pattern: Some("^base64:.+$".to_string()),
+    schema.insert(
+        "APP_ENV".to_string(),
+        VarSpec {
+            var_type: VarType::Enum,
+            required: false,
+            description: Some("Application environment".to_string()),
+            values: Some(vec![
+                "local".to_string(),
+                "staging".to_string(),
+                "production".to_string(),
+            ]),
+            default: Some(serde_json::json!("local")),
             ..Default::default()
-        }),
-        ..Default::default()
-    });
+        },
+    );
 
-    schema.insert("APP_DEBUG".to_string(), VarSpec {
-        var_type: VarType::Bool,
-        required: false,
-        description: Some("Enable debug mode".to_string()),
-        default: Some(serde_json::json!(false)),
-        ..Default::default()
-    });
+    schema.insert(
+        "APP_KEY".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: Some("Laravel application key (base64:...)".to_string()),
+            validate: Some(ValidationRule {
+                pattern: Some("^base64:.+$".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
 
-    schema.insert("APP_URL".to_string(), VarSpec {
-        var_type: VarType::Url,
-        required: true,
-        description: Some("Application URL".to_string()),
-        ..Default::default()
-    });
+    schema.insert(
+        "APP_DEBUG".to_string(),
+        VarSpec {
+            var_type: VarType::Bool,
+            required: false,
+            description: Some("Enable debug mode".to_string()),
+            default: Some(serde_json::json!(false)),
+            ..Default::default()
+        },
+    );
 
-    schema.insert("DB_CONNECTION".to_string(), VarSpec {
-        var_type: VarType::Enum,
-        required: false,
-        description: Some("Database driver".to_string()),
-        values: Some(vec!["mysql".to_string(), "pgsql".to_string(), "sqlite".to_string(), "sqlsrv".to_string()]),
-        default: Some(serde_json::json!("mysql")),
-        ..Default::default()
-    });
+    schema.insert(
+        "APP_URL".to_string(),
+        VarSpec {
+            var_type: VarType::Url,
+            required: true,
+            description: Some("Application URL".to_string()),
+            ..Default::default()
+        },
+    );
 
-    schema.insert("DB_HOST".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: false,
-        description: Some("Database host".to_string()),
-        default: Some(serde_json::json!("127.0.0.1")),
-        ..Default::default()
-    });
+    schema.insert(
+        "DB_CONNECTION".to_string(),
+        VarSpec {
+            var_type: VarType::Enum,
+            required: false,
+            description: Some("Database driver".to_string()),
+            values: Some(vec![
+                "mysql".to_string(),
+                "pgsql".to_string(),
+                "sqlite".to_string(),
+                "sqlsrv".to_string(),
+            ]),
+            default: Some(serde_json::json!("mysql")),
+            ..Default::default()
+        },
+    );
 
-    schema.insert("DB_DATABASE".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: true,
-        description: Some("Database name".to_string()),
-        ..Default::default()
-    });
+    schema.insert(
+        "DB_HOST".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: false,
+            description: Some("Database host".to_string()),
+            default: Some(serde_json::json!("127.0.0.1")),
+            ..Default::default()
+        },
+    );
 
-    schema.insert("DB_USERNAME".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: true,
-        description: Some("Database username".to_string()),
-        ..Default::default()
-    });
+    schema.insert(
+        "DB_DATABASE".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: Some("Database name".to_string()),
+            ..Default::default()
+        },
+    );
 
-    schema.insert("DB_PASSWORD".to_string(), VarSpec {
-        var_type: VarType::String,
-        required: true,
-        description: Some("Database password".to_string()),
-        ..Default::default()
-    });
+    schema.insert(
+        "DB_USERNAME".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: Some("Database username".to_string()),
+            ..Default::default()
+        },
+    );
+
+    schema.insert(
+        "DB_PASSWORD".to_string(),
+        VarSpec {
+            var_type: VarType::String,
+            required: true,
+            description: Some("Database password".to_string()),
+            ..Default::default()
+        },
+    );
 
     schema
 }
@@ -431,7 +549,10 @@ mod tests {
     fn test_preset_has_descriptions() {
         let schema = get_preset("nextjs").unwrap();
         for (_, spec) in schema.iter() {
-            assert!(spec.description.is_some(), "All preset vars should have descriptions");
+            assert!(
+                spec.description.is_some(),
+                "All preset vars should have descriptions"
+            );
         }
     }
 }

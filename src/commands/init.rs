@@ -11,7 +11,12 @@ pub fn run(example_path: &str, schema_path: &str, preset: Option<&str>) -> Resul
 }
 
 #[doc(hidden)]
-pub fn run_with_options(example_path: &str, schema_path: &str, preset: Option<&str>, list_presets: bool) -> Result<(), CliError> {
+pub fn run_with_options(
+    example_path: &str,
+    schema_path: &str,
+    preset: Option<&str>,
+    list_presets: bool,
+) -> Result<(), CliError> {
     if list_presets {
         println!("Available presets:");
         for name in presets::AVAILABLE_PRESETS {
@@ -41,7 +46,8 @@ pub fn run_with_options(example_path: &str, schema_path: &str, preset: Option<&s
 
     // If example file exists, merge inferred types (inferred takes precedence for existing keys)
     if Path::new(example_path).exists() {
-        let env = envfile::parse_env_file(example_path).map_err(|e| CliError::Input(e.to_string()))?;
+        let env =
+            envfile::parse_env_file(example_path).map_err(|e| CliError::Input(e.to_string()))?;
 
         for (k, v) in env {
             // Only add if not already in preset
@@ -79,7 +85,10 @@ pub fn run_with_options(example_path: &str, schema_path: &str, preset: Option<&s
     }
 
     schema::save_schema(schema_path, &schema_map).map_err(|e| CliError::Schema(e.to_string()))?;
-    println!("zenv: wrote schema to {schema_path} ({} variables)", schema_map.len());
+    println!(
+        "zenv: wrote schema to {schema_path} ({} variables)",
+        schema_map.len()
+    );
     Ok(())
 }
 
@@ -152,7 +161,11 @@ fn infer_description(key: &str, var_type: &VarType) -> String {
     }
 
     // Environment
-    if lower_key == "node_env" || lower_key == "app_env" || lower_key == "environment" || lower_key == "env" {
+    if lower_key == "node_env"
+        || lower_key == "app_env"
+        || lower_key == "environment"
+        || lower_key == "env"
+    {
         return "Application environment (e.g., development, staging, production)".to_string();
     }
 
@@ -203,7 +216,9 @@ fn extract_service_name(key: &str) -> String {
     }
 
     // Common suffixes to strip
-    let suffixes = ["API", "KEY", "SECRET", "TOKEN", "URL", "URI", "ENDPOINT", "HOST", "PORT"];
+    let suffixes = [
+        "API", "KEY", "SECRET", "TOKEN", "URL", "URI", "ENDPOINT", "HOST", "PORT",
+    ];
 
     // Find the first part that's not a common suffix
     for part in &parts {
@@ -213,7 +228,9 @@ fn extract_service_name(key: &str) -> String {
             let mut chars = part.chars();
             return match chars.next() {
                 None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+                Some(first) => {
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                }
             };
         }
     }
@@ -230,7 +247,9 @@ fn humanize_key(key: &str) -> String {
             let mut chars = s.chars();
             match chars.next() {
                 None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+                Some(first) => {
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                }
             }
         })
         .collect::<Vec<String>>()
@@ -340,7 +359,10 @@ mod tests {
 
     #[test]
     fn test_infer_url_postgres() {
-        assert!(matches!(infer_type("postgres://user:pass@host/db"), VarType::Url));
+        assert!(matches!(
+            infer_type("postgres://user:pass@host/db"),
+            VarType::Url
+        ));
     }
 
     #[test]
@@ -410,7 +432,10 @@ mod tests {
     #[test]
     fn test_infer_description_node_env() {
         let desc = infer_description("NODE_ENV", &VarType::String);
-        assert_eq!(desc, "Application environment (e.g., development, staging, production)");
+        assert_eq!(
+            desc,
+            "Application environment (e.g., development, staging, production)"
+        );
     }
 
     #[test]

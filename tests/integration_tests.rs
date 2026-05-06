@@ -62,21 +62,18 @@ impl TestEnv {
     /// Load schema from file
     fn load_schema(&self) -> Schema {
         let opts = LoadOptions::default();
-        schema::load_schema_with_options(self.schema_str(), &opts)
-            .expect("Failed to load schema")
+        schema::load_schema_with_options(self.schema_str(), &opts).expect("Failed to load schema")
     }
 
     /// Parse env file into HashMap
     fn parse_env(&self) -> HashMap<String, String> {
-        envfile::parse_env_file(self.env_str())
-            .expect("Failed to parse env file")
+        envfile::parse_env_file(self.env_str()).expect("Failed to parse env file")
     }
 
     /// Parse env file and interpolate variables
     fn parse_and_interpolate_env(&self) -> HashMap<String, String> {
         let env_map = self.parse_env();
-        envfile::interpolate_env(env_map)
-            .expect("Failed to interpolate env")
+        envfile::interpolate_env(env_map).expect("Failed to interpolate env")
     }
 }
 
@@ -88,26 +85,34 @@ impl TestEnv {
 fn test_check_valid_env() {
     let env = TestEnv::new();
     env.write_env("PORT=3000\nDEBUG=true\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "DEBUG": {"type": "bool", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
-    assert!(errors.is_empty(), "Valid env should pass validation: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Valid env should pass validation: {:?}",
+        errors
+    );
 }
 
 #[test]
 fn test_check_missing_required() {
     let env = TestEnv::new();
     env.write_env("PORT=3000\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "API_KEY": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
@@ -115,7 +120,10 @@ fn test_check_missing_required() {
 
     assert!(!errors.is_empty(), "Missing required var should fail");
     let err_str = errors.join("\n");
-    assert!(err_str.contains("API_KEY"), "Error should mention missing key");
+    assert!(
+        err_str.contains("API_KEY"),
+        "Error should mention missing key"
+    );
     assert!(err_str.contains("missing"), "Error should say missing");
 }
 
@@ -123,9 +131,11 @@ fn test_check_missing_required() {
 fn test_check_type_validation_int() {
     let env = TestEnv::new();
     env.write_env("PORT=not_a_number\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
@@ -134,16 +144,21 @@ fn test_check_type_validation_int() {
     assert!(!errors.is_empty(), "Invalid int should fail");
     let err_str = errors.join("\n");
     assert!(err_str.contains("PORT"), "Error should mention the key");
-    assert!(err_str.contains("int"), "Error should mention expected type");
+    assert!(
+        err_str.contains("int"),
+        "Error should mention expected type"
+    );
 }
 
 #[test]
 fn test_check_type_validation_url() {
     let env = TestEnv::new();
     env.write_env("DATABASE_URL=not-a-valid-url\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "DATABASE_URL": {"type": "url", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
@@ -156,9 +171,11 @@ fn test_check_type_validation_url() {
 fn test_check_type_validation_port() {
     let env = TestEnv::new();
     env.write_env("PORT=99999\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "port", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
@@ -171,9 +188,11 @@ fn test_check_type_validation_port() {
 fn test_check_type_validation_bool() {
     let env = TestEnv::new();
     env.write_env("DEBUG=maybe\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "DEBUG": {"type": "bool", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
@@ -196,16 +215,21 @@ fn test_check_enum_validation() {
 
     assert!(!errors.is_empty(), "Invalid enum value should fail");
     let err_str = errors.join("\n");
-    assert!(err_str.contains("verbose"), "Error should mention the invalid value");
+    assert!(
+        err_str.contains("verbose"),
+        "Error should mention the invalid value"
+    );
 }
 
 #[test]
 fn test_check_validation_rules_min_max() {
     let env = TestEnv::new();
     env.write_env("PORT=80\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true, "validate": {"min": 1024, "max": 65535}}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
@@ -218,31 +242,41 @@ fn test_check_validation_rules_min_max() {
 fn test_check_default_value_not_required_when_missing() {
     let env = TestEnv::new();
     env.write_env(""); // Empty env
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": false, "default": 3000}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
-    assert!(errors.is_empty(), "Optional with default should pass when missing");
+    assert!(
+        errors.is_empty(),
+        "Optional with default should pass when missing"
+    );
 }
 
 #[test]
 fn test_check_required_with_default_passes_when_missing() {
     let env = TestEnv::new();
     env.write_env(""); // Empty env
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true, "default": 3000}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
     // Required with default should pass - the default satisfies the requirement
-    assert!(errors.is_empty(), "Required with default should pass when missing");
+    assert!(
+        errors.is_empty(),
+        "Required with default should pass when missing"
+    );
 }
 
 // =============================================================================
@@ -252,26 +286,36 @@ fn test_check_required_with_default_passes_when_missing() {
 #[test]
 fn test_docs_generates_markdown() {
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true, "description": "HTTP server port"},
         "DEBUG": {"type": "bool", "default": false, "description": "Enable debug mode"}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let output = docs::generate_markdown(&schema);
 
-    assert!(output.contains("# Environment Variables"), "Should have header");
+    assert!(
+        output.contains("# Environment Variables"),
+        "Should have header"
+    );
     assert!(output.contains("PORT"), "Should mention PORT");
     assert!(output.contains("DEBUG"), "Should mention DEBUG");
-    assert!(output.contains("HTTP server port"), "Should include description");
+    assert!(
+        output.contains("HTTP server port"),
+        "Should include description"
+    );
 }
 
 #[test]
 fn test_docs_generates_json() {
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let result = docs::generate_json(&schema);
@@ -285,10 +329,30 @@ fn test_docs_generates_json() {
 #[test]
 fn test_docs_sorted_alphabetically() {
     let schema: Schema = [
-        ("ZEBRA".to_string(), VarSpec { var_type: VarType::String, ..Default::default() }),
-        ("ALPHA".to_string(), VarSpec { var_type: VarType::String, ..Default::default() }),
-        ("MIDDLE".to_string(), VarSpec { var_type: VarType::String, ..Default::default() }),
-    ].into_iter().collect();
+        (
+            "ZEBRA".to_string(),
+            VarSpec {
+                var_type: VarType::String,
+                ..Default::default()
+            },
+        ),
+        (
+            "ALPHA".to_string(),
+            VarSpec {
+                var_type: VarType::String,
+                ..Default::default()
+            },
+        ),
+        (
+            "MIDDLE".to_string(),
+            VarSpec {
+                var_type: VarType::String,
+                ..Default::default()
+            },
+        ),
+    ]
+    .into_iter()
+    .collect();
 
     let output = docs::generate_markdown(&schema);
     let alpha_pos = output.find("ALPHA").unwrap();
@@ -308,9 +372,11 @@ fn test_docs_sorted_alphabetically() {
 fn test_fix_dry_run_no_changes() {
     let env = TestEnv::new();
     env.write_env("PORT=3000\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true}
-    }"#);
+    }"#,
+    );
 
     let original_content = env.read_file(&env.env_path);
 
@@ -322,20 +388,26 @@ fn test_fix_dry_run_no_changes() {
         false, // no_cache
         None,  // verify_hash
         None,  // ca_cert
+        None,  // rate_limit_seconds
     );
 
     // File should be unchanged after dry run
     let after_content = env.read_file(&env.env_path);
-    assert_eq!(original_content, after_content, "Dry run should not modify file");
+    assert_eq!(
+        original_content, after_content,
+        "Dry run should not modify file"
+    );
 }
 
 #[test]
 fn test_fix_removes_unknown_keys() {
     let env = TestEnv::new();
     env.write_env("PORT=3000\nUNKNOWN=value\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true}
-    }"#);
+    }"#,
+    );
 
     let _result = fix::run(
         env.env_str(),
@@ -345,6 +417,7 @@ fn test_fix_removes_unknown_keys() {
         false, // no_cache
         None,  // verify_hash
         None,  // ca_cert
+        None,  // rate_limit_seconds
     );
 
     let content = env.read_file(&env.env_path);
@@ -356,10 +429,12 @@ fn test_fix_removes_unknown_keys() {
 fn test_fix_adds_missing_with_defaults() {
     let env = TestEnv::new();
     env.write_env("PORT=3000\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "LOG_LEVEL": {"type": "string", "required": true, "default": "info"}
-    }"#);
+    }"#,
+    );
 
     // Fix will add missing required vars with defaults
     let _result = fix::run(
@@ -370,6 +445,7 @@ fn test_fix_adds_missing_with_defaults() {
         false, // no_cache
         None,  // verify_hash
         None,  // ca_cert
+        None,  // rate_limit_seconds
     );
 
     let content = env.read_file(&env.env_path);
@@ -386,7 +462,11 @@ fn test_fix_adds_missing_with_defaults() {
 fn test_init_creates_schema_from_env() {
     let env = TestEnv::new();
     let example_path = env.base_path.join(".env.example");
-    fs::write(&example_path, "PORT=3000\nDEBUG=true\nAPI_URL=https://api.example.com\n").unwrap();
+    fs::write(
+        &example_path,
+        "PORT=3000\nDEBUG=true\nAPI_URL=https://api.example.com\n",
+    )
+    .unwrap();
 
     let result = init::run(
         example_path.to_str().unwrap(),
@@ -399,28 +479,37 @@ fn test_init_creates_schema_from_env() {
     let schema_content = env.read_file(&env.schema_path);
     assert!(schema_content.contains("PORT"), "Schema should have PORT");
     assert!(schema_content.contains("DEBUG"), "Schema should have DEBUG");
-    assert!(schema_content.contains("API_URL"), "Schema should have API_URL");
+    assert!(
+        schema_content.contains("API_URL"),
+        "Schema should have API_URL"
+    );
 }
 
 #[test]
 fn test_init_type_inference() {
     let env = TestEnv::new();
     let example_path = env.base_path.join(".env.example");
-    fs::write(&example_path, "PORT=3000\nDEBUG=true\nRATE=1.5\nURL=https://example.com\n").unwrap();
+    fs::write(
+        &example_path,
+        "PORT=3000\nDEBUG=true\nRATE=1.5\nURL=https://example.com\n",
+    )
+    .unwrap();
 
-    let result = init::run(
-        example_path.to_str().unwrap(),
-        env.schema_str(),
-        None,
-    );
+    let result = init::run(example_path.to_str().unwrap(), env.schema_str(), None);
 
     assert!(result.is_ok(), "Init should succeed");
 
     let schema_content = env.read_file(&env.schema_path);
     // Type inference: int for PORT, bool for DEBUG, float for RATE, url for URL
     assert!(schema_content.contains("\"int\""), "Should infer int type");
-    assert!(schema_content.contains("\"bool\""), "Should infer bool type");
-    assert!(schema_content.contains("\"float\""), "Should infer float type");
+    assert!(
+        schema_content.contains("\"bool\""),
+        "Should infer bool type"
+    );
+    assert!(
+        schema_content.contains("\"float\""),
+        "Should infer float type"
+    );
     assert!(schema_content.contains("\"url\""), "Should infer url type");
 }
 
@@ -434,12 +523,16 @@ fn test_yaml_schema_validation() {
     env.write_env("PORT=3000\n");
 
     let yaml_schema_path = env.base_path.join("env.schema.yaml");
-    fs::write(&yaml_schema_path, r#"
+    fs::write(
+        &yaml_schema_path,
+        r#"
 PORT:
   type: int
   required: true
   description: HTTP server port
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     let opts = LoadOptions::default();
     let schema = schema::load_schema_with_options(yaml_schema_path.to_str().unwrap(), &opts)
@@ -447,7 +540,11 @@ PORT:
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
-    assert!(errors.is_empty(), "YAML schema validation should work: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "YAML schema validation should work: {:?}",
+        errors
+    );
 }
 
 // =============================================================================
@@ -458,15 +555,20 @@ PORT:
 fn test_empty_env_file() {
     let env = TestEnv::new();
     env.write_env("");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": false, "default": 3000}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
-    assert!(errors.is_empty(), "Empty env with optional vars should pass");
+    assert!(
+        errors.is_empty(),
+        "Empty env with optional vars should pass"
+    );
 }
 
 #[test]
@@ -482,57 +584,81 @@ fn test_empty_schema_flags_unknown_keys() {
     // Empty schema means all keys are unknown - validate() correctly flags them
     assert!(!errors.is_empty(), "Empty schema should flag unknown keys");
     assert!(errors[0].contains("PORT"), "Should flag PORT as unknown");
-    assert!(errors[0].contains("not in schema"), "Should say not in schema");
+    assert!(
+        errors[0].contains("not in schema"),
+        "Should say not in schema"
+    );
 }
 
 #[test]
 fn test_variable_interpolation() {
     let env = TestEnv::new();
     env.write_env("BASE_URL=https://api.example.com\nAPI_ENDPOINT=${BASE_URL}/v1\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "BASE_URL": {"type": "url", "required": true},
         "API_ENDPOINT": {"type": "url", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_and_interpolate_env();
     let errors = check::validate(&schema, &env_map);
 
     // After interpolation, API_ENDPOINT should be https://api.example.com/v1
-    assert!(errors.is_empty(), "Variable interpolation should work: {:?}", errors);
-    assert_eq!(env_map.get("API_ENDPOINT").unwrap(), "https://api.example.com/v1");
+    assert!(
+        errors.is_empty(),
+        "Variable interpolation should work: {:?}",
+        errors
+    );
+    assert_eq!(
+        env_map.get("API_ENDPOINT").unwrap(),
+        "https://api.example.com/v1"
+    );
 }
 
 #[test]
 fn test_comments_and_blank_lines() {
     let env = TestEnv::new();
     env.write_env("# This is a comment\n\nPORT=3000\n\n# Another comment\nDEBUG=true\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "DEBUG": {"type": "bool", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
-    assert!(errors.is_empty(), "Comments and blank lines should be ignored: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Comments and blank lines should be ignored: {:?}",
+        errors
+    );
 }
 
 #[test]
 fn test_export_prefix_syntax() {
     let env = TestEnv::new();
     env.write_env("export PORT=3000\nexport DEBUG=true\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "DEBUG": {"type": "bool", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
-    assert!(errors.is_empty(), "export prefix should be supported: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "export prefix should be supported: {:?}",
+        errors
+    );
 }
 
 // =============================================================================
@@ -542,7 +668,8 @@ fn test_export_prefix_syntax() {
 #[test]
 fn test_all_valid_types() {
     let env = TestEnv::new();
-    env.write_env(r#"
+    env.write_env(
+        r#"
 STRING_VAR=hello
 INT_VAR=42
 FLOAT_VAR=3.14
@@ -556,7 +683,8 @@ SEMVER_VAR=1.2.3
 DATE_VAR=2024-01-15
 HOSTNAME_VAR=api.example.com
 ENUM_VAR=production
-"#);
+"#,
+    );
     env.write_schema(r#"{
         "STRING_VAR": {"type": "string", "required": true},
         "INT_VAR": {"type": "int", "required": true},
@@ -577,7 +705,11 @@ ENUM_VAR=production
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
-    assert!(errors.is_empty(), "All valid types should pass: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "All valid types should pass: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -608,8 +740,14 @@ fn test_validation_rules_pattern() {
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
-    assert!(!errors.is_empty(), "String not matching pattern should fail");
-    assert!(errors[0].contains("pattern"), "Error should mention pattern");
+    assert!(
+        !errors.is_empty(),
+        "String not matching pattern should fail"
+    );
+    assert!(
+        errors[0].contains("pattern"),
+        "Error should mention pattern"
+    );
 }
 
 #[test]
@@ -637,17 +775,23 @@ fn test_schema_inheritance() {
 
     // Create base schema in the same directory
     let base_path = env.base_path.join("base.schema.json");
-    fs::write(&base_path, r#"{
+    fs::write(
+        &base_path,
+        r#"{
         "PORT": {"type": "int", "required": true},
         "DEBUG": {"type": "bool", "default": false}
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
 
     // Create child schema that extends base (using "extends", not "$extends")
     // The path must be relative to the child schema location
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "extends": "base.schema.json",
         "API_KEY": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     env.write_env("PORT=3000\nDEBUG=true\nAPI_KEY=secret123\n");
 
@@ -656,10 +800,17 @@ fn test_schema_inheritance() {
     let errors = check::validate(&schema, &env_map);
 
     // Should validate against merged schema
-    assert!(errors.is_empty(), "Schema inheritance should work: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Schema inheritance should work: {:?}",
+        errors
+    );
     assert!(schema.contains_key("PORT"), "Should have PORT from base");
     assert!(schema.contains_key("DEBUG"), "Should have DEBUG from base");
-    assert!(schema.contains_key("API_KEY"), "Should have API_KEY from child");
+    assert!(
+        schema.contains_key("API_KEY"),
+        "Should have API_KEY from child"
+    );
 }
 
 // =============================================================================
@@ -738,7 +889,10 @@ fn test_export_systemd_format() {
     assert!(result.is_ok(), "Systemd export should succeed");
     let output = result.unwrap();
     // Systemd format uses: Environment="KEY=VALUE"
-    assert!(output.contains("Environment=\"PORT=3000\""), "Should have systemd format");
+    assert!(
+        output.contains("Environment=\"PORT=3000\""),
+        "Should have systemd format"
+    );
 }
 
 #[test]
@@ -751,7 +905,10 @@ fn test_export_dotenv_format() {
 
     assert!(result.is_ok(), "Dotenv export should succeed");
     let output = result.unwrap();
-    assert!(output.contains("PORT=3000"), "Should have standard dotenv format");
+    assert!(
+        output.contains("PORT=3000"),
+        "Should have standard dotenv format"
+    );
     assert!(output.contains("DEBUG=true"), "Should include all vars");
 }
 
@@ -765,7 +922,10 @@ fn test_export_github_secrets_format() {
 
     assert!(result.is_ok(), "GitHub secrets export should succeed");
     let output = result.unwrap();
-    assert!(output.contains("gh secret set"), "Should have gh CLI command");
+    assert!(
+        output.contains("gh secret set"),
+        "Should have gh CLI command"
+    );
     assert!(output.contains("API_KEY"), "Should include key name");
 }
 
@@ -792,26 +952,33 @@ fn test_export_format_from_str() {
 #[test]
 fn test_example_generates_env_file() {
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true, "description": "HTTP server port"},
         "DEBUG": {"type": "bool", "default": false, "description": "Enable debug mode"}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let output = example::generate(&schema, true);
 
     assert!(output.contains("PORT="), "Should have PORT");
     assert!(output.contains("DEBUG="), "Should have DEBUG");
-    assert!(output.contains("# HTTP server port"), "Should include description");
+    assert!(
+        output.contains("# HTTP server port"),
+        "Should include description"
+    );
 }
 
 #[test]
 fn test_example_with_defaults() {
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "default": 3000},
         "LOG_LEVEL": {"type": "enum", "values": ["debug", "info", "warn"], "default": "info"}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let output = example::generate(&schema, true);
@@ -823,11 +990,13 @@ fn test_example_with_defaults() {
 #[test]
 fn test_example_without_defaults_uses_placeholders() {
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "API_URL": {"type": "url", "required": true},
         "API_KEY": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let output = example::generate(&schema, false);
@@ -841,21 +1010,27 @@ fn test_example_without_defaults_uses_placeholders() {
 #[test]
 fn test_example_includes_type_comments() {
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "port", "required": true}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let output = example::generate(&schema, false);
 
-    assert!(output.contains("# Type: port"), "Should show type in comment");
+    assert!(
+        output.contains("# Type: port"),
+        "Should show type in comment"
+    );
     assert!(output.contains("required"), "Should show required status");
 }
 
 #[test]
 fn test_example_all_types_have_placeholders() {
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "STRING_VAR": {"type": "string"},
         "INT_VAR": {"type": "int"},
         "FLOAT_VAR": {"type": "float"},
@@ -868,7 +1043,8 @@ fn test_example_all_types_have_placeholders() {
         "SEMVER_VAR": {"type": "semver"},
         "DATE_VAR": {"type": "date"},
         "HOSTNAME_VAR": {"type": "hostname"}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let output = example::generate(&schema, false);
@@ -907,7 +1083,10 @@ fn test_diff_finds_only_in_first_file() {
 
     // API_KEY is only in file A
     assert!(map_a.contains_key("API_KEY"), "File A should have API_KEY");
-    assert!(!map_b.contains_key("API_KEY"), "File B should not have API_KEY");
+    assert!(
+        !map_b.contains_key("API_KEY"),
+        "File B should not have API_KEY"
+    );
 }
 
 #[test]
@@ -972,18 +1151,16 @@ fn test_diff_identical_files_have_no_differences() {
 fn test_validate_files_library_function() {
     let env = TestEnv::new();
     env.write_env("PORT=3000\nDEBUG=true\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "DEBUG": {"type": "bool", "required": true}
-    }"#);
+    }"#,
+    );
 
     // Test the validate_files library function
     let opts = LoadOptions::default();
-    let result = check::validate_files(
-        env.env_str(),
-        env.schema_str(),
-        &opts,
-    );
+    let result = check::validate_files(env.env_str(), env.schema_str(), &opts);
 
     assert!(result.is_ok(), "validate_files should succeed");
     let errors = result.unwrap();
@@ -994,57 +1171,73 @@ fn test_validate_files_library_function() {
 fn test_validate_files_with_errors() {
     let env = TestEnv::new();
     env.write_env("PORT=not_a_number\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true}
-    }"#);
-
-    let opts = LoadOptions::default();
-    let result = check::validate_files(
-        env.env_str(),
-        env.schema_str(),
-        &opts,
+    }"#,
     );
 
-    assert!(result.is_ok(), "validate_files should succeed even with validation errors");
+    let opts = LoadOptions::default();
+    let result = check::validate_files(env.env_str(), env.schema_str(), &opts);
+
+    assert!(
+        result.is_ok(),
+        "validate_files should succeed even with validation errors"
+    );
     let errors = result.unwrap();
     assert!(!errors.is_empty(), "Invalid PORT should produce errors");
 }
 
 #[test]
 fn test_docs_generate_library_function() {
-    let schema: Schema = [
-        ("PORT".to_string(), VarSpec {
+    let schema: Schema = [(
+        "PORT".to_string(),
+        VarSpec {
             var_type: VarType::Int,
             required: true,
             description: Some("Server port".to_string()),
             ..Default::default()
-        }),
-    ].into_iter().collect();
+        },
+    )]
+    .into_iter()
+    .collect();
 
     let markdown = docs::generate_markdown(&schema);
     let json_result = docs::generate_json(&schema);
 
     assert!(markdown.contains("PORT"), "Markdown should contain PORT");
-    assert!(markdown.contains("Server port"), "Markdown should contain description");
+    assert!(
+        markdown.contains("Server port"),
+        "Markdown should contain description"
+    );
     assert!(json_result.is_ok(), "JSON generation should succeed");
 }
 
 #[test]
 fn test_example_generate_library_function() {
-    let schema: Schema = [
-        ("PORT".to_string(), VarSpec {
+    let schema: Schema = [(
+        "PORT".to_string(),
+        VarSpec {
             var_type: VarType::Int,
             required: true,
             default: Some(serde_json::Value::from(3000)),
             ..Default::default()
-        }),
-    ].into_iter().collect();
+        },
+    )]
+    .into_iter()
+    .collect();
 
     let with_defaults = example::generate(&schema, true);
     let without_defaults = example::generate(&schema, false);
 
-    assert!(with_defaults.contains("PORT=3000"), "With defaults should use default value");
-    assert!(without_defaults.contains("PORT="), "Without defaults should still have key");
+    assert!(
+        with_defaults.contains("PORT=3000"),
+        "With defaults should use default value"
+    );
+    assert!(
+        without_defaults.contains("PORT="),
+        "Without defaults should still have key"
+    );
 }
 
 #[test]
@@ -1079,7 +1272,9 @@ fn test_export_library_function_all_formats() {
 #[test]
 fn test_export_github_secrets_multiline_heredoc() {
     let env = TestEnv::new();
-    env.write_env("PRIVATE_KEY=\"-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\"\n");
+    env.write_env(
+        "PRIVATE_KEY=\"-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\"\n",
+    );
 
     let env_map = env.parse_env();
     let result = export::export_to_string(&env_map, export::ExportFormat::GithubSecrets);
@@ -1087,7 +1282,10 @@ fn test_export_github_secrets_multiline_heredoc() {
     assert!(result.is_ok(), "GitHub secrets export should succeed");
     let output = result.unwrap();
     // Multiline should use heredoc
-    assert!(output.contains("EOF") || output.contains("--body"), "Should handle multiline with heredoc or body");
+    assert!(
+        output.contains("EOF") || output.contains("--body"),
+        "Should handle multiline with heredoc or body"
+    );
 }
 
 #[test]
@@ -1100,7 +1298,10 @@ fn test_export_github_secrets_special_characters() {
 
     assert!(result.is_ok(), "GitHub secrets export should succeed");
     let output = result.unwrap();
-    assert!(output.contains("gh secret set CONFIG"), "Should include gh secret set command");
+    assert!(
+        output.contains("gh secret set CONFIG"),
+        "Should include gh secret set command"
+    );
 }
 
 // =============================================================================
@@ -1111,31 +1312,41 @@ fn test_export_github_secrets_special_characters() {
 fn test_severity_warning_validation() {
     let env = TestEnv::new();
     env.write_env("PORT=not_a_number\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true, "severity": "warning"}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
     // Should still report validation error even with warning severity
-    assert!(!errors.is_empty(), "Should have validation error even with warning severity");
+    assert!(
+        !errors.is_empty(),
+        "Should have validation error even with warning severity"
+    );
 }
 
 #[test]
 fn test_severity_error_validation() {
     let env = TestEnv::new();
     env.write_env("PORT=not_a_number\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true, "severity": "error"}
-    }"#);
+    }"#,
+    );
 
     let schema = env.load_schema();
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
-    assert!(!errors.is_empty(), "Should have validation error with error severity");
+    assert!(
+        !errors.is_empty(),
+        "Should have validation error with error severity"
+    );
 }
 
 // =============================================================================
@@ -1148,18 +1359,26 @@ fn test_yaml_extends_json_schema() {
 
     // Create JSON base schema
     let base_path = env.base_path.join("base.schema.json");
-    fs::write(&base_path, r#"{
+    fs::write(
+        &base_path,
+        r#"{
         "PORT": {"type": "int", "required": true}
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
 
     // Create YAML child schema that extends JSON
     let yaml_schema_path = env.base_path.join("child.schema.yaml");
-    fs::write(&yaml_schema_path, r#"
+    fs::write(
+        &yaml_schema_path,
+        r#"
 extends: base.schema.json
 DEBUG:
   type: bool
   default: false
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     env.write_env("PORT=3000\nDEBUG=true\n");
 
@@ -1168,8 +1387,14 @@ DEBUG:
         .expect("Should load YAML schema that extends JSON");
 
     // Should have both keys from inheritance
-    assert!(schema.contains_key("PORT"), "Should have PORT from JSON base");
-    assert!(schema.contains_key("DEBUG"), "Should have DEBUG from YAML child");
+    assert!(
+        schema.contains_key("PORT"),
+        "Should have PORT from JSON base"
+    );
+    assert!(
+        schema.contains_key("DEBUG"),
+        "Should have DEBUG from YAML child"
+    );
 }
 
 #[test]
@@ -1178,18 +1403,26 @@ fn test_json_extends_yaml_schema() {
 
     // Create YAML base schema
     let base_path = env.base_path.join("base.schema.yaml");
-    fs::write(&base_path, r#"
+    fs::write(
+        &base_path,
+        r#"
 PORT:
   type: int
   required: true
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     // Create JSON child schema that extends YAML
     let json_schema_path = env.base_path.join("child.schema.json");
-    fs::write(&json_schema_path, r#"{
+    fs::write(
+        &json_schema_path,
+        r#"{
         "extends": "base.schema.yaml",
         "DEBUG": {"type": "bool", "default": false}
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
 
     env.write_env("PORT=3000\nDEBUG=true\n");
 
@@ -1198,8 +1431,14 @@ PORT:
         .expect("Should load JSON schema that extends YAML");
 
     // Should have both keys from inheritance
-    assert!(schema.contains_key("PORT"), "Should have PORT from YAML base");
-    assert!(schema.contains_key("DEBUG"), "Should have DEBUG from JSON child");
+    assert!(
+        schema.contains_key("PORT"),
+        "Should have PORT from YAML base"
+    );
+    assert!(
+        schema.contains_key("DEBUG"),
+        "Should have DEBUG from JSON child"
+    );
 }
 
 // =============================================================================
@@ -1212,15 +1451,20 @@ fn test_config_file_parsing() {
 
     // Create .zenvrc config file
     let config_path = env.base_path.join(".zenvrc");
-    fs::write(&config_path, r#"{
+    fs::write(
+        &config_path,
+        r#"{
         "schema": "env.schema.json",
         "env": ".env",
         "no_cache": true
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
 
     // Verify config file content is valid JSON
     let content = fs::read_to_string(&config_path).unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&content).expect("Config should be valid JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&content).expect("Config should be valid JSON");
 
     assert_eq!(parsed["schema"], "env.schema.json");
     assert_eq!(parsed["env"], ".env");
@@ -1235,7 +1479,10 @@ fn test_config_file_parsing() {
 fn test_preset_nextjs_variables() {
     // Test that nextjs preset includes expected variables
     let preset = zorath_env::presets::get_preset("nextjs").expect("nextjs preset should exist");
-    assert!(preset.contains_key("NEXT_PUBLIC_API_URL") || !preset.is_empty(), "nextjs preset should have variables");
+    assert!(
+        preset.contains_key("NEXT_PUBLIC_API_URL") || !preset.is_empty(),
+        "nextjs preset should have variables"
+    );
 }
 
 #[test]
@@ -1279,17 +1526,22 @@ fn test_exit_code_0_valid_env() {
     // Exit code 0: All validations pass
     let env = TestEnv::new();
     env.write_env("PORT=3000\nDEBUG=true\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "DEBUG": {"type": "bool", "required": true}
-    }"#);
+    }"#,
+    );
 
     let opts = LoadOptions::default();
     let result = check::validate_files(env.env_str(), env.schema_str(), &opts);
 
     assert!(result.is_ok(), "Should not have file errors");
     let errors = result.unwrap();
-    assert!(errors.is_empty(), "Should have zero validation errors -> exit code 0");
+    assert!(
+        errors.is_empty(),
+        "Should have zero validation errors -> exit code 0"
+    );
 }
 
 #[test]
@@ -1297,18 +1549,25 @@ fn test_exit_code_1_validation_error_missing_required() {
     // Exit code 1: Validation error - missing required variable
     let env = TestEnv::new();
     env.write_env("PORT=3000\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "API_KEY": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     let opts = LoadOptions::default();
     let result = check::validate_files(env.env_str(), env.schema_str(), &opts);
 
     assert!(result.is_ok(), "Should not have file errors");
     let errors = result.unwrap();
-    assert!(!errors.is_empty(), "Should have validation errors -> exit code 1");
-    assert!(errors.iter().any(|e| e.contains("API_KEY") && e.contains("missing")));
+    assert!(
+        !errors.is_empty(),
+        "Should have validation errors -> exit code 1"
+    );
+    assert!(errors
+        .iter()
+        .any(|e| e.contains("API_KEY") && e.contains("missing")));
 }
 
 #[test]
@@ -1316,16 +1575,21 @@ fn test_exit_code_1_validation_error_type_mismatch() {
     // Exit code 1: Validation error - type mismatch
     let env = TestEnv::new();
     env.write_env("PORT=not_a_number\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true}
-    }"#);
+    }"#,
+    );
 
     let opts = LoadOptions::default();
     let result = check::validate_files(env.env_str(), env.schema_str(), &opts);
 
     assert!(result.is_ok(), "Should not have file errors");
     let errors = result.unwrap();
-    assert!(!errors.is_empty(), "Type mismatch should produce validation errors -> exit code 1");
+    assert!(
+        !errors.is_empty(),
+        "Type mismatch should produce validation errors -> exit code 1"
+    );
 }
 
 #[test]
@@ -1338,10 +1602,16 @@ fn test_exit_code_2_env_file_not_found() {
     let opts = LoadOptions::default();
     let result = check::validate_files(env.env_str(), env.schema_str(), &opts);
 
-    assert!(result.is_err(), "Missing env file should return error -> exit code 2");
+    assert!(
+        result.is_err(),
+        "Missing env file should return error -> exit code 2"
+    );
     let err_msg = result.unwrap_err();
-    assert!(err_msg.contains("env") || err_msg.contains("file") || err_msg.contains("read"),
-            "Error should mention file issue: {}", err_msg);
+    assert!(
+        err_msg.contains("env") || err_msg.contains("file") || err_msg.contains("read"),
+        "Error should mention file issue: {}",
+        err_msg
+    );
 }
 
 #[test]
@@ -1354,7 +1624,10 @@ fn test_exit_code_3_schema_parse_error() {
     let opts = LoadOptions::default();
     let result = check::validate_files(env.env_str(), env.schema_str(), &opts);
 
-    assert!(result.is_err(), "Invalid schema should return error -> exit code 3");
+    assert!(
+        result.is_err(),
+        "Invalid schema should return error -> exit code 3"
+    );
 }
 
 #[test]
@@ -1362,17 +1635,22 @@ fn test_exit_code_0_optional_vars_missing() {
     // Exit code 0: Optional variables missing is OK
     let env = TestEnv::new();
     env.write_env("PORT=3000\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "DEBUG": {"type": "bool", "required": false, "default": false}
-    }"#);
+    }"#,
+    );
 
     let opts = LoadOptions::default();
     let result = check::validate_files(env.env_str(), env.schema_str(), &opts);
 
     assert!(result.is_ok());
     let errors = result.unwrap();
-    assert!(errors.is_empty(), "Optional vars missing should not cause errors -> exit code 0");
+    assert!(
+        errors.is_empty(),
+        "Optional vars missing should not cause errors -> exit code 0"
+    );
 }
 
 #[test]
@@ -1380,16 +1658,21 @@ fn test_exit_code_0_required_with_default_missing() {
     // Exit code 0: Required variable with default value is satisfied when missing
     let env = TestEnv::new();
     env.write_env("");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true, "default": 3000}
-    }"#);
+    }"#,
+    );
 
     let opts = LoadOptions::default();
     let result = check::validate_files(env.env_str(), env.schema_str(), &opts);
 
     assert!(result.is_ok());
     let errors = result.unwrap();
-    assert!(errors.is_empty(), "Required with default satisfied -> exit code 0");
+    assert!(
+        errors.is_empty(),
+        "Required with default satisfied -> exit code 0"
+    );
 }
 
 #[test]
@@ -1397,18 +1680,23 @@ fn test_exit_code_1_multiple_errors() {
     // Exit code 1: Multiple validation errors still return exit code 1
     let env = TestEnv::new();
     env.write_env("PORT=invalid\nURL=not_a_url\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "URL": {"type": "url", "required": true},
         "API_KEY": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     let opts = LoadOptions::default();
     let result = check::validate_files(env.env_str(), env.schema_str(), &opts);
 
     assert!(result.is_ok());
     let errors = result.unwrap();
-    assert!(errors.len() >= 2, "Should have multiple errors but still exit code 1");
+    assert!(
+        errors.len() >= 2,
+        "Should have multiple errors but still exit code 1"
+    );
 }
 
 // =============================================================================
@@ -1433,6 +1721,7 @@ fn test_diff_run_identical_files() {
         false,
         None,
         None,
+        None,
     );
     assert!(result.is_ok());
 }
@@ -1453,6 +1742,7 @@ fn test_diff_run_different_files() {
         false,
         None,
         None,
+        None,
     );
     assert!(result.is_ok());
 }
@@ -1468,6 +1758,7 @@ fn test_diff_run_file_not_found() {
         None,
         "text",
         false,
+        None,
         None,
         None,
     );
@@ -1557,11 +1848,15 @@ fn test_check_watch_mode_rejects_json_format() {
         "json", // format = json (should be rejected)
         None,   // verify_hash
         None,   // ca_cert
+        None,   // rate_limit_seconds
     );
 
     assert!(result.is_err());
     assert!(
-        result.unwrap_err().to_string().contains("JSON format is not supported in watch mode"),
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("JSON format is not supported in watch mode"),
         "Watch mode should reject JSON format"
     );
 }
@@ -1575,11 +1870,13 @@ fn test_envfile_unicode_values() {
     // Test that Unicode characters in values are preserved
     let env = TestEnv::new();
     env.write_env("GREETING=Hello World\nMESSAGE=Test message\nNAME=Luis\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "GREETING": {"type": "string", "required": true},
         "MESSAGE": {"type": "string", "required": true},
         "NAME": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     let env_map = env.parse_env();
     assert_eq!(env_map.get("GREETING").unwrap(), "Hello World");
@@ -1588,7 +1885,11 @@ fn test_envfile_unicode_values() {
 
     let schema = env.load_schema();
     let errors = check::validate(&schema, &env_map);
-    assert!(errors.is_empty(), "Unicode values should validate: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Unicode values should validate: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -1596,10 +1897,12 @@ fn test_envfile_quoted_unicode() {
     // Test Unicode in quoted strings
     let env = TestEnv::new();
     env.write_env("TITLE=\"Welcome Message\"\nDESC='Description text'\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "TITLE": {"type": "string", "required": true},
         "DESC": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     let env_map = env.parse_env();
     assert_eq!(env_map.get("TITLE").unwrap(), "Welcome Message");
@@ -1611,10 +1914,12 @@ fn test_envfile_windows_paths() {
     // Test Windows-style paths are preserved
     let env = TestEnv::new();
     env.write_env("LOG_PATH=C:\\Users\\Luis\\logs\nDATA_DIR=\"D:\\Data\\app\"\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "LOG_PATH": {"type": "string", "required": true},
         "DATA_DIR": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     let env_map = env.parse_env();
     assert_eq!(env_map.get("LOG_PATH").unwrap(), "C:\\Users\\Luis\\logs");
@@ -1622,7 +1927,11 @@ fn test_envfile_windows_paths() {
 
     let schema = env.load_schema();
     let errors = check::validate(&schema, &env_map);
-    assert!(errors.is_empty(), "Windows paths should validate: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Windows paths should validate: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -1630,10 +1939,12 @@ fn test_envfile_unix_paths() {
     // Test Unix-style paths
     let env = TestEnv::new();
     env.write_env("CONFIG=/etc/app/config.json\nDATA=\"/var/lib/app/data\"\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "CONFIG": {"type": "string", "required": true},
         "DATA": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     let env_map = env.parse_env();
     assert_eq!(env_map.get("CONFIG").unwrap(), "/etc/app/config.json");
@@ -1645,10 +1956,12 @@ fn test_envfile_mixed_path_separators() {
     // Test paths with mixed separators (common in cross-platform configs)
     let env = TestEnv::new();
     env.write_env("PATH1=C:/Users/Luis/app\nPATH2=/mnt/c/Users/Luis\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PATH1": {"type": "string", "required": true},
         "PATH2": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     let env_map = env.parse_env();
     assert_eq!(env_map.get("PATH1").unwrap(), "C:/Users/Luis/app");
@@ -1660,13 +1973,18 @@ fn test_envfile_special_characters_in_values() {
     // Test various special characters
     let env = TestEnv::new();
     env.write_env("SYMBOLS=\"!@#$%^&*()_+-=[]{}|;':,.<>?\"\nBRACKETS=\"{key: value}\"\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "SYMBOLS": {"type": "string", "required": true},
         "BRACKETS": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     let env_map = env.parse_env();
-    assert_eq!(env_map.get("SYMBOLS").unwrap(), "!@#$%^&*()_+-=[]{}|;':,.<>?");
+    assert_eq!(
+        env_map.get("SYMBOLS").unwrap(),
+        "!@#$%^&*()_+-=[]{}|;':,.<>?"
+    );
     assert_eq!(env_map.get("BRACKETS").unwrap(), "{key: value}");
 }
 
@@ -1677,19 +1995,25 @@ fn test_envfile_special_characters_in_values() {
 #[test]
 fn test_scan_finds_vars_in_javascript_file() {
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "API_URL": {"type": "url", "required": true},
         "PORT": {"type": "int", "required": true},
         "DEBUG": {"type": "bool", "required": false}
-    }"#);
+    }"#,
+    );
 
     // Create a JavaScript file that uses env vars
     let js_path = env.base_path.join("app.js");
-    fs::write(&js_path, r#"
+    fs::write(
+        &js_path,
+        r#"
         const apiUrl = process.env.API_URL;
         const port = process.env.PORT || 3000;
         console.log(apiUrl, port);
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 
     let result = zorath_env::commands::scan::run(
         env.base_path.to_str().unwrap(),
@@ -1698,6 +2022,7 @@ fn test_scan_finds_vars_in_javascript_file() {
         false, // show_paths
         "text",
         false, // no_cache
+        None,
         None,
         None,
     );
@@ -1709,18 +2034,24 @@ fn test_scan_finds_vars_in_javascript_file() {
 #[test]
 fn test_scan_finds_vars_in_python_file() {
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "DATABASE_URL": {"type": "url", "required": true},
         "SECRET_KEY": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     // Create a Python file that uses env vars
     let py_path = env.base_path.join("app.py");
-    fs::write(&py_path, r#"
+    fs::write(
+        &py_path,
+        r#"
 import os
 database_url = os.environ.get('DATABASE_URL')
 secret_key = os.getenv('SECRET_KEY')
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 
     let result = zorath_env::commands::scan::run(
         env.base_path.to_str().unwrap(),
@@ -1729,6 +2060,7 @@ secret_key = os.getenv('SECRET_KEY')
         false,
         "text",
         false,
+        None,
         None,
         None,
     );
@@ -1739,25 +2071,32 @@ secret_key = os.getenv('SECRET_KEY')
 #[test]
 fn test_scan_show_unused_reports_missing_usage() {
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "USED_VAR": {"type": "string", "required": true},
         "UNUSED_VAR": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     // Create file that only uses one var
     let js_path = env.base_path.join("app.js");
-    fs::write(&js_path, r#"
+    fs::write(
+        &js_path,
+        r#"
         const used = process.env.USED_VAR;
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 
     // With show_unused=true, should report UNUSED_VAR
     let result = zorath_env::commands::scan::run(
         env.base_path.to_str().unwrap(),
         env.schema_str(),
-        true,  // show_unused = true
+        true, // show_unused = true
         false,
         "text",
         false,
+        None,
         None,
         None,
     );
@@ -1768,14 +2107,20 @@ fn test_scan_show_unused_reports_missing_usage() {
 #[test]
 fn test_scan_json_output_format() {
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "API_KEY": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     let js_path = env.base_path.join("config.js");
-    fs::write(&js_path, r#"
+    fs::write(
+        &js_path,
+        r#"
         module.exports = { key: process.env.API_KEY };
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 
     let result = zorath_env::commands::scan::run(
         env.base_path.to_str().unwrap(),
@@ -1784,6 +2129,7 @@ fn test_scan_json_output_format() {
         false,
         "json", // JSON format
         false,
+        None,
         None,
         None,
     );
@@ -1801,13 +2147,8 @@ fn test_doctor_healthy_setup() {
     env.write_env("PORT=3000\n");
     env.write_schema(r#"{"PORT": {"type": "int", "required": true}}"#);
 
-    let result = zorath_env::commands::doctor::run(
-        env.env_str(),
-        env.schema_str(),
-        false,
-        None,
-        None,
-    );
+    let result =
+        zorath_env::commands::doctor::run(env.env_str(), env.schema_str(), false, None, None, None);
 
     // Should succeed with valid setup
     assert!(result.is_ok());
@@ -1823,6 +2164,7 @@ fn test_doctor_missing_schema_reports_issue() {
         env.env_str(),
         env.schema_str(), // Points to non-existent file
         false,
+        None,
         None,
         None,
     );
@@ -1844,6 +2186,7 @@ fn test_doctor_missing_env_reports_issue() {
         false,
         None,
         None,
+        None,
     );
 
     // Doctor may find fallback .env files and return Ok or Err
@@ -1857,16 +2200,14 @@ fn test_doctor_invalid_schema_reports_error() {
     env.write_env("PORT=3000\n");
     env.write_schema("{ invalid json }");
 
-    let result = zorath_env::commands::doctor::run(
-        env.env_str(),
-        env.schema_str(),
-        false,
-        None,
-        None,
-    );
+    let result =
+        zorath_env::commands::doctor::run(env.env_str(), env.schema_str(), false, None, None, None);
 
     // Doctor returns Err when schema is invalid (has errors)
-    assert!(result.is_err(), "Invalid schema should cause doctor to return Err");
+    assert!(
+        result.is_err(),
+        "Invalid schema should cause doctor to return Err"
+    );
 }
 
 // =============================================================================
@@ -1883,7 +2224,7 @@ fn test_large_env_file_100_vars() {
     for i in 0..100 {
         env_content.push_str(&format!("VAR_{:03}=value_{}\n", i, i));
         if i > 0 {
-            schema_content.push_str(",");
+            schema_content.push(',');
         }
         schema_content.push_str(&format!(
             r#""VAR_{:03}": {{"type": "string", "required": true}}"#,
@@ -1902,7 +2243,11 @@ fn test_large_env_file_100_vars() {
     assert_eq!(schema.len(), 100);
 
     let errors = check::validate(&schema, &env_map);
-    assert!(errors.is_empty(), "100 valid vars should pass: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "100 valid vars should pass: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -1915,7 +2260,7 @@ fn test_large_env_file_500_vars() {
     for i in 0..500 {
         env_content.push_str(&format!("VAR_{:03}=value_{}\n", i, i));
         if i > 0 {
-            schema_content.push_str(",");
+            schema_content.push(',');
         }
         schema_content.push_str(&format!(
             r#""VAR_{:03}": {{"type": "string", "required": true}}"#,
@@ -1934,7 +2279,11 @@ fn test_large_env_file_500_vars() {
     assert_eq!(schema.len(), 500);
 
     let errors = check::validate(&schema, &env_map);
-    assert!(errors.is_empty(), "500 valid vars should pass: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "500 valid vars should pass: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -1949,7 +2298,7 @@ fn test_large_schema_with_many_validation_rules() {
         // Add int vars with min/max
         env_content.push_str(&format!("INT_{:02}={}\n", i, 1000 + i));
         if i > 0 || schema_content.len() > 1 {
-            schema_content.push_str(",");
+            schema_content.push(',');
         }
         schema_content.push_str(&format!(
             r#""INT_{:02}": {{"type": "int", "required": true, "validate": {{"min": 0, "max": 9999}}}}"#,
@@ -1978,7 +2327,11 @@ fn test_large_schema_with_many_validation_rules() {
     assert_eq!(schema.len(), 100);
 
     let errors = check::validate(&schema, &env_map);
-    assert!(errors.is_empty(), "Complex validation rules should pass: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Complex validation rules should pass: {:?}",
+        errors
+    );
 }
 
 // =============================================================================
@@ -1995,13 +2348,23 @@ fn test_check_graceful_on_malformed_json_schema() {
     let result = check::run(
         env.env_str(),
         env.schema_str(),
-        false, false, false, false, "text", None, None,
+        false,
+        false,
+        false,
+        false,
+        "text",
+        None,
+        None,
+        None,
     );
 
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("schema") || err.contains("parse") || err.contains("JSON"),
-            "Error should mention schema/parse issue: {}", err);
+    assert!(
+        err.contains("schema") || err.contains("parse") || err.contains("JSON"),
+        "Error should mention schema/parse issue: {}",
+        err
+    );
 }
 
 #[test]
@@ -2016,7 +2379,14 @@ fn test_check_graceful_on_malformed_yaml_schema() {
     let result = check::run(
         env.env_str(),
         yaml_schema_path.to_str().unwrap(),
-        false, false, false, false, "text", None, None,
+        false,
+        false,
+        false,
+        false,
+        "text",
+        None,
+        None,
+        None,
     );
 
     assert!(result.is_err());
@@ -2033,7 +2403,10 @@ fn test_envfile_handles_empty_file() {
 
     let schema = env.load_schema();
     let errors = check::validate(&schema, &env_map);
-    assert!(errors.is_empty(), "Empty env with optional vars should pass");
+    assert!(
+        errors.is_empty(),
+        "Empty env with optional vars should pass"
+    );
 }
 
 // =============================================================================
@@ -2072,7 +2445,7 @@ fn test_diff_typo_detection_algorithm() {
     use zorath_env::suggestions::find_closest_match;
 
     // Simulate typo: DATABASE_URL vs DATABSE_URL (missing 'A')
-    let keys_in_file_b = vec!["DATABSE_URL", "OTHER_VAR"];
+    let keys_in_file_b = ["DATABSE_URL", "OTHER_VAR"];
     let result = find_closest_match(
         "DATABASE_URL",
         keys_in_file_b.iter().copied(),
@@ -2105,6 +2478,7 @@ fn test_diff_run_with_similar_keys() {
         false,
         None,
         None,
+        None,
     );
 
     // Diff should succeed and detect the typo internally
@@ -2121,11 +2495,15 @@ fn test_config_handles_unknown_keys_gracefully() {
     let config_path = env.base_path.join(".zenvrc");
 
     // Create config with valid and invalid keys
-    fs::write(&config_path, r#"{
+    fs::write(
+        &config_path,
+        r#"{
         "schema": "env.schema.json",
         "invalid_unknown_key": true,
         "another_bad_key": "value"
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
 
     // Change to temp directory to test config loading
     let original_dir = std::env::current_dir().unwrap();
@@ -2138,7 +2516,10 @@ fn test_config_handles_unknown_keys_gracefully() {
     std::env::set_current_dir(original_dir).unwrap();
 
     // Config should be Some (loaded successfully despite unknown keys)
-    assert!(config.is_some(), "Config should load even with unknown keys");
+    assert!(
+        config.is_some(),
+        "Config should load even with unknown keys"
+    );
 
     // Valid key should be accessible
     let cfg = config.unwrap();
@@ -2157,12 +2538,22 @@ fn test_check_returns_actionable_error() {
     let result = check::run(
         env.env_str(),
         env.schema_str(),
-        false, false, false, false, "text", None, None,
+        false,
+        false,
+        false,
+        false,
+        "text",
+        None,
+        None,
+        None,
     );
 
     // Should fail - check returns Err on validation failures
     // The actionable tips (including "zenv fix" suggestion) are printed to stdout
-    assert!(result.is_err(), "Check should return error for missing required var");
+    assert!(
+        result.is_err(),
+        "Check should return error for missing required var"
+    );
 
     // Also test that the library validate function reports the specific error
     let schema = env.load_schema();
@@ -2173,7 +2564,8 @@ fn test_check_returns_actionable_error() {
     let errors_str = errors.join("\n");
     assert!(
         errors_str.contains("REQUIRED_VAR") || errors_str.contains("missing"),
-        "Errors should mention the missing required variable: {}", errors_str
+        "Errors should mention the missing required variable: {}",
+        errors_str
     );
 }
 
@@ -2193,14 +2585,13 @@ fn test_completions_generates_bash() {
         .subcommand(Command::new("completions"));
 
     let mut output = Vec::new();
-    zorath_env::commands::completions::generate_to_writer(
-        Shell::Bash,
-        &mut cmd,
-        &mut output,
-    );
+    zorath_env::commands::completions::generate_to_writer(Shell::Bash, &mut cmd, &mut output);
 
     let output_str = String::from_utf8(output).unwrap();
-    assert!(!output_str.is_empty(), "Bash completions should generate output");
+    assert!(
+        !output_str.is_empty(),
+        "Bash completions should generate output"
+    );
     assert!(output_str.contains("zenv"), "Output should reference zenv");
 }
 
@@ -2214,14 +2605,13 @@ fn test_completions_generates_powershell() {
         .subcommand(Command::new("docs"));
 
     let mut output = Vec::new();
-    zorath_env::commands::completions::generate_to_writer(
-        Shell::PowerShell,
-        &mut cmd,
-        &mut output,
-    );
+    zorath_env::commands::completions::generate_to_writer(Shell::PowerShell, &mut cmd, &mut output);
 
     let output_str = String::from_utf8(output).unwrap();
-    assert!(!output_str.is_empty(), "PowerShell completions should generate output");
+    assert!(
+        !output_str.is_empty(),
+        "PowerShell completions should generate output"
+    );
 }
 
 // =============================================================================
@@ -2248,11 +2638,13 @@ fn test_fix_with_sensitive_values() {
 
     // Create .env with a sensitive-looking key
     env.write_env("API_KEY=sk_live_abc123secret456\nPORT=3000\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "API_KEY": {"type": "string", "required": true},
         "PORT": {"type": "int", "required": true},
         "OPTIONAL_VAR": {"type": "string", "required": false, "default": "default_value"}
-    }"#);
+    }"#,
+    );
 
     // Run fix in dry-run mode - should work without crashing
     let result = fix::run(
@@ -2263,10 +2655,14 @@ fn test_fix_with_sensitive_values() {
         false,
         None,
         None,
+        None,
     );
 
     // Fix should succeed in dry-run mode
-    assert!(result.is_ok(), "Fix dry-run should succeed with sensitive values");
+    assert!(
+        result.is_ok(),
+        "Fix dry-run should succeed with sensitive values"
+    );
 }
 
 // =============================================================================
@@ -2284,7 +2680,11 @@ fn test_check_ipv6_validation() {
     let env_map = env.parse_env();
     let errors = check::validate(&schema, &env_map);
 
-    assert!(errors.is_empty(), "Valid IPv6 should pass validation: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Valid IPv6 should pass validation: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2320,11 +2720,15 @@ fn test_check_detect_secrets_aws_key() {
         "text",
         None,
         None,
+        None,
     );
 
     // Should succeed but print warnings (secrets are warnings, not errors)
     // The AWS key pattern should be detected
-    assert!(result.is_ok() || result.is_err(), "Secret detection should run without panic");
+    assert!(
+        result.is_ok() || result.is_err(),
+        "Secret detection should run without panic"
+    );
 }
 
 #[test]
@@ -2338,11 +2742,21 @@ fn test_check_detect_secrets_jwt() {
     let result = check::run(
         env.env_str(),
         env.schema_str(),
-        false, true, false, false, "text", None, None,
+        false,
+        true,
+        false,
+        false,
+        "text",
+        None,
+        None,
+        None,
     );
 
     // Should run without panic - JWT pattern detected as potential secret
-    assert!(result.is_ok() || result.is_err(), "JWT detection should run without panic");
+    assert!(
+        result.is_ok() || result.is_err(),
+        "JWT detection should run without panic"
+    );
 }
 
 #[test]
@@ -2357,9 +2771,10 @@ fn test_check_no_cache_flag() {
         env.schema_str(),
         false,
         false,
-        true,  // no_cache = true
+        true, // no_cache = true
         false,
         "text",
+        None,
         None,
         None,
     );
@@ -2373,10 +2788,12 @@ fn test_envfile_duplicate_key_detection() {
     let env = TestEnv::new();
     // Create .env with duplicate keys
     env.write_env("PORT=3000\nDEBUG=true\nPORT=4000\n");
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "PORT": {"type": "int", "required": true},
         "DEBUG": {"type": "bool", "required": true}
-    }"#);
+    }"#,
+    );
 
     // Parse with detailed results to get duplicate info
     let result = envfile::parse_env_file_detailed(env.env_str());
@@ -2386,7 +2803,10 @@ fn test_envfile_duplicate_key_detection() {
     // Last value wins
     assert_eq!(parse_result.values.get("PORT"), Some(&"4000".to_string()));
     // Duplicates should be detected
-    assert!(!parse_result.duplicates.is_empty(), "Should detect duplicate PORT key");
+    assert!(
+        !parse_result.duplicates.is_empty(),
+        "Should detect duplicate PORT key"
+    );
     assert_eq!(parse_result.duplicates[0].key, "PORT");
 }
 
@@ -2394,14 +2814,18 @@ fn test_envfile_duplicate_key_detection() {
 fn test_scan_finds_vars_in_go_file() {
     // Test Go language support in scan command
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "DATABASE_URL": {"type": "url", "required": true},
         "PORT": {"type": "int", "required": true}
-    }"#);
+    }"#,
+    );
 
     // Create a Go file that uses env vars
     let go_path = env.base_path.join("main.go");
-    fs::write(&go_path, r#"
+    fs::write(
+        &go_path,
+        r#"
 package main
 
 import "os"
@@ -2411,12 +2835,20 @@ func main() {
     port := os.Getenv("PORT")
     println(dbURL, port)
 }
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 
     let result = zorath_env::commands::scan::run(
         env.base_path.to_str().unwrap(),
         env.schema_str(),
-        false, false, "text", false, None, None,
+        false,
+        false,
+        "text",
+        false,
+        None,
+        None,
+        None,
     );
 
     assert!(result.is_ok(), "Go file scanning should work");
@@ -2426,25 +2858,37 @@ func main() {
 fn test_scan_finds_vars_in_rust_file() {
     // Test Rust language support in scan command
     let env = TestEnv::new();
-    env.write_schema(r#"{
+    env.write_schema(
+        r#"{
         "API_KEY": {"type": "string", "required": true}
-    }"#);
+    }"#,
+    );
 
     // Create a Rust file that uses env vars
     let rs_path = env.base_path.join("main.rs");
-    fs::write(&rs_path, r#"
+    fs::write(
+        &rs_path,
+        r#"
 use std::env;
 
 fn main() {
     let api_key = env::var("API_KEY").unwrap();
     println!("{}", api_key);
 }
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 
     let result = zorath_env::commands::scan::run(
         env.base_path.to_str().unwrap(),
         env.schema_str(),
-        false, false, "text", false, None, None,
+        false,
+        false,
+        "text",
+        false,
+        None,
+        None,
+        None,
     );
 
     assert!(result.is_ok(), "Rust file scanning should work");
@@ -2465,7 +2909,8 @@ fn test_envfile_circular_interpolation_detected() {
     let err = result.unwrap_err();
     assert!(
         format!("{:?}", err).contains("ircular") || format!("{:?}", err).contains("VAR_"),
-        "Error should mention circular reference: {:?}", err
+        "Error should mention circular reference: {:?}",
+        err
     );
 }
 
@@ -2474,6 +2919,7 @@ fn test_envfile_circular_interpolation_detected() {
 // ====================================================================
 
 mod cli_tests {
+    use super::TestEnv;
     use std::fs;
     use std::process::Command;
     use tempfile::TempDir;
@@ -2492,7 +2938,11 @@ mod cli_tests {
         let output = zenv_bin().arg("version").output().unwrap();
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("zenv"), "version output should contain 'zenv': {}", stdout);
+        assert!(
+            stdout.contains("zenv"),
+            "version output should contain 'zenv': {}",
+            stdout
+        );
     }
 
     #[test]
@@ -2501,7 +2951,10 @@ mod cli_tests {
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("schema"), "help should mention schema");
-        assert!(stdout.contains("check"), "help should mention check command");
+        assert!(
+            stdout.contains("check"),
+            "help should mention check command"
+        );
     }
 
     #[test]
@@ -2514,14 +2967,22 @@ mod cli_tests {
         );
 
         let output = zenv_bin()
-            .args(["check",
-                "--env", dir.path().join(".env").to_str().unwrap(),
-                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
-                "--quiet"])
-            .output().unwrap();
+            .args([
+                "check",
+                "--env",
+                dir.path().join(".env").to_str().unwrap(),
+                "--schema",
+                dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
 
-        assert!(output.status.success(), "check should pass for valid env: {}",
-            String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "check should pass for valid env: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -2534,28 +2995,50 @@ mod cli_tests {
         );
 
         let output = zenv_bin()
-            .args(["check",
-                "--env", dir.path().join(".env").to_str().unwrap(),
-                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
-                "--quiet"])
-            .output().unwrap();
+            .args([
+                "check",
+                "--env",
+                dir.path().join(".env").to_str().unwrap(),
+                "--schema",
+                dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
 
-        assert_eq!(output.status.code(), Some(1), "validation failure should exit 1");
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "validation failure should exit 1"
+        );
     }
 
     #[test]
     fn test_cli_check_missing_env_exits_2() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("env.schema.json"), r#"{"PORT": {"type": "int"}}"#).unwrap();
+        fs::write(
+            dir.path().join("env.schema.json"),
+            r#"{"PORT": {"type": "int"}}"#,
+        )
+        .unwrap();
 
         let output = zenv_bin()
-            .args(["check",
-                "--env", dir.path().join(".env").to_str().unwrap(),
-                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
-                "--quiet"])
-            .output().unwrap();
+            .args([
+                "check",
+                "--env",
+                dir.path().join(".env").to_str().unwrap(),
+                "--schema",
+                dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
 
-        assert_eq!(output.status.code(), Some(2), "missing env file should exit 2");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "missing env file should exit 2"
+        );
     }
 
     #[test]
@@ -2565,11 +3048,16 @@ mod cli_tests {
         fs::write(dir.path().join("bad.schema.json"), "not valid json {{{").unwrap();
 
         let output = zenv_bin()
-            .args(["check",
-                "--env", dir.path().join(".env").to_str().unwrap(),
-                "--schema", dir.path().join("bad.schema.json").to_str().unwrap(),
-                "--quiet"])
-            .output().unwrap();
+            .args([
+                "check",
+                "--env",
+                dir.path().join(".env").to_str().unwrap(),
+                "--schema",
+                dir.path().join("bad.schema.json").to_str().unwrap(),
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
 
         assert_eq!(output.status.code(), Some(3), "bad schema should exit 3");
     }
@@ -2584,63 +3072,79 @@ mod cli_tests {
         );
 
         let output = zenv_bin()
-            .args(["check",
-                "--env", dir.path().join(".env").to_str().unwrap(),
-                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
-                "--format", "json",
-                "--quiet"])
-            .output().unwrap();
+            .args([
+                "check",
+                "--env",
+                dir.path().join(".env").to_str().unwrap(),
+                "--schema",
+                dir.path().join("env.schema.json").to_str().unwrap(),
+                "--format",
+                "json",
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let parsed: serde_json::Value = serde_json::from_str(&stdout)
-            .expect("check --format json should produce valid JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&stdout).expect("check --format json should produce valid JSON");
         assert_eq!(parsed["valid"], true);
     }
 
     #[test]
     fn test_cli_quiet_flag_suppresses_config_output() {
         let dir = TempDir::new().unwrap();
-        setup_env_and_schema(
-            dir.path(),
-            "PORT=3000\n",
-            r#"{"PORT": {"type": "int"}}"#,
-        );
+        setup_env_and_schema(dir.path(), "PORT=3000\n", r#"{"PORT": {"type": "int"}}"#);
         // Write a .zenvrc so config loading would normally print
-        fs::write(dir.path().join(".zenvrc"), r#"{"schema": "env.schema.json"}"#).unwrap();
+        fs::write(
+            dir.path().join(".zenvrc"),
+            r#"{"schema": "env.schema.json"}"#,
+        )
+        .unwrap();
 
         let output = zenv_bin()
-            .args(["check",
-                "--env", dir.path().join(".env").to_str().unwrap(),
-                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
-                "--quiet"])
+            .args([
+                "check",
+                "--env",
+                dir.path().join(".env").to_str().unwrap(),
+                "--schema",
+                dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet",
+            ])
             .current_dir(dir.path())
-            .output().unwrap();
+            .output()
+            .unwrap();
 
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!stderr.contains("loaded config from"),
-            "quiet mode should suppress config loading message: {}", stderr);
+        assert!(
+            !stderr.contains("loaded config from"),
+            "quiet mode should suppress config loading message: {}",
+            stderr
+        );
     }
 
     #[test]
     fn test_cli_config_flag_loads_custom_config() {
         let dir = TempDir::new().unwrap();
-        setup_env_and_schema(
-            dir.path(),
-            "PORT=3000\n",
-            r#"{"PORT": {"type": "int"}}"#,
-        );
+        setup_env_and_schema(dir.path(), "PORT=3000\n", r#"{"PORT": {"type": "int"}}"#);
         // Create custom config that sets format to json
         let config_path = dir.path().join("custom.zenvrc");
         fs::write(&config_path, r#"{"format": "json"}"#).unwrap();
 
         let output = zenv_bin()
-            .args(["check",
-                "--env", dir.path().join(".env").to_str().unwrap(),
-                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
-                "--config", config_path.to_str().unwrap(),
-                "--quiet"])
-            .output().unwrap();
+            .args([
+                "check",
+                "--env",
+                dir.path().join(".env").to_str().unwrap(),
+                "--schema",
+                dir.path().join("env.schema.json").to_str().unwrap(),
+                "--config",
+                config_path.to_str().unwrap(),
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2656,28 +3160,43 @@ mod cli_tests {
         fs::write(dir.path().join(".env"), "PORT=3000\nNODE_ENV=prod\n").unwrap();
 
         let output = zenv_bin()
-            .args(["export",
-                "--env", dir.path().join(".env").to_str().unwrap(),
-                "--format", "shell",
-                "--quiet"])
-            .output().unwrap();
+            .args([
+                "export",
+                "--env",
+                dir.path().join(".env").to_str().unwrap(),
+                "--format",
+                "shell",
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("export "), "shell format should contain 'export '");
+        assert!(
+            stdout.contains("export "),
+            "shell format should contain 'export '"
+        );
     }
 
     #[test]
     fn test_cli_docs_command() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("env.schema.json"),
-            r#"{"PORT": {"type": "int", "required": true, "description": "Server port"}}"#).unwrap();
+        fs::write(
+            dir.path().join("env.schema.json"),
+            r#"{"PORT": {"type": "int", "required": true, "description": "Server port"}}"#,
+        )
+        .unwrap();
 
         let output = zenv_bin()
-            .args(["docs",
-                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
-                "--quiet"])
-            .output().unwrap();
+            .args([
+                "docs",
+                "--schema",
+                dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2687,14 +3206,21 @@ mod cli_tests {
     #[test]
     fn test_cli_example_command() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("env.schema.json"),
-            r#"{"PORT": {"type": "int", "required": true}, "NODE_ENV": {"type": "string"}}"#).unwrap();
+        fs::write(
+            dir.path().join("env.schema.json"),
+            r#"{"PORT": {"type": "int", "required": true}, "NODE_ENV": {"type": "string"}}"#,
+        )
+        .unwrap();
 
         let output = zenv_bin()
-            .args(["example",
-                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
-                "--quiet"])
-            .output().unwrap();
+            .args([
+                "example",
+                "--schema",
+                dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2704,31 +3230,38 @@ mod cli_tests {
     #[test]
     fn test_cli_doctor_command() {
         let dir = TempDir::new().unwrap();
-        setup_env_and_schema(
-            dir.path(),
-            "PORT=3000\n",
-            r#"{"PORT": {"type": "int"}}"#,
-        );
+        setup_env_and_schema(dir.path(), "PORT=3000\n", r#"{"PORT": {"type": "int"}}"#);
 
         let output = zenv_bin()
-            .args(["doctor",
-                "--env", dir.path().join(".env").to_str().unwrap(),
-                "--schema", dir.path().join("env.schema.json").to_str().unwrap(),
-                "--quiet"])
-            .output().unwrap();
+            .args([
+                "doctor",
+                "--env",
+                dir.path().join(".env").to_str().unwrap(),
+                "--schema",
+                dir.path().join("env.schema.json").to_str().unwrap(),
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
 
-        assert!(output.status.success(), "doctor should succeed: {}",
-            String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "doctor should succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
     fn test_cli_verbose_and_quiet_conflict() {
         let output = zenv_bin()
             .args(["--verbose", "--quiet", "version"])
-            .output().unwrap();
+            .output()
+            .unwrap();
 
-        assert!(!output.status.success(),
-            "verbose + quiet should conflict and fail");
+        assert!(
+            !output.status.success(),
+            "verbose + quiet should conflict and fail"
+        );
     }
 
     #[test]
@@ -2738,37 +3271,180 @@ mod cli_tests {
         fs::write(dir.path().join("b.env"), "PORT=8080\nDEBUG=true\n").unwrap();
 
         let output = zenv_bin()
-            .args(["diff",
+            .args([
+                "diff",
                 dir.path().join("a.env").to_str().unwrap(),
                 dir.path().join("b.env").to_str().unwrap(),
-                "--quiet"])
-            .output().unwrap();
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
 
         // diff exits 0 even with differences
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("PORT") || stdout.contains("HOST") || stdout.contains("DEBUG"),
-            "diff should show differences");
+        assert!(
+            stdout.contains("PORT") || stdout.contains("HOST") || stdout.contains("DEBUG"),
+            "diff should show differences"
+        );
     }
 
     #[test]
     fn test_cli_init_list_presets() {
         let output = zenv_bin()
             .args(["init", "--list-presets", "--quiet"])
-            .output().unwrap();
+            .output()
+            .unwrap();
 
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("node") || stdout.contains("django") || stdout.contains("rails"),
-            "list-presets should show available presets: {}", stdout);
+        assert!(
+            stdout.contains("node") || stdout.contains("django") || stdout.contains("rails"),
+            "list-presets should show available presets: {}",
+            stdout
+        );
     }
 
     #[test]
     fn test_cli_no_color_flag() {
-        let output = zenv_bin()
-            .args(["--no-color", "version"])
-            .output().unwrap();
+        let output = zenv_bin().args(["--no-color", "version"]).output().unwrap();
 
-        assert!(output.status.success(), "--no-color flag should be accepted");
+        assert!(
+            output.status.success(),
+            "--no-color flag should be accepted"
+        );
+    }
+
+    /// Closes audit gap #23 -- fix had zero CLI-binary coverage.
+    #[test]
+    fn test_cli_fix_dry_run_succeeds() {
+        let env = TestEnv::new();
+        env.write_env("PORT=3000\n");
+        env.write_schema(r#"{"PORT": {"type": "int", "required": true}}"#);
+
+        let output = zenv_bin()
+            .args([
+                "fix",
+                "--env",
+                env.env_str(),
+                "--schema",
+                env.schema_str(),
+                "--dry-run",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "fix --dry-run should succeed");
+    }
+
+    /// Closes audit gap #23 -- scan had zero CLI-binary coverage.
+    #[test]
+    fn test_cli_scan_text_format() {
+        let env = TestEnv::new();
+        env.write_schema(r#"{"PORT": {"type": "int", "required": true}}"#);
+        let js = env.base_path.join("app.js");
+        std::fs::write(&js, "process.env.PORT").unwrap();
+
+        let output = zenv_bin()
+            .args([
+                "scan",
+                "--path",
+                env.base_path.to_str().unwrap(),
+                "--schema",
+                env.schema_str(),
+                "--format",
+                "text",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "scan should succeed");
+    }
+
+    /// Closes audit gap #23 -- cache subcommands had zero CLI-binary coverage.
+    #[test]
+    fn test_cli_cache_path_command() {
+        let output = zenv_bin().args(["cache", "path"]).output().unwrap();
+        assert!(output.status.success(), "cache path should succeed");
+    }
+
+    #[test]
+    fn test_cli_cache_list_command() {
+        let output = zenv_bin().args(["cache", "list"]).output().unwrap();
+        assert!(output.status.success(), "cache list should succeed");
+    }
+
+    #[test]
+    fn test_cli_cache_stats_command() {
+        let output = zenv_bin().args(["cache", "stats"]).output().unwrap();
+        assert!(output.status.success(), "cache stats should succeed");
+    }
+
+    /// Closes audit gap #23 -- template had zero CLI-binary coverage.
+    #[test]
+    fn test_cli_template_github() {
+        let output = zenv_bin().args(["template", "github"]).output().unwrap();
+        assert!(output.status.success(), "template github should succeed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Validate Environment"),
+            "should print github workflow"
+        );
+    }
+
+    #[test]
+    fn test_cli_template_list() {
+        let output = zenv_bin()
+            .args(["template", "github", "--list"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "template --list should succeed");
+    }
+
+    /// Closes audit gap #24 -- the new --no-cache / --verify-hash / --ca-cert
+    /// flags had zero integration coverage. These exercise parsing only;
+    /// remote behavior is exercised in unit tests against fixture URLs.
+    #[test]
+    fn test_cli_no_cache_flag_parses() {
+        let env = TestEnv::new();
+        env.write_env("PORT=3000\n");
+        env.write_schema(r#"{"PORT": {"type": "int", "required": true}}"#);
+        let output = zenv_bin()
+            .args([
+                "check",
+                "--env",
+                env.env_str(),
+                "--schema",
+                env.schema_str(),
+                "--no-cache=true",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "--no-cache=true should parse and succeed for local schemas"
+        );
+    }
+
+    /// Closes audit gap #7 (action.yml default mismatch) at the CLI layer:
+    /// confirms the CLI itself rejects a missing .env by default.
+    #[test]
+    fn test_cli_check_missing_env_default_rejects() {
+        let env = TestEnv::new();
+        env.write_schema(r#"{"PORT": {"type": "int", "required": true}}"#);
+        let nonexistent = env.base_path.join(".env.nope");
+        let output = zenv_bin()
+            .args([
+                "check",
+                "--env",
+                nonexistent.to_str().unwrap(),
+                "--schema",
+                env.schema_str(),
+            ])
+            .output()
+            .unwrap();
+        // CLI default is --allow-missing-env=false. Action.yml must mirror this.
+        assert!(
+            !output.status.success(),
+            "missing env should fail by default"
+        );
     }
 }

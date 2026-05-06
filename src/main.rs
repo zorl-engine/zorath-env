@@ -1,10 +1,14 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
-use zorath_env::config::Config;
 use zorath_env::commands;
+use zorath_env::config::Config;
 
 #[derive(Parser, Debug)]
-#[command(name="zenv", version, about="Validate .env files with a schema and generate docs.")]
+#[command(
+    name = "zenv",
+    version,
+    about = "Validate .env files with a schema and generate docs."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -454,63 +458,176 @@ fn main() {
         std::env::set_var("NO_COLOR", "1");
     }
 
+    // Pull rate_limit_seconds from .zenvrc once and pass to every command that
+    // hits the network. None means "use the built-in default", so this is safe
+    // even when the field is absent from the config.
+    let rate_limit = config.rate_limit_seconds();
+
     let result = match cli.command {
-        Command::Check { env, schema, allow_missing_env, detect_secrets, no_cache, watch, format, verify_hash, ca_cert } => {
+        Command::Check {
+            env,
+            schema,
+            allow_missing_env,
+            detect_secrets,
+            no_cache,
+            watch,
+            format,
+            verify_hash,
+            ca_cert,
+        } => {
             // CLI args override config, config overrides defaults
             let env = env.unwrap_or_else(|| config.env_or(".env"));
             let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
-            let allow_missing_env = allow_missing_env.unwrap_or_else(|| config.allow_missing_env_or(false));
+            let allow_missing_env =
+                allow_missing_env.unwrap_or_else(|| config.allow_missing_env_or(false));
             let detect_secrets = detect_secrets.unwrap_or_else(|| config.detect_secrets_or(false));
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
             let format = format.unwrap_or_else(|| config.format_or("text"));
-            commands::check::run(&env, &schema, allow_missing_env, detect_secrets, no_cache, watch, &format, verify_hash.as_deref(), ca_cert.as_deref())
+            commands::check::run(
+                &env,
+                &schema,
+                allow_missing_env,
+                detect_secrets,
+                no_cache,
+                watch,
+                &format,
+                verify_hash.as_deref(),
+                ca_cert.as_deref(),
+                rate_limit,
+            )
         }
-        Command::Docs { schema, format, no_cache, verify_hash, ca_cert } => {
+        Command::Docs {
+            schema,
+            format,
+            no_cache,
+            verify_hash,
+            ca_cert,
+        } => {
             let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
             let format = format.unwrap_or_else(|| config.format_or("markdown"));
-            commands::docs::run(&schema, &format, no_cache, verify_hash.as_deref(), ca_cert.as_deref())
+            commands::docs::run(
+                &schema,
+                &format,
+                no_cache,
+                verify_hash.as_deref(),
+                ca_cert.as_deref(),
+                rate_limit,
+            )
         }
-        Command::Init { example, schema, preset, list_presets } => {
+        Command::Init {
+            example,
+            schema,
+            preset,
+            list_presets,
+        } => {
             let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
             commands::init::run_with_options(&example, &schema, preset.as_deref(), list_presets)
         }
         Command::Version { check_update } => commands::version::run(check_update),
         Command::Completions { shell } => commands::completions::run(shell, &mut Cli::command()),
-        Command::Example { schema, output, include_defaults, no_cache, verify_hash, ca_cert } => {
+        Command::Example {
+            schema,
+            output,
+            include_defaults,
+            no_cache,
+            verify_hash,
+            ca_cert,
+        } => {
             let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
-            commands::example::run(&schema, output.as_deref(), include_defaults, no_cache, verify_hash.as_deref(), ca_cert.as_deref())
+            commands::example::run(
+                &schema,
+                output.as_deref(),
+                include_defaults,
+                no_cache,
+                verify_hash.as_deref(),
+                ca_cert.as_deref(),
+                rate_limit,
+            )
         }
-        Command::Diff { env_a, env_b, schema, format, no_cache, verify_hash, ca_cert } => {
+        Command::Diff {
+            env_a,
+            env_b,
+            schema,
+            format,
+            no_cache,
+            verify_hash,
+            ca_cert,
+        } => {
             // For diff, schema is optional so we don't apply config default
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
             let format = format.unwrap_or_else(|| config.format_or("text"));
-            commands::diff::run(&env_a, &env_b, schema.as_deref(), &format, no_cache, verify_hash.as_deref(), ca_cert.as_deref())
+            commands::diff::run(
+                &env_a,
+                &env_b,
+                schema.as_deref(),
+                &format,
+                no_cache,
+                verify_hash.as_deref(),
+                ca_cert.as_deref(),
+                rate_limit,
+            )
         }
-        Command::Fix { env, schema, remove_unknown, dry_run, no_cache, verify_hash, ca_cert } => {
+        Command::Fix {
+            env,
+            schema,
+            remove_unknown,
+            dry_run,
+            no_cache,
+            verify_hash,
+            ca_cert,
+        } => {
             let env = env.unwrap_or_else(|| config.env_or(".env"));
             let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
-            commands::fix::run(&env, &schema, remove_unknown, dry_run, no_cache, verify_hash.as_deref(), ca_cert.as_deref())
+            commands::fix::run(
+                &env,
+                &schema,
+                remove_unknown,
+                dry_run,
+                no_cache,
+                verify_hash.as_deref(),
+                ca_cert.as_deref(),
+                rate_limit,
+            )
         }
-        Command::Scan { path, schema, show_unused, show_paths, format, no_cache, verify_hash, ca_cert } => {
+        Command::Scan {
+            path,
+            schema,
+            show_unused,
+            show_paths,
+            format,
+            no_cache,
+            verify_hash,
+            ca_cert,
+        } => {
             let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
             let format = format.unwrap_or_else(|| config.format_or("text"));
-            commands::scan::run(&path, &schema, show_unused, show_paths, &format, no_cache, verify_hash.as_deref(), ca_cert.as_deref())
+            commands::scan::run(
+                &path,
+                &schema,
+                show_unused,
+                show_paths,
+                &format,
+                no_cache,
+                verify_hash.as_deref(),
+                ca_cert.as_deref(),
+                rate_limit,
+            )
         }
         Command::Cache { action } => match action {
             CacheAction::List => commands::cache::run_list(),
@@ -518,25 +635,58 @@ fn main() {
             CacheAction::Path => commands::cache::run_path(),
             CacheAction::Stats => commands::cache::run_stats(),
         },
-        Command::Export { env, format, schema, output, no_cache, verify_hash, ca_cert } => {
+        Command::Export {
+            env,
+            format,
+            schema,
+            output,
+            no_cache,
+            verify_hash,
+            ca_cert,
+        } => {
             let env = env.unwrap_or_else(|| config.env_or(".env"));
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
             let format = format.unwrap_or_else(|| config.format_or("shell"));
-            commands::export::run(&env, schema.as_deref(), &format, output.as_deref(), no_cache, verify_hash.as_deref(), ca_cert.as_deref())
+            commands::export::run(
+                &env,
+                schema.as_deref(),
+                &format,
+                output.as_deref(),
+                no_cache,
+                verify_hash.as_deref(),
+                ca_cert.as_deref(),
+                rate_limit,
+            )
         }
-        Command::Doctor { env, schema, no_cache, verify_hash, ca_cert } => {
+        Command::Doctor {
+            env,
+            schema,
+            no_cache,
+            verify_hash,
+            ca_cert,
+        } => {
             let env = env.unwrap_or_else(|| config.env_or(".env"));
             let schema = schema.unwrap_or_else(|| config.schema_or("env.schema.json"));
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
-            commands::doctor::run(&env, &schema, no_cache, verify_hash.as_deref(), ca_cert.as_deref())
+            commands::doctor::run(
+                &env,
+                &schema,
+                no_cache,
+                verify_hash.as_deref(),
+                ca_cert.as_deref(),
+                rate_limit,
+            )
         }
-        Command::Template { name, output, list, use_binary } => {
-            commands::template::run(&name, output.as_deref(), list, use_binary)
-        }
+        Command::Template {
+            name,
+            output,
+            list,
+            use_binary,
+        } => commands::template::run(&name, output.as_deref(), list, use_binary),
     };
 
     if let Err(e) = result {

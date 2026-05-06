@@ -81,11 +81,11 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
 
     // Helper to insert and track duplicates
     let insert_tracking = |map: &mut HashMap<String, String>,
-                               key_lines: &mut HashMap<String, usize>,
-                               duplicates: &mut Vec<DuplicateKey>,
-                               key: String,
-                               value: String,
-                               line: usize| {
+                           key_lines: &mut HashMap<String, usize>,
+                           duplicates: &mut Vec<DuplicateKey>,
+                           key: String,
+                           value: String,
+                           line: usize| {
         if let Some(&prev_line) = key_lines.get(&key) {
             duplicates.push(DuplicateKey {
                 key: key.clone(),
@@ -119,7 +119,9 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                 } else if ch == 'e' && chars.peek() == Some(&'x') {
                     let rest: String = chars.clone().take(5).collect();
                     if rest == "xport" {
-                        for _ in 0..5 { chars.next(); }
+                        for _ in 0..5 {
+                            chars.next();
+                        }
                         if chars.peek() == Some(&' ') {
                             chars.next();
                         }
@@ -156,7 +158,14 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                 } else if ch == '\n' || ch == '\r' {
                     let key = current_key.trim().to_string();
                     if !key.is_empty() {
-                        insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, String::new(), key_start_line);
+                        insert_tracking(
+                            &mut map,
+                            &mut key_lines,
+                            &mut duplicates,
+                            key,
+                            String::new(),
+                            key_start_line,
+                        );
                     }
                     current_key.clear();
                     state = ParseState::LineStart;
@@ -173,7 +182,14 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                     let key = current_key.trim().to_string();
                     let val = current_value.trim().to_string();
                     if !key.is_empty() {
-                        insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, val, key_start_line);
+                        insert_tracking(
+                            &mut map,
+                            &mut key_lines,
+                            &mut duplicates,
+                            key,
+                            val,
+                            key_start_line,
+                        );
                     }
                     current_key.clear();
                     current_value.clear();
@@ -182,7 +198,14 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                     let key = current_key.trim().to_string();
                     let val = current_value.trim().to_string();
                     if !key.is_empty() {
-                        insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, val, key_start_line);
+                        insert_tracking(
+                            &mut map,
+                            &mut key_lines,
+                            &mut duplicates,
+                            key,
+                            val,
+                            key_start_line,
+                        );
                     }
                     current_key.clear();
                     current_value.clear();
@@ -203,15 +226,35 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                 if ch == '\\' {
                     state = ParseState::InDoubleQuotedEscape;
                 } else if ch == '"' {
+                    let closing_line = line_number;
                     let key = current_key.trim().to_string();
                     if !key.is_empty() {
-                        insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, current_value.clone(), key_start_line);
+                        insert_tracking(
+                            &mut map,
+                            &mut key_lines,
+                            &mut duplicates,
+                            key.clone(),
+                            current_value.clone(),
+                            key_start_line,
+                        );
                     }
                     current_key.clear();
                     current_value.clear();
+                    // Drain to end of line; warn if non-whitespace, non-comment trailing junk.
+                    let mut trailing = String::new();
                     while let Some(&c) = chars.peek() {
-                        if c == '\n' || c == '\r' { break; }
+                        if c == '\n' || c == '\r' {
+                            break;
+                        }
+                        trailing.push(c);
                         chars.next();
+                    }
+                    let trimmed = trailing.trim();
+                    if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                        eprintln!(
+                            "warning: trailing characters after closing quote on line {}: '{}'",
+                            closing_line, trimmed
+                        );
                     }
                     state = ParseState::LineStart;
                 } else {
@@ -241,15 +284,35 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
 
             ParseState::InSingleQuoted => {
                 if ch == '\'' {
+                    let closing_line = line_number;
                     let key = current_key.trim().to_string();
                     if !key.is_empty() {
-                        insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, current_value.clone(), key_start_line);
+                        insert_tracking(
+                            &mut map,
+                            &mut key_lines,
+                            &mut duplicates,
+                            key,
+                            current_value.clone(),
+                            key_start_line,
+                        );
                     }
                     current_key.clear();
                     current_value.clear();
+                    // Drain to end of line; warn if non-whitespace, non-comment trailing junk.
+                    let mut trailing = String::new();
                     while let Some(&c) = chars.peek() {
-                        if c == '\n' || c == '\r' { break; }
+                        if c == '\n' || c == '\r' {
+                            break;
+                        }
+                        trailing.push(c);
                         chars.next();
+                    }
+                    let trimmed = trailing.trim();
+                    if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                        eprintln!(
+                            "warning: trailing characters after closing quote on line {}: '{}'",
+                            closing_line, trimmed
+                        );
                     }
                     state = ParseState::LineStart;
                 } else {
@@ -265,19 +328,40 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
             let key = current_key.trim().to_string();
             let val = current_value.trim().to_string();
             if !key.is_empty() {
-                insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, val, key_start_line);
+                insert_tracking(
+                    &mut map,
+                    &mut key_lines,
+                    &mut duplicates,
+                    key,
+                    val,
+                    key_start_line,
+                );
             }
         }
         ParseState::InDoubleQuoted | ParseState::InSingleQuoted => {
             let key = current_key.trim().to_string();
             if !key.is_empty() {
-                insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, current_value, key_start_line);
+                insert_tracking(
+                    &mut map,
+                    &mut key_lines,
+                    &mut duplicates,
+                    key,
+                    current_value,
+                    key_start_line,
+                );
             }
         }
         ParseState::AfterEquals => {
             let key = current_key.trim().to_string();
             if !key.is_empty() {
-                insert_tracking(&mut map, &mut key_lines, &mut duplicates, key, String::new(), key_start_line);
+                insert_tracking(
+                    &mut map,
+                    &mut key_lines,
+                    &mut duplicates,
+                    key,
+                    String::new(),
+                    key_start_line,
+                );
             }
         }
         _ => {}
@@ -290,17 +374,6 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
     }
 }
 
-/// Parse .env content with optional duplicate key warnings
-pub fn parse_env_str_with_warnings(content: &str, warn_duplicates: bool) -> HashMap<String, String> {
-    let result = parse_env_str_detailed(content);
-    if warn_duplicates {
-        for dup in &result.duplicates {
-            eprintln!("warning: duplicate key '{}' at line {} (overwriting previous value)", dup.key, dup.line);
-        }
-    }
-    result.values
-}
-
 /// Interpolate ${VAR} and $VAR references in a single value
 fn interpolate_value(value: &str, env_map: &HashMap<String, String>) -> String {
     let mut result = String::new();
@@ -309,16 +382,40 @@ fn interpolate_value(value: &str, env_map: &HashMap<String, String>) -> String {
     while let Some(ch) = chars.next() {
         if ch == '$' {
             if chars.peek() == Some(&'{') {
-                // ${VAR} syntax
+                // ${VAR} syntax. Cap variable name length to defend against
+                // unbounded "${" with no closing brace on a huge file.
                 chars.next(); // consume '{'
-                let var_name: String = chars.by_ref().take_while(|&c| c != '}').collect();
+                const MAX_VAR_NAME: usize = 256;
+                let mut var_name = String::new();
+                let mut closed = false;
+                for c in chars.by_ref() {
+                    if c == '}' {
+                        closed = true;
+                        break;
+                    }
+                    if var_name.len() >= MAX_VAR_NAME {
+                        // Bail out: unterminated or pathological reference.
+                        break;
+                    }
+                    var_name.push(c);
+                }
+                if !closed {
+                    // Preserve the (possibly truncated) literal so users see something useful.
+                    result.push_str("${");
+                    result.push_str(&var_name);
+                    continue;
+                }
                 if let Some(val) = env_map.get(&var_name) {
                     result.push_str(val);
                 } else {
                     // Keep unresolved reference as-is
                     result.push_str(&format!("${{{}}}", var_name));
                 }
-            } else if chars.peek().map(|c| c.is_alphabetic() || *c == '_').unwrap_or(false) {
+            } else if chars
+                .peek()
+                .map(|c| c.is_alphabetic() || *c == '_')
+                .unwrap_or(false)
+            {
                 // $VAR syntax (bare word) - collect without consuming trailing char
                 let mut var_name = String::new();
                 while let Some(&c) = chars.peek() {
@@ -356,7 +453,11 @@ fn has_var_refs(value: &str) -> bool {
             if chars.peek() == Some(&'{') {
                 return true;
             }
-            if chars.peek().map(|c| c.is_alphabetic() || *c == '_').unwrap_or(false) {
+            if chars
+                .peek()
+                .map(|c| c.is_alphabetic() || *c == '_')
+                .unwrap_or(false)
+            {
                 return true;
             }
         }
@@ -377,7 +478,11 @@ fn extract_var_refs(value: &str) -> Vec<String> {
                 if !var_name.is_empty() {
                     refs.push(var_name);
                 }
-            } else if chars.peek().map(|c| c.is_alphabetic() || *c == '_').unwrap_or(false) {
+            } else if chars
+                .peek()
+                .map(|c| c.is_alphabetic() || *c == '_')
+                .unwrap_or(false)
+            {
                 let mut var_name = String::new();
                 while let Some(&c) = chars.peek() {
                     if c.is_alphanumeric() || c == '_' {
@@ -409,7 +514,9 @@ fn has_resolvable_refs(value: &str, keys: &HashSet<String>) -> bool {
 
 /// Interpolate all variable references in env_map
 /// Returns error if circular reference detected
-pub fn interpolate_env(env_map: HashMap<String, String>) -> Result<HashMap<String, String>, EnvError> {
+pub fn interpolate_env(
+    env_map: HashMap<String, String>,
+) -> Result<HashMap<String, String>, EnvError> {
     let mut result = env_map.clone();
     let keys: HashSet<String> = env_map.keys().cloned().collect();
     let max_iterations = env_map.len() + 1;
@@ -523,7 +630,10 @@ mod tests {
     fn test_value_with_equals() {
         let input = "DATABASE_URL=postgres://user:pass@host/db?foo=bar";
         let result = parse_env_str(input);
-        assert_eq!(result.get("DATABASE_URL"), Some(&"postgres://user:pass@host/db?foo=bar".to_string()));
+        assert_eq!(
+            result.get("DATABASE_URL"),
+            Some(&"postgres://user:pass@host/db?foo=bar".to_string())
+        );
     }
 
     #[test]
@@ -563,7 +673,10 @@ mod tests {
         let input = "HOST=localhost\nPORT=3000\nURL=http://${HOST}:${PORT}/api";
         let env = parse_env_str(input);
         let result = interpolate_env(env).unwrap();
-        assert_eq!(result.get("URL"), Some(&"http://localhost:3000/api".to_string()));
+        assert_eq!(
+            result.get("URL"),
+            Some(&"http://localhost:3000/api".to_string())
+        );
     }
 
     #[test]
@@ -589,6 +702,38 @@ mod tests {
         env.insert("B".to_string(), "${A}".to_string());
         let result = interpolate_env(env);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_interpolate_unterminated_brace_does_not_explode() {
+        // Pathological "${" with no closing brace must not collect to EOF.
+        // Earlier behavior built an unbounded variable name.
+        let mut env = HashMap::new();
+        let huge = "${".to_string() + &"X".repeat(10_000);
+        env.insert("BIG".to_string(), huge);
+        let result = interpolate_env(env).unwrap();
+        // The truncated literal should still be present; we mainly assert no panic
+        // and reasonable bounded output.
+        assert!(result.get("BIG").unwrap().starts_with("${"));
+        assert!(result.get("BIG").unwrap().len() < 10_500);
+    }
+
+    #[test]
+    fn test_parse_double_quoted_trailing_junk_warning_does_not_break_parse() {
+        // Trailing chars after closing quote should be warned about (eprintln)
+        // but still allow the key to be captured.
+        let input = "FOO=\"value\" garbage_after_close\nBAR=ok\n";
+        let result = parse_env_str(input);
+        assert_eq!(result.get("FOO"), Some(&"value".to_string()));
+        assert_eq!(result.get("BAR"), Some(&"ok".to_string()));
+    }
+
+    #[test]
+    fn test_parse_single_quoted_trailing_comment_is_silent() {
+        // Trailing "# comment" after closing quote should NOT warn.
+        let input = "FOO='value' # this is fine\n";
+        let result = parse_env_str(input);
+        assert_eq!(result.get("FOO"), Some(&"value".to_string()));
     }
 
     #[test]
@@ -636,7 +781,10 @@ mod tests {
     fn test_multiline_preserves_internal_quotes() {
         let input = "KEY=\"he said 'hello'\nand left\"";
         let result = parse_env_str(input);
-        assert_eq!(result.get("KEY"), Some(&"he said 'hello'\nand left".to_string()));
+        assert_eq!(
+            result.get("KEY"),
+            Some(&"he said 'hello'\nand left".to_string())
+        );
     }
 
     // Escape sequence tests
@@ -715,7 +863,10 @@ mod tests {
     fn test_hash_in_quoted_value() {
         let input = "KEY=\"value # not a comment\"";
         let result = parse_env_str(input);
-        assert_eq!(result.get("KEY"), Some(&"value # not a comment".to_string()));
+        assert_eq!(
+            result.get("KEY"),
+            Some(&"value # not a comment".to_string())
+        );
     }
 
     #[test]
@@ -731,7 +882,7 @@ mod tests {
     #[test]
     fn test_duplicate_key_last_value_wins() {
         let input = "FOO=first\nFOO=second";
-        let result = parse_env_str_with_warnings(input, false);
+        let result = parse_env_str(input);
         assert_eq!(result.get("FOO"), Some(&"second".to_string()));
         assert_eq!(result.len(), 1);
     }
@@ -739,14 +890,14 @@ mod tests {
     #[test]
     fn test_duplicate_key_multiple_times() {
         let input = "FOO=1\nFOO=2\nFOO=3";
-        let result = parse_env_str_with_warnings(input, false);
+        let result = parse_env_str(input);
         assert_eq!(result.get("FOO"), Some(&"3".to_string()));
     }
 
     #[test]
     fn test_duplicate_with_different_types() {
         let input = "KEY=unquoted\nKEY=\"quoted\"";
-        let result = parse_env_str_with_warnings(input, false);
+        let result = parse_env_str(input);
         assert_eq!(result.get("KEY"), Some(&"quoted".to_string()));
     }
 
@@ -868,12 +1019,19 @@ mod tests {
     fn test_parse_env_file_with_special_characters() {
         let temp_dir = std::env::temp_dir();
         let file_path = temp_dir.join("test_special_chars.env");
-        std::fs::write(&file_path, "URL=https://example.com?foo=bar&baz=qux\nKEY=\"value with spaces\"").unwrap();
+        std::fs::write(
+            &file_path,
+            "URL=https://example.com?foo=bar&baz=qux\nKEY=\"value with spaces\"",
+        )
+        .unwrap();
 
         let result = parse_env_file(file_path.to_str().unwrap());
         assert!(result.is_ok());
         let map = result.unwrap();
-        assert_eq!(map.get("URL"), Some(&"https://example.com?foo=bar&baz=qux".to_string()));
+        assert_eq!(
+            map.get("URL"),
+            Some(&"https://example.com?foo=bar&baz=qux".to_string())
+        );
         assert_eq!(map.get("KEY"), Some(&"value with spaces".to_string()));
 
         let _ = std::fs::remove_file(&file_path);

@@ -48,21 +48,24 @@ pub fn run(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
+    rate_limit_seconds: Option<u64>,
 ) -> Result<(), CliError> {
     let options = LoadOptions {
         no_cache,
         verify_hash: verify_hash.map(|s| s.to_string()),
         ca_cert: ca_cert.map(|s| s.to_string()),
-        rate_limit_seconds: None,
+        rate_limit_seconds,
     };
-    let schema = load_schema_with_options(schema_path, &options).map_err(|e| CliError::Schema(e.to_string()))?;
+    let schema = load_schema_with_options(schema_path, &options)
+        .map_err(|e| CliError::Schema(e.to_string()))?;
 
     // Use the library function
     let output = generate(&schema, include_defaults);
 
     // Output to file or stdout
     if let Some(path) = output_path {
-        fs::write(path, &output).map_err(|e| CliError::Input(format!("failed to write output: {}", e)))?;
+        fs::write(path, &output)
+            .map_err(|e| CliError::Input(format!("failed to write output: {}", e)))?;
         println!("Generated: {}", path);
     } else {
         print!("{}", output);
@@ -97,7 +100,11 @@ fn generate_var_comments(_key: &str, spec: &VarSpec) -> String {
         VarType::Date => "date",
         VarType::Hostname => "hostname",
     };
-    let required_str = if spec.required { "required" } else { "optional" };
+    let required_str = if spec.required {
+        "required"
+    } else {
+        "optional"
+    };
     comments.push_str(&format!("# Type: {} ({})\n", type_str, required_str));
 
     // Enum values
@@ -447,6 +454,7 @@ mod tests {
             false,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -460,11 +468,7 @@ mod tests {
     fn test_run_without_defaults() {
         // Use a non-standard port value to distinguish schema default from placeholder
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(
-            file,
-            r#"{{"PORT": {{"type": "int", "default": 8080}}}}"#
-        )
-        .unwrap();
+        writeln!(file, r#"{{"PORT": {{"type": "int", "default": 8080}}}}"#).unwrap();
 
         let dir = tempdir().unwrap();
         let output_path = dir.path().join("test.env.example");
@@ -474,6 +478,7 @@ mod tests {
             Some(output_path.to_str().unwrap()),
             false,
             false,
+            None,
             None,
             None,
         );
@@ -506,6 +511,7 @@ mod tests {
             Some(output_path.to_str().unwrap()),
             false,
             false,
+            None,
             None,
             None,
         )
@@ -546,6 +552,7 @@ mod tests {
             false,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -560,7 +567,15 @@ mod tests {
 
     #[test]
     fn test_invalid_schema_path() {
-        let result = run("/nonexistent/path/schema.json", None, false, false, None, None);
+        let result = run(
+            "/nonexistent/path/schema.json",
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+        );
         assert!(result.is_err());
     }
 }

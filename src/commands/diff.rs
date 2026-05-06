@@ -1,10 +1,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::commands::check::is_sensitive_key;
 use crate::envfile;
 use crate::errors::CliError;
 use crate::schema::{self, LoadOptions};
 use crate::suggestions::find_closest_match;
 use serde::Serialize;
+
+/// Mask sensitive values in diff output (uses key heuristic only;
+/// schema is optional for diff and may not be loaded).
+fn mask_for_diff(key: &str, value: &str) -> String {
+    if is_sensitive_key(key) {
+        "***MASKED***".to_string()
+    } else {
+        value.to_string()
+    }
+}
 
 /// JSON output structure for diff command
 #[derive(Serialize)]
@@ -46,6 +57,7 @@ struct FileCompliance {
 }
 
 #[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     env_a: &str,
     env_b: &str,
@@ -54,10 +66,13 @@ pub fn run(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
+    rate_limit_seconds: Option<u64>,
 ) -> Result<(), CliError> {
     // Parse both env files
-    let map_a = envfile::parse_env_file(env_a).map_err(|e| CliError::Input(format!("Error reading {}: {}", env_a, e)))?;
-    let map_b = envfile::parse_env_file(env_b).map_err(|e| CliError::Input(format!("Error reading {}: {}", env_b, e)))?;
+    let map_a = envfile::parse_env_file(env_a)
+        .map_err(|e| CliError::Input(format!("Error reading {}: {}", env_a, e)))?;
+    let map_b = envfile::parse_env_file(env_b)
+        .map_err(|e| CliError::Input(format!("Error reading {}: {}", env_b, e)))?;
 
     // Convert to BTreeMap for sorted output
     let map_a: BTreeMap<String, String> = map_a.into_iter().collect();
@@ -83,12 +98,28 @@ pub fn run(
 
     // Handle JSON output format
     if format == "json" {
-        return output_json(env_a, env_b, &map_a, &map_b, &only_in_a, &only_in_b, &different_values, schema_path, no_cache, verify_hash, ca_cert)
-            .map_err(CliError::Input);
+        return output_json(
+            env_a,
+            env_b,
+            &map_a,
+            &map_b,
+            &only_in_a,
+            &only_in_b,
+            &different_values,
+            schema_path,
+            no_cache,
+            verify_hash,
+            ca_cert,
+            rate_limit_seconds,
+        )
+        .map_err(CliError::Input);
     }
 
     if format != "text" {
-        return Err(CliError::Input(format!("unknown format '{}'. Use 'text' or 'json'", format)));
+        return Err(CliError::Input(format!(
+            "unknown format '{}'. Use 'text' or 'json'",
+            format
+        )));
     }
 
     // Print header
@@ -102,7 +133,7 @@ pub fn run(
         println!("Only in {}:", env_a);
         for key in &only_in_a {
             let val = map_a.get(*key).unwrap();
-            println!("  + {}={}", key, truncate_value(val, 50));
+            println!("  + {}={}", key, truncate_value(key, val, 50));
         }
         println!();
     }
@@ -113,7 +144,7 @@ pub fn run(
         println!("Only in {}:", env_b);
         for key in &only_in_b {
             let val = map_b.get(*key).unwrap();
-            println!("  + {}={}", key, truncate_value(val, 50));
+            println!("  + {}={}", key, truncate_value(key, val, 50));
         }
         println!();
     }
@@ -150,7 +181,11 @@ pub fn run(
         println!("Different values:");
         for (key, val_a, val_b) in &different_values {
             println!("  {}:", key);
-            println!("    {} -> {}", truncate_value(val_a, 40), truncate_value(val_b, 40));
+            println!(
+                "    {} -> {}",
+                truncate_value(key, val_a, 40),
+                truncate_value(key, val_b, 40)
+            );
         }
         println!();
     }
@@ -161,7 +196,7 @@ pub fn run(
             no_cache,
             verify_hash: verify_hash.map(|s| s.to_string()),
             ca_cert: ca_cert.map(|s| s.to_string()),
-            rate_limit_seconds: None,
+            rate_limit_seconds,
         };
         match schema::load_schema_with_options(schema_path, &options) {
             Ok(schema) => {
@@ -219,8 +254,13 @@ pub fn run(
     Ok(())
 }
 
-/// Truncate a value for display, masking potential secrets
-fn truncate_value(value: &str, max_len: usize) -> String {
+/// Truncate a value for display, masking sensitive-keyed values.
+/// Returns the literal `***MASKED***` for keys that look sensitive,
+/// regardless of `max_len`.
+fn truncate_value(key: &str, value: &str, max_len: usize) -> String {
+    if is_sensitive_key(key) {
+        return "***MASKED***".to_string();
+    }
     // Replace newlines for display
     let display = value.replace('\n', "\\n").replace('\r', "\\r");
 
@@ -246,10 +286,7 @@ fn check_missing_required(
 }
 
 /// Check for unknown keys not in schema
-fn check_unknown_keys(
-    env_map: &BTreeMap<String, String>,
-    schema: &schema::Schema,
-) -> Vec<String> {
+fn check_unknown_keys(env_map: &BTreeMap<String, String>, schema: &schema::Schema) -> Vec<String> {
     let mut unknown = Vec::new();
     for key in env_map.keys() {
         if !schema.contains_key(key) {
@@ -273,6 +310,7 @@ fn output_json(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
+    rate_limit_seconds: Option<u64>,
 ) -> Result<(), String> {
     let has_diff = !only_in_a.is_empty() || !only_in_b.is_empty() || !different_values.is_empty();
 
@@ -282,22 +320,20 @@ fn output_json(
             no_cache,
             verify_hash: verify_hash.map(|s| s.to_string()),
             ca_cert: ca_cert.map(|s| s.to_string()),
-            rate_limit_seconds: None,
+            rate_limit_seconds,
         };
         match schema::load_schema_with_options(schema_path, &options) {
-            Ok(schema) => {
-                Some(SchemaCompliance {
-                    schema_path: schema_path.to_string(),
-                    file_a: FileCompliance {
-                        missing_required: check_missing_required(map_a, &schema),
-                        unknown_keys: check_unknown_keys(map_a, &schema),
-                    },
-                    file_b: FileCompliance {
-                        missing_required: check_missing_required(map_b, &schema),
-                        unknown_keys: check_unknown_keys(map_b, &schema),
-                    },
-                })
-            }
+            Ok(schema) => Some(SchemaCompliance {
+                schema_path: schema_path.to_string(),
+                file_a: FileCompliance {
+                    missing_required: check_missing_required(map_a, &schema),
+                    unknown_keys: check_unknown_keys(map_a, &schema),
+                },
+                file_b: FileCompliance {
+                    missing_required: check_missing_required(map_b, &schema),
+                    unknown_keys: check_unknown_keys(map_b, &schema),
+                },
+            }),
             Err(_) => None,
         }
     } else {
@@ -307,19 +343,28 @@ fn output_json(
     let output = DiffOutput {
         file_a: env_a.to_string(),
         file_b: env_b.to_string(),
-        only_in_a: only_in_a.iter().map(|k| KeyValue {
-            key: (*k).clone(),
-            value: map_a.get(*k).unwrap().clone(),
-        }).collect(),
-        only_in_b: only_in_b.iter().map(|k| KeyValue {
-            key: (*k).clone(),
-            value: map_b.get(*k).unwrap().clone(),
-        }).collect(),
-        different_values: different_values.iter().map(|(k, va, vb)| ValueDiff {
-            key: (*k).clone(),
-            value_a: (*va).clone(),
-            value_b: (*vb).clone(),
-        }).collect(),
+        only_in_a: only_in_a
+            .iter()
+            .map(|k| KeyValue {
+                key: (*k).clone(),
+                value: mask_for_diff(k, map_a.get(*k).unwrap()),
+            })
+            .collect(),
+        only_in_b: only_in_b
+            .iter()
+            .map(|k| KeyValue {
+                key: (*k).clone(),
+                value: mask_for_diff(k, map_b.get(*k).unwrap()),
+            })
+            .collect(),
+        different_values: different_values
+            .iter()
+            .map(|(k, va, vb)| ValueDiff {
+                key: (*k).clone(),
+                value_a: mask_for_diff(k, va),
+                value_b: mask_for_diff(k, vb),
+            })
+            .collect(),
         schema_compliance,
         identical: !has_diff,
     };
@@ -343,17 +388,36 @@ mod tests {
 
     #[test]
     fn test_truncate_value_short() {
-        assert_eq!(truncate_value("short", 10), "short");
+        assert_eq!(truncate_value("FOO", "short", 10), "short");
     }
 
     #[test]
     fn test_truncate_value_long() {
-        assert_eq!(truncate_value("this is a very long value", 10), "this is a ...");
+        assert_eq!(
+            truncate_value("FOO", "this is a very long value", 10),
+            "this is a ..."
+        );
     }
 
     #[test]
     fn test_truncate_value_newlines() {
-        assert_eq!(truncate_value("line1\nline2", 20), "line1\\nline2");
+        assert_eq!(truncate_value("FOO", "line1\nline2", 20), "line1\\nline2");
+    }
+
+    #[test]
+    fn test_truncate_value_masks_sensitive_key() {
+        assert_eq!(
+            truncate_value("API_KEY", "sk_live_abc123", 50),
+            "***MASKED***"
+        );
+        assert_eq!(truncate_value("DB_PASSWORD", "hunter2", 50), "***MASKED***");
+        assert_eq!(truncate_value("JWT_SECRET", "x", 50), "***MASKED***");
+    }
+
+    #[test]
+    fn test_mask_for_diff_masks_sensitive() {
+        assert_eq!(mask_for_diff("API_KEY", "sk_live_abc"), "***MASKED***");
+        assert_eq!(mask_for_diff("PORT", "3000"), "3000");
     }
 
     #[test]
@@ -362,7 +426,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar\nBAZ=qux");
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
 
-        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        let result = run(&env_a, &env_b, None, "text", false, None, None, None);
         assert!(result.is_ok());
     }
 
@@ -372,7 +436,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar\nONLY_A=value");
         let env_b = create_temp_env(&dir, "b.env", "FOO=different\nONLY_B=value");
 
-        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        let result = run(&env_a, &env_b, None, "text", false, None, None, None);
         assert!(result.is_ok());
     }
 
@@ -381,15 +445,37 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar");
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
-        let schema = create_temp_env(&dir, "schema.json", r#"{"FOO": {"type": "string", "required": true}}"#);
+        let schema = create_temp_env(
+            &dir,
+            "schema.json",
+            r#"{"FOO": {"type": "string", "required": true}}"#,
+        );
 
-        let result = run(&env_a, &env_b, Some(&schema), "text", false, None, None);
+        let result = run(
+            &env_a,
+            &env_b,
+            Some(&schema),
+            "text",
+            false,
+            None,
+            None,
+            None,
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_diff_missing_file() {
-        let result = run("nonexistent_a.env", "nonexistent_b.env", None, "text", false, None, None);
+        let result = run(
+            "nonexistent_a.env",
+            "nonexistent_b.env",
+            None,
+            "text",
+            false,
+            None,
+            None,
+            None,
+        );
         assert!(result.is_err());
     }
 
@@ -399,7 +485,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar\nONLY_A=value");
         let env_b = create_temp_env(&dir, "b.env", "FOO=different\nONLY_B=value");
 
-        let result = run(&env_a, &env_b, None, "json", false, None, None);
+        let result = run(&env_a, &env_b, None, "json", false, None, None, None);
         assert!(result.is_ok());
     }
 
@@ -408,9 +494,22 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar");
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
-        let schema = create_temp_env(&dir, "schema.json", r#"{"FOO": {"type": "string", "required": true}}"#);
+        let schema = create_temp_env(
+            &dir,
+            "schema.json",
+            r#"{"FOO": {"type": "string", "required": true}}"#,
+        );
 
-        let result = run(&env_a, &env_b, Some(&schema), "json", false, None, None);
+        let result = run(
+            &env_a,
+            &env_b,
+            Some(&schema),
+            "json",
+            false,
+            None,
+            None,
+            None,
+        );
         assert!(result.is_ok());
     }
 
@@ -420,7 +519,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar");
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar");
 
-        let result = run(&env_a, &env_b, None, "xml", false, None, None);
+        let result = run(&env_a, &env_b, None, "xml", false, None, None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unknown format"));
     }
@@ -431,7 +530,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "");
         let env_b = create_temp_env(&dir, "b.env", "");
 
-        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        let result = run(&env_a, &env_b, None, "text", false, None, None, None);
         assert!(result.is_ok());
     }
 
@@ -441,7 +540,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "");
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
 
-        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        let result = run(&env_a, &env_b, None, "text", false, None, None, None);
         assert!(result.is_ok());
     }
 
@@ -451,7 +550,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=\"line1\nline2\"");
         let env_b = create_temp_env(&dir, "b.env", "FOO=\"line1\nline2\nline3\"");
 
-        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        let result = run(&env_a, &env_b, None, "text", false, None, None, None);
         assert!(result.is_ok());
     }
 
@@ -459,29 +558,33 @@ mod tests {
     fn test_truncate_value_exact_limit() {
         // Value exactly at limit should not be truncated
         let value = "0123456789";
-        assert_eq!(truncate_value(value, 10), value);
+        assert_eq!(truncate_value("FOO", value, 10), value);
     }
 
     #[test]
     fn test_truncate_value_one_over_limit() {
         // Value one char over limit should be truncated
         let value = "01234567890";
-        let result = truncate_value(value, 10);
+        let result = truncate_value("FOO", value, 10);
         assert!(result.ends_with("..."));
     }
 
     #[test]
     fn test_truncate_value_empty() {
-        assert_eq!(truncate_value("", 10), "");
+        assert_eq!(truncate_value("FOO", "", 10), "");
     }
 
     #[test]
     fn test_diff_with_comments_and_blank_lines() {
         let dir = TempDir::new().unwrap();
-        let env_a = create_temp_env(&dir, "a.env", "# Comment\nFOO=bar\n\n# Another comment\nBAZ=qux");
+        let env_a = create_temp_env(
+            &dir,
+            "a.env",
+            "# Comment\nFOO=bar\n\n# Another comment\nBAZ=qux",
+        );
         let env_b = create_temp_env(&dir, "b.env", "FOO=bar\nBAZ=qux");
 
-        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        let result = run(&env_a, &env_b, None, "text", false, None, None, None);
         assert!(result.is_ok());
     }
 
@@ -495,7 +598,7 @@ mod tests {
         let env_b = create_temp_env(&dir, "b.env", "APY_KEY=secret123");
 
         // Run should succeed and internally detect the typo
-        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        let result = run(&env_a, &env_b, None, "text", false, None, None, None);
         assert!(result.is_ok());
     }
 
@@ -506,7 +609,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar");
         let env_b = create_temp_env(&dir, "b.env", "COMPLETELY_DIFFERENT=value");
 
-        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        let result = run(&env_a, &env_b, None, "text", false, None, None, None);
         assert!(result.is_ok());
     }
 
@@ -517,7 +620,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "DATABASE_URL=db1\nDATABASE_HOST=host1");
         let env_b = create_temp_env(&dir, "b.env", "DATABSE_URL=db2\nDATABSE_HOST=host2");
 
-        let result = run(&env_a, &env_b, None, "text", false, None, None);
+        let result = run(&env_a, &env_b, None, "text", false, None, None, None);
         assert!(result.is_ok());
     }
 
@@ -535,7 +638,8 @@ mod tests {
         };
         schema.insert("REQUIRED_VAR".to_string(), spec);
 
-        let mut env_map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        let mut env_map: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
         env_map.insert("OTHER_VAR".to_string(), "value".to_string());
 
         let missing = check_missing_required(&env_map, &schema);
@@ -554,7 +658,8 @@ mod tests {
         };
         schema.insert("KNOWN_VAR".to_string(), spec);
 
-        let mut env_map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        let mut env_map: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
         env_map.insert("KNOWN_VAR".to_string(), "value".to_string());
         env_map.insert("UNKNOWN_VAR".to_string(), "value".to_string());
 
@@ -568,12 +673,25 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env_a = create_temp_env(&dir, "a.env", "PORT=3000\nDEBUG=true");
         let env_b = create_temp_env(&dir, "b.env", "PORT=8080\nDEBUG=false");
-        let schema = create_temp_env(&dir, "schema.json", r#"{
+        let schema = create_temp_env(
+            &dir,
+            "schema.json",
+            r#"{
             "PORT": {"type": "int", "required": true},
             "DEBUG": {"type": "bool", "required": true}
-        }"#);
+        }"#,
+        );
 
-        let result = run(&env_a, &env_b, Some(&schema), "text", false, None, None);
+        let result = run(
+            &env_a,
+            &env_b,
+            Some(&schema),
+            "text",
+            false,
+            None,
+            None,
+            None,
+        );
         assert!(result.is_ok());
     }
 
@@ -583,7 +701,7 @@ mod tests {
         let env_a = create_temp_env(&dir, "a.env", "FOO=bar\nONLY_A=value");
         let env_b = create_temp_env(&dir, "b.env", "FOO=different\nONLY_B=value");
 
-        let result = run(&env_a, &env_b, None, "json", false, None, None);
+        let result = run(&env_a, &env_b, None, "json", false, None, None, None);
         assert!(result.is_ok());
     }
 }

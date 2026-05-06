@@ -69,21 +69,25 @@ struct ValidationIssue {
 
 /// Convert validation errors to issues with severity from schema
 fn errors_to_issues(errors: Vec<String>, schema: &Schema) -> Vec<ValidationIssue> {
-    errors.into_iter().map(|e| {
-        let parts: Vec<&str> = e.splitn(2, ": ").collect();
-        let key = parts.first().unwrap_or(&"").to_string();
+    errors
+        .into_iter()
+        .map(|e| {
+            let parts: Vec<&str> = e.splitn(2, ": ").collect();
+            let key = parts.first().unwrap_or(&"").to_string();
 
-        // Get severity from schema, default to Error
-        let severity = schema.get(&key)
-            .map(|spec| spec.severity)
-            .unwrap_or(Severity::Error);
+            // Get severity from schema, default to Error
+            let severity = schema
+                .get(&key)
+                .map(|spec| spec.severity)
+                .unwrap_or(Severity::Error);
 
-        ValidationIssue {
-            key,
-            message: e,
-            severity,
-        }
-    }).collect()
+            ValidationIssue {
+                key,
+                message: e,
+                severity,
+            }
+        })
+        .collect()
 }
 
 // Pre-compiled regex patterns for built-in types (cached with OnceLock)
@@ -91,7 +95,8 @@ fn errors_to_issues(errors: Vec<String>, schema: &Schema) -> Vec<ValidationIssue
 pub fn uuid_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
-        Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap()
+        Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+            .unwrap()
     })
 }
 
@@ -105,16 +110,17 @@ pub fn email_regex() -> &'static Regex {
 
 pub fn ipv4_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| {
-        Regex::new(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$").unwrap()
-    })
+    REGEX.get_or_init(|| Regex::new(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$").unwrap())
 }
 
 pub fn semver_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         // Matches: 1.0.0, 2.1.3-beta.1, 1.0.0+build.123, 1.0.0-alpha+001
-        Regex::new(r"^\d+\.\d+\.\d+(-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?(\+[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?$").unwrap()
+        Regex::new(
+            r"^\d+\.\d+\.\d+(-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?(\+[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?$",
+        )
+        .unwrap()
     })
 }
 
@@ -150,14 +156,31 @@ thread_local! {
     static PATTERN_CACHE: RefCell<HashMap<String, Result<Regex, String>>> = RefCell::new(HashMap::new());
 }
 
-/// Get or compile a regex pattern with caching
+/// Maximum regex pattern length accepted from schemas (defends against
+/// malicious remote schemas that try to chew compile memory).
+const MAX_PATTERN_LEN: usize = 4096;
+
+/// Regex compile size budget per pattern (1 MiB; default is 10 MiB).
+const REGEX_SIZE_LIMIT: usize = 1 << 20;
+
+/// Get or compile a regex pattern with caching, with length and size guards.
 fn get_cached_regex(pattern: &str) -> Result<Regex, String> {
+    if pattern.len() > MAX_PATTERN_LEN {
+        return Err(format!(
+            "pattern too long ({} chars, max {})",
+            pattern.len(),
+            MAX_PATTERN_LEN
+        ));
+    }
     PATTERN_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if let Some(result) = cache.get(pattern) {
             return result.clone();
         }
-        let result = Regex::new(pattern).map_err(|e| e.to_string());
+        let result = regex::RegexBuilder::new(pattern)
+            .size_limit(REGEX_SIZE_LIMIT)
+            .build()
+            .map_err(|e| e.to_string());
         cache.insert(pattern.to_string(), result.clone());
         result
     })
@@ -187,10 +210,26 @@ fn is_valid_ipv4(value: &str) -> bool {
 pub fn is_sensitive_key(key: &str) -> bool {
     let lower = key.to_lowercase();
     let sensitive_patterns = [
-        "password", "passwd", "secret", "token", "api_key", "apikey",
-        "private_key", "privatekey", "auth", "credential", "jwt",
-        "bearer", "access_key", "accesskey", "secret_key", "secretkey",
-        "encryption_key", "encryptionkey", "signing_key", "signingkey",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "private_key",
+        "privatekey",
+        "auth",
+        "credential",
+        "jwt",
+        "bearer",
+        "access_key",
+        "accesskey",
+        "secret_key",
+        "secretkey",
+        "encryption_key",
+        "encryptionkey",
+        "signing_key",
+        "signingkey",
     ];
 
     for pattern in sensitive_patterns {
@@ -205,7 +244,12 @@ pub fn is_sensitive_key(key: &str) -> bool {
 
 /// Mask sensitive values for safe display (truncates non-sensitive values)
 pub fn mask_value(key: &str, value: &str) -> String {
-    if is_sensitive_key(key) {
+    mask_value_with_spec(key, value, None)
+}
+
+/// Mask a value if the key is sensitive OR the schema explicitly marks it secret.
+pub fn mask_value_with_spec(key: &str, value: &str, spec_secret: Option<bool>) -> String {
+    if spec_secret.unwrap_or(false) || is_sensitive_key(key) {
         "***MASKED***".to_string()
     } else {
         truncate_value(value)
@@ -238,11 +282,7 @@ struct EnvChange {
 }
 
 /// Fallback paths to check when primary env file doesn't exist
-const ENV_FALLBACKS: &[&str] = &[
-    ".env.local",
-    ".env.development",
-    ".env.development.local",
-];
+const ENV_FALLBACKS: &[&str] = &[".env.local", ".env.development", ".env.development.local"];
 
 /// Try to find an env file, checking fallbacks if primary doesn't exist
 fn resolve_env_file(primary: &str) -> Option<String> {
@@ -293,14 +333,36 @@ pub fn run(
     format: &str,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
+    rate_limit_seconds: Option<u64>,
 ) -> Result<(), CliError> {
     if watch {
         if format == "json" {
-            return Err(CliError::Input("JSON format is not supported in watch mode".into()));
+            return Err(CliError::Input(
+                "JSON format is not supported in watch mode".into(),
+            ));
         }
-        run_watch_mode(env_path, schema_path, allow_missing_env, detect_secrets, no_cache, verify_hash, ca_cert)
+        run_watch_mode(
+            env_path,
+            schema_path,
+            allow_missing_env,
+            detect_secrets,
+            no_cache,
+            verify_hash,
+            ca_cert,
+            rate_limit_seconds,
+        )
     } else {
-        run_once(env_path, schema_path, allow_missing_env, detect_secrets, no_cache, format, verify_hash, ca_cert)
+        run_once(
+            env_path,
+            schema_path,
+            allow_missing_env,
+            detect_secrets,
+            no_cache,
+            format,
+            verify_hash,
+            ca_cert,
+            rate_limit_seconds,
+        )
     }
 }
 
@@ -315,23 +377,34 @@ fn run_once(
     format: &str,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
+    rate_limit_seconds: Option<u64>,
 ) -> Result<(), CliError> {
     let options = LoadOptions {
         no_cache,
         verify_hash: verify_hash.map(|s| s.to_string()),
         ca_cert: ca_cert.map(|s| s.to_string()),
-        rate_limit_seconds: None,
+        rate_limit_seconds,
     };
-    let schema = schema::load_schema_with_options(schema_path, &options).map_err(|e| CliError::Schema(e.to_string()))?;
+    let schema = schema::load_schema_with_options(schema_path, &options)
+        .map_err(|e| CliError::Schema(e.to_string()))?;
 
     let resolved_path = resolve_env_file(env_path);
-    let (env_map, line_numbers, duplicates): (HashMap<String, String>, HashMap<String, usize>, Vec<envfile::DuplicateKey>) = match &resolved_path {
+    let (env_map, line_numbers, duplicates): (
+        HashMap<String, String>,
+        HashMap<String, usize>,
+        Vec<envfile::DuplicateKey>,
+    ) = match &resolved_path {
         Some(resolved) => {
             if resolved != env_path && format != "json" {
                 eprintln!("Note: Using {} (fallback)\n", resolved);
             }
-            let parse_result = envfile::parse_env_file_detailed(resolved).map_err(|e| CliError::Input(e.to_string()))?;
-            (parse_result.values, parse_result.line_numbers, parse_result.duplicates)
+            let parse_result = envfile::parse_env_file_detailed(resolved)
+                .map_err(|e| CliError::Input(e.to_string()))?;
+            (
+                parse_result.values,
+                parse_result.line_numbers,
+                parse_result.duplicates,
+            )
         }
         None if allow_missing_env => {
             // When env file is missing and flag is set, validate schema only (no env values)
@@ -370,10 +443,12 @@ fn run_once(
     let issues = errors_to_issues(raw_errors, &schema);
 
     // Separate errors (exit code 1) from warnings (reported but don't fail)
-    let errors: Vec<&ValidationIssue> = issues.iter()
+    let errors: Vec<&ValidationIssue> = issues
+        .iter()
         .filter(|i| i.severity == Severity::Error)
         .collect();
-    let schema_warnings: Vec<&ValidationIssue> = issues.iter()
+    let schema_warnings: Vec<&ValidationIssue> = issues
+        .iter()
         .filter(|i| i.severity == Severity::Warning)
         .collect();
 
@@ -391,31 +466,47 @@ fn run_once(
 
     // JSON output mode
     if format == "json" {
-        let check_errors: Vec<CheckIssue> = errors.iter().map(|e| {
-            let (_, message, issue_type) = parse_error_message(&e.message);
-            CheckIssue { key: e.key.clone(), message, issue_type }
-        }).collect();
+        let check_errors: Vec<CheckIssue> = errors
+            .iter()
+            .map(|e| {
+                let (_, message, issue_type) = parse_error_message(&e.message);
+                CheckIssue {
+                    key: e.key.clone(),
+                    message,
+                    issue_type,
+                }
+            })
+            .collect();
 
-        let check_warnings: Vec<CheckIssue> = schema_warnings.iter().map(|w| {
-            let (_, message, issue_type) = parse_error_message(&w.message);
-            CheckIssue { key: w.key.clone(), message, issue_type }
-        }).collect();
+        let check_warnings: Vec<CheckIssue> = schema_warnings
+            .iter()
+            .map(|w| {
+                let (_, message, issue_type) = parse_error_message(&w.message);
+                CheckIssue {
+                    key: w.key.clone(),
+                    message,
+                    issue_type,
+                }
+            })
+            .collect();
 
-        let check_duplicate_warnings: Vec<DuplicateWarning> = duplicates.iter().map(|d| {
-            DuplicateWarning {
+        let check_duplicate_warnings: Vec<DuplicateWarning> = duplicates
+            .iter()
+            .map(|d| DuplicateWarning {
                 key: d.key.clone(),
                 line: d.line,
                 previous_line: d.previous_line,
-            }
-        }).collect();
+            })
+            .collect();
 
-        let check_secret_warnings: Vec<SecretWarning> = secret_warnings.iter().map(|w| {
-            SecretWarning {
+        let check_secret_warnings: Vec<SecretWarning> = secret_warnings
+            .iter()
+            .map(|w| SecretWarning {
                 key: w.key.clone(),
                 message: w.reason.clone(),
                 line: w.line,
-            }
-        }).collect();
+            })
+            .collect();
 
         let result = CheckResult {
             valid: !has_errors,
@@ -456,8 +547,14 @@ fn run_once(
 
         // Suggest how to fix unknown keys
         if unknown_count > 0 {
-            eprintln!("\nTip: {} unknown key(s) found in .env but not in schema.", unknown_count);
-            eprintln!("  To add them: zenv init --example .env --schema {} (creates new schema)", schema_path);
+            eprintln!(
+                "\nTip: {} unknown key(s) found in .env but not in schema.",
+                unknown_count
+            );
+            eprintln!(
+                "  To add them: zenv init --example .env --schema {} (creates new schema)",
+                schema_path
+            );
             eprintln!("  Or manually add them to your schema file.");
         }
 
@@ -470,7 +567,10 @@ fn run_once(
         // Suggest fix command when there are auto-fixable issues
         if missing_count > 0 || unknown_count > 0 {
             eprintln!();
-            eprintln!("Tip: Run `zenv fix --dry-run --schema {} --env {}` to preview auto-fixes.", schema_path, env_path);
+            eprintln!(
+                "Tip: Run `zenv fix --dry-run --schema {} --env {}` to preview auto-fixes.",
+                schema_path, env_path
+            );
             if unknown_count > 0 {
                 eprintln!("  Add `--remove-unknown` to also remove keys not in schema.");
             }
@@ -495,13 +595,21 @@ fn run_once(
         eprintln!("Warning: Potential secrets detected:\n");
         for warning in &secret_warnings {
             if warning.line > 0 {
-                eprintln!("- {} (line {}): {}", warning.key, warning.line, warning.reason);
+                eprintln!(
+                    "- {} (line {}): {}",
+                    warning.key, warning.line, warning.reason
+                );
             } else {
                 eprintln!("- {}: {}", warning.key, warning.reason);
             }
         }
-        eprintln!("\nThese values may be real secrets. Consider using placeholders in committed files.");
-        eprintln!("Use `zenv example --schema {}` to generate safe placeholders.", schema_path);
+        eprintln!(
+            "\nThese values may be real secrets. Consider using placeholders in committed files."
+        );
+        eprintln!(
+            "Use `zenv example --schema {}` to generate safe placeholders.",
+            schema_path
+        );
     }
 
     // Show duplicate key warnings
@@ -511,7 +619,10 @@ fn run_once(
         }
         eprintln!("Warning: Duplicate keys detected:\n");
         for dup in &duplicates {
-            eprintln!("- {} (line {}) overwrites previous definition at line {}", dup.key, dup.line, dup.previous_line);
+            eprintln!(
+                "- {} (line {}) overwrites previous definition at line {}",
+                dup.key, dup.line, dup.previous_line
+            );
         }
         eprintln!("\nDuplicate keys can cause silent overwrites. Consider removing duplicates.");
     }
@@ -557,11 +668,16 @@ fn parse_error_message(error: &str) -> (String, String, String) {
 
         (key, message, error_type.to_string())
     } else {
-        ("unknown".to_string(), error.to_string(), "validation_error".to_string())
+        (
+            "unknown".to_string(),
+            error.to_string(),
+            "validation_error".to_string(),
+        )
     }
 }
 
 /// Run validation in watch mode with intelligent delta detection
+#[allow(clippy::too_many_arguments)]
 fn run_watch_mode(
     env_path: &str,
     schema_path: &str,
@@ -570,9 +686,11 @@ fn run_watch_mode(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
+    rate_limit_seconds: Option<u64>,
 ) -> Result<(), CliError> {
     // Check if schema is a remote URL - can't watch remote schemas
-    let is_remote_schema = schema_path.starts_with("http://") || schema_path.starts_with("https://");
+    let is_remote_schema =
+        schema_path.starts_with("http://") || schema_path.starts_with("https://");
 
     // Collect files to watch
     let mut watch_paths: Vec<String> = Vec::new();
@@ -610,13 +728,19 @@ fn run_watch_mode(
         no_cache,
         verify_hash: verify_hash.map(|s| s.to_string()),
         ca_cert: ca_cert.map(|s| s.to_string()),
-        rate_limit_seconds: None,
+        rate_limit_seconds,
     };
     let schema = schema::load_schema_with_options(schema_path, &options)
         .map_err(|e| CliError::Schema(format!("Schema error: {}", e)))?;
 
     // Run initial validation and capture state
-    let mut state = run_initial_validation(env_path, &schema, allow_missing_env, detect_secrets, schema_path)?;
+    let mut state = run_initial_validation(
+        env_path,
+        &schema,
+        allow_missing_env,
+        detect_secrets,
+        schema_path,
+    )?;
 
     // Set up file watcher
     let (tx, rx) = mpsc::channel();
@@ -678,7 +802,13 @@ fn run_watch_mode(
                                     Ok(new_schema) => {
                                         state.schema_hash = new_schema_hash;
                                         // Full revalidation with new schema
-                                        state = match run_initial_validation(env_path, &new_schema, allow_missing_env, detect_secrets, schema_path) {
+                                        state = match run_initial_validation(
+                                            env_path,
+                                            &new_schema,
+                                            allow_missing_env,
+                                            detect_secrets,
+                                            schema_path,
+                                        ) {
                                             Ok(s) => s,
                                             Err(e) => {
                                                 eprintln!("           {}", e);
@@ -714,7 +844,10 @@ fn run_watch_mode(
                                     match envfile::interpolate_env(parse_result.values) {
                                         Ok(new_env) => {
                                             // Reload schema for validation
-                                            let schema = match schema::load_schema_with_options(schema_path, &options) {
+                                            let schema = match schema::load_schema_with_options(
+                                                schema_path,
+                                                &options,
+                                            ) {
                                                 Ok(s) => s,
                                                 Err(e) => {
                                                     print_schema_error(&e);
@@ -799,17 +932,22 @@ fn run_initial_validation(
 
     // Load env file
     let resolved_path = resolve_env_file(env_path);
-    let (env_map, line_numbers, content_hash): (HashMap<String, String>, HashMap<String, usize>, u64) =
-        match &resolved_path {
-            Some(resolved) => {
-                let content = fs::read_to_string(resolved).map_err(|e| CliError::Input(e.to_string()))?;
-                let hash = compute_hash(&content);
-                let parse_result = envfile::parse_env_file_detailed(resolved).map_err(|e| CliError::Input(e.to_string()))?;
-                (parse_result.values, parse_result.line_numbers, hash)
-            }
-            None if allow_missing_env => (HashMap::new(), HashMap::new(), 0),
-            None => return Err(CliError::Input(missing_env_error(env_path))),
-        };
+    let (env_map, line_numbers, content_hash): (
+        HashMap<String, String>,
+        HashMap<String, usize>,
+        u64,
+    ) = match &resolved_path {
+        Some(resolved) => {
+            let content =
+                fs::read_to_string(resolved).map_err(|e| CliError::Input(e.to_string()))?;
+            let hash = compute_hash(&content);
+            let parse_result = envfile::parse_env_file_detailed(resolved)
+                .map_err(|e| CliError::Input(e.to_string()))?;
+            (parse_result.values, parse_result.line_numbers, hash)
+        }
+        None if allow_missing_env => (HashMap::new(), HashMap::new(), 0),
+        None => return Err(CliError::Input(missing_env_error(env_path))),
+    };
 
     // Interpolate
     let env_map = envfile::interpolate_env(env_map).map_err(|e| CliError::Input(e.to_string()))?;
@@ -835,7 +973,12 @@ fn run_initial_validation(
         }
         print_bell();
     } else if has_warnings {
-        println!("[{}] Initial: OK ({} variables, {} secret warning(s))", timestamp, var_count, secret_warnings.len());
+        println!(
+            "[{}] Initial: OK ({} variables, {} secret warning(s))",
+            timestamp,
+            var_count,
+            secret_warnings.len()
+        );
         for warning in &secret_warnings {
             eprintln!("           - {}: {}", warning.key, warning.reason);
         }
@@ -896,7 +1039,9 @@ fn detect_changes(old: &HashMap<String, String>, new: &HashMap<String, String>) 
         if old_val != new_val {
             changes.push(EnvChange {
                 key: (*key).clone(),
-                change_type: ChangeType::Modified { old_value: old_val.clone() },
+                change_type: ChangeType::Modified {
+                    old_value: old_val.clone(),
+                },
                 new_value: Some(new_val.clone()),
             });
         }
@@ -991,7 +1136,8 @@ fn print_delta_validation(
 
     // Check for secrets on added/modified values
     if detect_secrets {
-        let changed_keys: HashSet<String> = changes.iter()
+        let changed_keys: HashSet<String> = changes
+            .iter()
             .filter(|c| c.change_type != ChangeType::Removed)
             .map(|c| c.key.clone())
             .collect();
@@ -999,7 +1145,10 @@ fn print_delta_validation(
         let secret_warnings = secrets::detect_secrets(env_map, line_numbers, Some(schema));
         for warning in secret_warnings {
             if changed_keys.contains(&warning.key) {
-                eprintln!("[{}] ! {}: potential secret detected", timestamp, warning.key);
+                eprintln!(
+                    "[{}] ! {}: potential secret detected",
+                    timestamp, warning.key
+                );
                 eprintln!("           {}", warning.reason);
             }
         }
@@ -1038,46 +1187,42 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
             }
             Ok("string".to_string())
         }
-        VarType::Int => {
-            match value.parse::<i64>() {
-                Ok(n) => {
-                    if let Some(ref rules) = spec.validate {
-                        if let Some(min) = rules.min {
-                            if n < min {
-                                return Err(format!("value {} < minimum {}", n, min));
-                            }
-                        }
-                        if let Some(max) = rules.max {
-                            if n > max {
-                                return Err(format!("value {} > maximum {}", n, max));
-                            }
+        VarType::Int => match value.parse::<i64>() {
+            Ok(n) => {
+                if let Some(ref rules) = spec.validate {
+                    if let Some(min) = rules.min {
+                        if n < min {
+                            return Err(format!("value {} < minimum {}", n, min));
                         }
                     }
-                    Ok(format!("int: {}", n))
-                }
-                Err(_) => Err(format!("expected int, got '{}'", mask_value(key, value))),
-            }
-        }
-        VarType::Float => {
-            match value.parse::<f64>() {
-                Ok(n) => {
-                    if let Some(ref rules) = spec.validate {
-                        if let Some(min_val) = rules.min_value {
-                            if n < min_val {
-                                return Err(format!("value {} < minimum {}", n, min_val));
-                            }
-                        }
-                        if let Some(max_val) = rules.max_value {
-                            if n > max_val {
-                                return Err(format!("value {} > maximum {}", n, max_val));
-                            }
+                    if let Some(max) = rules.max {
+                        if n > max {
+                            return Err(format!("value {} > maximum {}", n, max));
                         }
                     }
-                    Ok(format!("float: {}", n))
                 }
-                Err(_) => Err(format!("expected float, got '{}'", mask_value(key, value))),
+                Ok(format!("int: {}", n))
             }
-        }
+            Err(_) => Err(format!("expected int, got '{}'", mask_value(key, value))),
+        },
+        VarType::Float => match value.parse::<f64>() {
+            Ok(n) => {
+                if let Some(ref rules) = spec.validate {
+                    if let Some(min_val) = rules.min_value {
+                        if n < min_val {
+                            return Err(format!("value {} < minimum {}", n, min_val));
+                        }
+                    }
+                    if let Some(max_val) = rules.max_value {
+                        if n > max_val {
+                            return Err(format!("value {} > maximum {}", n, max_val));
+                        }
+                    }
+                }
+                Ok(format!("float: {}", n))
+            }
+            Err(_) => Err(format!("expected float, got '{}'", mask_value(key, value))),
+        },
         VarType::Bool => {
             let v = value.to_lowercase();
             if matches!(v.as_str(), "true" | "false" | "1" | "0" | "yes" | "no") {
@@ -1093,72 +1238,92 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
                 Err(format!("expected url, got '{}'", mask_value(key, value)))
             }
         }
-        VarType::Enum => {
-            match spec.values.as_ref() {
-                Some(allowed) => {
-                    if allowed.iter().any(|v| v == value) {
-                        Ok(format!("enum: {}", value))
-                    } else {
-                        Err(format!("expected one of {:?}", allowed))
-                    }
+        VarType::Enum => match spec.values.as_ref() {
+            Some(allowed) => {
+                if allowed.iter().any(|v| v == value) {
+                    Ok(format!("enum: {}", value))
+                } else {
+                    Err(format!("expected one of {:?}", allowed))
                 }
-                None => Err("enum type missing 'values' in schema".to_string()),
             }
-        }
+            None => Err("enum type missing 'values' in schema".to_string()),
+        },
         VarType::Uuid => {
             if uuid_regex().is_match(value) {
                 Ok("uuid".to_string())
             } else {
-                Err(format!("expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'", mask_value(key, value)))
+                Err(format!(
+                    "expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'",
+                    mask_value(key, value)
+                ))
             }
         }
         VarType::Email => {
             if email_regex().is_match(value) {
                 Ok("email".to_string())
             } else {
-                Err(format!("expected email (user@domain.tld), got '{}'", mask_value(key, value)))
+                Err(format!(
+                    "expected email (user@domain.tld), got '{}'",
+                    mask_value(key, value)
+                ))
             }
         }
         VarType::Ipv4 => {
             if is_valid_ipv4(value) {
                 Ok("ipv4".to_string())
             } else {
-                Err(format!("expected ipv4 (x.x.x.x where x is 0-255), got '{}'", mask_value(key, value)))
+                Err(format!(
+                    "expected ipv4 (x.x.x.x where x is 0-255), got '{}'",
+                    mask_value(key, value)
+                ))
             }
         }
         VarType::Semver => {
             if semver_regex().is_match(value) {
                 Ok("semver".to_string())
             } else {
-                Err(format!("expected semver (x.y.z[-prerelease][+build]), got '{}'", mask_value(key, value)))
+                Err(format!(
+                    "expected semver (x.y.z[-prerelease][+build]), got '{}'",
+                    mask_value(key, value)
+                ))
             }
         }
         VarType::Ipv6 => {
             if ipv6_regex().is_match(value) {
                 Ok("ipv6".to_string())
             } else {
-                Err(format!("expected ipv6 address, got '{}'", mask_value(key, value)))
+                Err(format!(
+                    "expected ipv6 address, got '{}'",
+                    mask_value(key, value)
+                ))
             }
         }
-        VarType::Port => {
-            match value.parse::<u16>() {
-                Ok(port) if port >= 1 => Ok(format!("port: {}", port)),
-                Ok(_) => Err("port must be between 1 and 65535".to_string()),
-                Err(_) => Err(format!("expected port (1-65535), got '{}'", mask_value(key, value))),
-            }
-        }
+        VarType::Port => match value.parse::<u16>() {
+            Ok(port) if port >= 1 => Ok(format!("port: {}", port)),
+            Ok(_) => Err("port must be between 1 and 65535".to_string()),
+            Err(_) => Err(format!(
+                "expected port (1-65535), got '{}'",
+                mask_value(key, value)
+            )),
+        },
         VarType::Date => {
             if date_regex().is_match(value) {
                 Ok("date".to_string())
             } else {
-                Err(format!("expected date (YYYY-MM-DD), got '{}'", mask_value(key, value)))
+                Err(format!(
+                    "expected date (YYYY-MM-DD), got '{}'",
+                    mask_value(key, value)
+                ))
             }
         }
         VarType::Hostname => {
             if value.len() <= 253 && hostname_regex().is_match(value) {
                 Ok("hostname".to_string())
             } else {
-                Err(format!("expected hostname (RFC 1123), got '{}'", mask_value(key, value)))
+                Err(format!(
+                    "expected hostname (RFC 1123), got '{}'",
+                    mask_value(key, value)
+                ))
             }
         }
     }
@@ -1198,8 +1363,13 @@ fn print_schema_error(error: &dyn std::fmt::Display) {
         // JSON parse error with location
         eprintln!("           {}", error_str);
         eprintln!();
-        eprintln!("           Tip: Check for trailing commas, missing quotes, or invalid JSON syntax.");
-    } else if error_str.contains("No such file") || error_str.contains("cannot find") || error_str.contains("not found") {
+        eprintln!(
+            "           Tip: Check for trailing commas, missing quotes, or invalid JSON syntax."
+        );
+    } else if error_str.contains("No such file")
+        || error_str.contains("cannot find")
+        || error_str.contains("not found")
+    {
         eprintln!("           File not found: {}", error_str);
         eprintln!();
         eprintln!("           Tip: Create a schema with: zenv init --example .env.example");
@@ -1283,23 +1453,33 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 if let Some(ref rules) = spec.validate {
                     if let Some(min_len) = rules.min_length {
                         if value.len() < min_len {
-                            errors.push(format!("{key}: length {} is less than minimum {}", value.len(), min_len));
+                            errors.push(format!(
+                                "{key}: length {} is less than minimum {}",
+                                value.len(),
+                                min_len
+                            ));
                         }
                     }
                     if let Some(max_len) = rules.max_length {
                         if value.len() > max_len {
-                            errors.push(format!("{key}: length {} exceeds maximum {}", value.len(), max_len));
+                            errors.push(format!(
+                                "{key}: length {} exceeds maximum {}",
+                                value.len(),
+                                max_len
+                            ));
                         }
                     }
                     if let Some(ref pattern) = rules.pattern {
                         match get_cached_regex(pattern) {
                             Ok(re) => {
                                 if !re.is_match(value) {
-                                    errors.push(format!("{key}: value '{value}' does not match pattern '{pattern}'"));
+                                    let masked = mask_value_with_spec(key, value, spec.secret);
+                                    errors.push(format!("{key}: value '{masked}' does not match pattern '{pattern}'"));
                                 }
                             }
                             Err(e) => {
-                                errors.push(format!("{key}: invalid regex pattern '{pattern}': {e}"));
+                                errors
+                                    .push(format!("{key}: invalid regex pattern '{pattern}': {e}"));
                             }
                         }
                     }
@@ -1309,14 +1489,19 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
             VarType::Int => {
                 match value.parse::<i64>() {
                     Err(_) => {
-                        errors.push(format!("{key}: expected int, got '{}'", mask_value(key, value)));
+                        errors.push(format!(
+                            "{key}: expected int, got '{}'",
+                            mask_value(key, value)
+                        ));
                     }
                     Ok(n) => {
                         // Apply int validation rules
                         if let Some(ref rules) = spec.validate {
                             if let Some(min) = rules.min {
                                 if n < min {
-                                    errors.push(format!("{key}: value {n} is less than minimum {min}"));
+                                    errors.push(format!(
+                                        "{key}: value {n} is less than minimum {min}"
+                                    ));
                                 }
                             }
                             if let Some(max) = rules.max {
@@ -1332,19 +1517,26 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
             VarType::Float => {
                 match value.parse::<f64>() {
                     Err(_) => {
-                        errors.push(format!("{key}: expected float, got '{}'", mask_value(key, value)));
+                        errors.push(format!(
+                            "{key}: expected float, got '{}'",
+                            mask_value(key, value)
+                        ));
                     }
                     Ok(n) => {
                         // Apply float validation rules
                         if let Some(ref rules) = spec.validate {
                             if let Some(min_val) = rules.min_value {
                                 if n < min_val {
-                                    errors.push(format!("{key}: value {n} is less than minimum {min_val}"));
+                                    errors.push(format!(
+                                        "{key}: value {n} is less than minimum {min_val}"
+                                    ));
                                 }
                             }
                             if let Some(max_val) = rules.max_value {
                                 if n > max_val {
-                                    errors.push(format!("{key}: value {n} exceeds maximum {max_val}"));
+                                    errors.push(format!(
+                                        "{key}: value {n} exceeds maximum {max_val}"
+                                    ));
                                 }
                             }
                         }
@@ -1356,13 +1548,19 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 let v = value.to_lowercase();
                 let ok = matches!(v.as_str(), "true" | "false" | "1" | "0" | "yes" | "no");
                 if !ok {
-                    errors.push(format!("{key}: expected bool (true/false/1/0/yes/no), got '{}'", mask_value(key, value)));
+                    errors.push(format!(
+                        "{key}: expected bool (true/false/1/0/yes/no), got '{}'",
+                        mask_value(key, value)
+                    ));
                 }
             }
 
             VarType::Url => {
                 if Url::parse(value).is_err() {
-                    errors.push(format!("{key}: expected url, got '{}'", mask_value(key, value)));
+                    errors.push(format!(
+                        "{key}: expected url, got '{}'",
+                        mask_value(key, value)
+                    ));
                 }
             }
 
@@ -1373,9 +1571,15 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                     }
                     Some(allowed) => {
                         if !allowed.iter().any(|v| v == value) {
-                            let mut error_msg = format!("{key}: expected one of {:?}, got '{}'", allowed, mask_value(key, value));
+                            let mut error_msg = format!(
+                                "{key}: expected one of {:?}, got '{}'",
+                                allowed,
+                                mask_value(key, value)
+                            );
                             // Add "Did you mean?" suggestion
-                            if let Some(suggestion) = suggestions::suggest_enum_value(value, allowed.iter()) {
+                            if let Some(suggestion) =
+                                suggestions::suggest_enum_value(value, allowed.iter())
+                            {
                                 error_msg.push_str(&format!("\n  {}", suggestion));
                             }
                             errors.push(error_msg);
@@ -1386,55 +1590,77 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
 
             VarType::Uuid => {
                 if !uuid_regex().is_match(value) {
-                    errors.push(format!("{key}: expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'", mask_value(key, value)));
+                    errors.push(format!(
+                        "{key}: expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'",
+                        mask_value(key, value)
+                    ));
                 }
             }
 
             VarType::Email => {
                 if !email_regex().is_match(value) {
-                    errors.push(format!("{key}: expected email (user@domain.tld), got '{}'", mask_value(key, value)));
+                    errors.push(format!(
+                        "{key}: expected email (user@domain.tld), got '{}'",
+                        mask_value(key, value)
+                    ));
                 }
             }
 
             VarType::Ipv4 => {
                 if !is_valid_ipv4(value) {
-                    errors.push(format!("{key}: expected ipv4 (x.x.x.x where x is 0-255), got '{}'", mask_value(key, value)));
+                    errors.push(format!(
+                        "{key}: expected ipv4 (x.x.x.x where x is 0-255), got '{}'",
+                        mask_value(key, value)
+                    ));
                 }
             }
 
             VarType::Semver => {
                 if !semver_regex().is_match(value) {
-                    errors.push(format!("{key}: expected semver (x.y.z[-prerelease][+build]), got '{}'", mask_value(key, value)));
+                    errors.push(format!(
+                        "{key}: expected semver (x.y.z[-prerelease][+build]), got '{}'",
+                        mask_value(key, value)
+                    ));
                 }
             }
 
             VarType::Ipv6 => {
                 if !ipv6_regex().is_match(value) {
-                    errors.push(format!("{key}: expected ipv6 address, got '{}'", mask_value(key, value)));
+                    errors.push(format!(
+                        "{key}: expected ipv6 address, got '{}'",
+                        mask_value(key, value)
+                    ));
                 }
             }
 
-            VarType::Port => {
-                match value.parse::<u16>() {
-                    Ok(port) if port >= 1 => {}
-                    Ok(_) => {
-                        errors.push(format!("{key}: port must be between 1 and 65535"));
-                    }
-                    Err(_) => {
-                        errors.push(format!("{key}: expected port (1-65535), got '{}'", mask_value(key, value)));
-                    }
+            VarType::Port => match value.parse::<u16>() {
+                Ok(port) if port >= 1 => {}
+                Ok(_) => {
+                    errors.push(format!("{key}: port must be between 1 and 65535"));
                 }
-            }
+                Err(_) => {
+                    errors.push(format!(
+                        "{key}: expected port (1-65535), got '{}'",
+                        mask_value(key, value)
+                    ));
+                }
+            },
 
             VarType::Date => {
                 if !date_regex().is_match(value) {
-                    errors.push(format!("{key}: expected date (YYYY-MM-DD), got '{}'", mask_value(key, value)));
+                    errors.push(format!(
+                        "{key}: expected date (YYYY-MM-DD), got '{}'",
+                        mask_value(key, value)
+                    ));
                 }
             }
 
             VarType::Hostname => {
                 if value.len() > 253 || !hostname_regex().is_match(value) {
-                    errors.push(format!("{key}: expected hostname (RFC 1123), got '{}'", mask_value(key, value)));
+                    errors.push(format!(
+                        "{key}: expected hostname (RFC 1123), got '{}'",
+                        mask_value(key, value)
+                    ));
                 }
             }
         }
@@ -1491,8 +1717,8 @@ pub fn validate_files(
         .map_err(|e| format!("Failed to parse {}: {}", env_path, e))?;
 
     // Interpolate variables
-    let env_map = envfile::interpolate_env(env_map)
-        .map_err(|e| format!("Interpolation error: {}", e))?;
+    let env_map =
+        envfile::interpolate_env(env_map).map_err(|e| format!("Interpolation error: {}", e))?;
 
     // Validate and return errors
     Ok(validate(&loaded_schema, &env_map))
@@ -1504,11 +1730,17 @@ mod tests {
     use crate::schema::{ValidationRule, VarSpec, VarType};
 
     fn make_schema(entries: Vec<(&str, VarSpec)>) -> Schema {
-        entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+        entries
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
     }
 
     fn make_env(entries: Vec<(&str, &str)>) -> HashMap<String, String> {
-        entries.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        entries
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn string_spec(required: bool) -> VarSpec {
@@ -1737,13 +1969,16 @@ mod tests {
 
     #[test]
     fn test_enum_type_missing_values() {
-        let schema = make_schema(vec![("ENV", VarSpec {
-            var_type: VarType::Enum,
-            required: false,
-            description: None,
-            values: None,
-            ..Default::default()
-        })]);
+        let schema = make_schema(vec![(
+            "ENV",
+            VarSpec {
+                var_type: VarType::Enum,
+                required: false,
+                description: None,
+                values: None,
+                ..Default::default()
+            },
+        )]);
         let env = make_env(vec![("ENV", "dev")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
@@ -1778,14 +2013,17 @@ mod tests {
 
     #[test]
     fn test_required_with_default_ok() {
-        let schema = make_schema(vec![("PORT", VarSpec {
-            var_type: VarType::Int,
-            required: true,
-            description: None,
-            values: None,
-            default: Some(serde_json::json!(3000)),
-            ..Default::default()
-        })]);
+        let schema = make_schema(vec![(
+            "PORT",
+            VarSpec {
+                var_type: VarType::Int,
+                required: true,
+                description: None,
+                values: None,
+                default: Some(serde_json::json!(3000)),
+                ..Default::default()
+            },
+        )]);
         let env = make_env(vec![]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
@@ -1824,14 +2062,17 @@ mod tests {
 
     #[test]
     fn test_int_min_valid() {
-        let schema = make_schema(vec![("PORT", VarSpec {
-            var_type: VarType::Int,
-            validate: Some(ValidationRule {
-                min: Some(1024),
+        let schema = make_schema(vec![(
+            "PORT",
+            VarSpec {
+                var_type: VarType::Int,
+                validate: Some(ValidationRule {
+                    min: Some(1024),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("PORT", "3000")]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
@@ -1839,14 +2080,17 @@ mod tests {
 
     #[test]
     fn test_int_min_invalid() {
-        let schema = make_schema(vec![("PORT", VarSpec {
-            var_type: VarType::Int,
-            validate: Some(ValidationRule {
-                min: Some(1024),
+        let schema = make_schema(vec![(
+            "PORT",
+            VarSpec {
+                var_type: VarType::Int,
+                validate: Some(ValidationRule {
+                    min: Some(1024),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("PORT", "80")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
@@ -1855,14 +2099,17 @@ mod tests {
 
     #[test]
     fn test_int_max_valid() {
-        let schema = make_schema(vec![("PORT", VarSpec {
-            var_type: VarType::Int,
-            validate: Some(ValidationRule {
-                max: Some(65535),
+        let schema = make_schema(vec![(
+            "PORT",
+            VarSpec {
+                var_type: VarType::Int,
+                validate: Some(ValidationRule {
+                    max: Some(65535),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("PORT", "8080")]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
@@ -1870,14 +2117,17 @@ mod tests {
 
     #[test]
     fn test_int_max_invalid() {
-        let schema = make_schema(vec![("PORT", VarSpec {
-            var_type: VarType::Int,
-            validate: Some(ValidationRule {
-                max: Some(65535),
+        let schema = make_schema(vec![(
+            "PORT",
+            VarSpec {
+                var_type: VarType::Int,
+                validate: Some(ValidationRule {
+                    max: Some(65535),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("PORT", "70000")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
@@ -1886,15 +2136,18 @@ mod tests {
 
     #[test]
     fn test_int_min_max_range_valid() {
-        let schema = make_schema(vec![("PORT", VarSpec {
-            var_type: VarType::Int,
-            validate: Some(ValidationRule {
-                min: Some(1024),
-                max: Some(65535),
+        let schema = make_schema(vec![(
+            "PORT",
+            VarSpec {
+                var_type: VarType::Int,
+                validate: Some(ValidationRule {
+                    min: Some(1024),
+                    max: Some(65535),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("PORT", "8080")]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
@@ -1904,14 +2157,17 @@ mod tests {
 
     #[test]
     fn test_float_min_value_valid() {
-        let schema = make_schema(vec![("RATE", VarSpec {
-            var_type: VarType::Float,
-            validate: Some(ValidationRule {
-                min_value: Some(0.0),
+        let schema = make_schema(vec![(
+            "RATE",
+            VarSpec {
+                var_type: VarType::Float,
+                validate: Some(ValidationRule {
+                    min_value: Some(0.0),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("RATE", "0.5")]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
@@ -1919,14 +2175,17 @@ mod tests {
 
     #[test]
     fn test_float_min_value_invalid() {
-        let schema = make_schema(vec![("RATE", VarSpec {
-            var_type: VarType::Float,
-            validate: Some(ValidationRule {
-                min_value: Some(0.0),
+        let schema = make_schema(vec![(
+            "RATE",
+            VarSpec {
+                var_type: VarType::Float,
+                validate: Some(ValidationRule {
+                    min_value: Some(0.0),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("RATE", "-0.5")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
@@ -1935,14 +2194,17 @@ mod tests {
 
     #[test]
     fn test_float_max_value_valid() {
-        let schema = make_schema(vec![("RATE", VarSpec {
-            var_type: VarType::Float,
-            validate: Some(ValidationRule {
-                max_value: Some(1.0),
+        let schema = make_schema(vec![(
+            "RATE",
+            VarSpec {
+                var_type: VarType::Float,
+                validate: Some(ValidationRule {
+                    max_value: Some(1.0),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("RATE", "0.75")]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
@@ -1950,14 +2212,17 @@ mod tests {
 
     #[test]
     fn test_float_max_value_invalid() {
-        let schema = make_schema(vec![("RATE", VarSpec {
-            var_type: VarType::Float,
-            validate: Some(ValidationRule {
-                max_value: Some(1.0),
+        let schema = make_schema(vec![(
+            "RATE",
+            VarSpec {
+                var_type: VarType::Float,
+                validate: Some(ValidationRule {
+                    max_value: Some(1.0),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("RATE", "1.5")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
@@ -1968,14 +2233,17 @@ mod tests {
 
     #[test]
     fn test_string_min_length_valid() {
-        let schema = make_schema(vec![("API_KEY", VarSpec {
-            var_type: VarType::String,
-            validate: Some(ValidationRule {
-                min_length: Some(8),
+        let schema = make_schema(vec![(
+            "API_KEY",
+            VarSpec {
+                var_type: VarType::String,
+                validate: Some(ValidationRule {
+                    min_length: Some(8),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("API_KEY", "abcdefghij")]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
@@ -1983,14 +2251,17 @@ mod tests {
 
     #[test]
     fn test_string_min_length_invalid() {
-        let schema = make_schema(vec![("API_KEY", VarSpec {
-            var_type: VarType::String,
-            validate: Some(ValidationRule {
-                min_length: Some(8),
+        let schema = make_schema(vec![(
+            "API_KEY",
+            VarSpec {
+                var_type: VarType::String,
+                validate: Some(ValidationRule {
+                    min_length: Some(8),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("API_KEY", "short")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
@@ -1999,14 +2270,17 @@ mod tests {
 
     #[test]
     fn test_string_max_length_valid() {
-        let schema = make_schema(vec![("CODE", VarSpec {
-            var_type: VarType::String,
-            validate: Some(ValidationRule {
-                max_length: Some(10),
+        let schema = make_schema(vec![(
+            "CODE",
+            VarSpec {
+                var_type: VarType::String,
+                validate: Some(ValidationRule {
+                    max_length: Some(10),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("CODE", "ABC123")]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
@@ -2014,14 +2288,17 @@ mod tests {
 
     #[test]
     fn test_string_max_length_invalid() {
-        let schema = make_schema(vec![("CODE", VarSpec {
-            var_type: VarType::String,
-            validate: Some(ValidationRule {
-                max_length: Some(5),
+        let schema = make_schema(vec![(
+            "CODE",
+            VarSpec {
+                var_type: VarType::String,
+                validate: Some(ValidationRule {
+                    max_length: Some(5),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("CODE", "TOOLONG123")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
@@ -2032,14 +2309,17 @@ mod tests {
 
     #[test]
     fn test_string_pattern_valid() {
-        let schema = make_schema(vec![("EMAIL", VarSpec {
-            var_type: VarType::String,
-            validate: Some(ValidationRule {
-                pattern: Some(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$".to_string()),
+        let schema = make_schema(vec![(
+            "EMAIL",
+            VarSpec {
+                var_type: VarType::String,
+                validate: Some(ValidationRule {
+                    pattern: Some(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$".to_string()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("EMAIL", "user@example.com")]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
@@ -2047,14 +2327,17 @@ mod tests {
 
     #[test]
     fn test_string_pattern_invalid() {
-        let schema = make_schema(vec![("EMAIL", VarSpec {
-            var_type: VarType::String,
-            validate: Some(ValidationRule {
-                pattern: Some(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$".to_string()),
+        let schema = make_schema(vec![(
+            "EMAIL",
+            VarSpec {
+                var_type: VarType::String,
+                validate: Some(ValidationRule {
+                    pattern: Some(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$".to_string()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("EMAIL", "not-an-email")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
@@ -2063,14 +2346,17 @@ mod tests {
 
     #[test]
     fn test_string_pattern_simple_valid() {
-        let schema = make_schema(vec![("VERSION", VarSpec {
-            var_type: VarType::String,
-            validate: Some(ValidationRule {
-                pattern: Some(r"^v\d+\.\d+\.\d+$".to_string()),
+        let schema = make_schema(vec![(
+            "VERSION",
+            VarSpec {
+                var_type: VarType::String,
+                validate: Some(ValidationRule {
+                    pattern: Some(r"^v\d+\.\d+\.\d+$".to_string()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("VERSION", "v1.2.3")]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
@@ -2078,14 +2364,17 @@ mod tests {
 
     #[test]
     fn test_string_pattern_invalid_regex() {
-        let schema = make_schema(vec![("FOO", VarSpec {
-            var_type: VarType::String,
-            validate: Some(ValidationRule {
-                pattern: Some(r"[invalid".to_string()),
+        let schema = make_schema(vec![(
+            "FOO",
+            VarSpec {
+                var_type: VarType::String,
+                validate: Some(ValidationRule {
+                    pattern: Some(r"[invalid".to_string()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("FOO", "bar")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
@@ -2096,16 +2385,22 @@ mod tests {
 
     #[test]
     fn test_string_length_and_pattern_valid() {
-        let schema = make_schema(vec![("UUID", VarSpec {
-            var_type: VarType::String,
-            validate: Some(ValidationRule {
-                min_length: Some(36),
-                max_length: Some(36),
-                pattern: Some(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".to_string()),
+        let schema = make_schema(vec![(
+            "UUID",
+            VarSpec {
+                var_type: VarType::String,
+                validate: Some(ValidationRule {
+                    min_length: Some(36),
+                    max_length: Some(36),
+                    pattern: Some(
+                        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                            .to_string(),
+                    ),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("UUID", "550e8400-e29b-41d4-a716-446655440000")]);
         let errors = validate(&schema, &env);
         assert!(errors.is_empty());
@@ -2113,15 +2408,18 @@ mod tests {
 
     #[test]
     fn test_string_multiple_validation_failures() {
-        let schema = make_schema(vec![("CODE", VarSpec {
-            var_type: VarType::String,
-            validate: Some(ValidationRule {
-                min_length: Some(10),
-                pattern: Some(r"^[A-Z]+$".to_string()),
+        let schema = make_schema(vec![(
+            "CODE",
+            VarSpec {
+                var_type: VarType::String,
+                validate: Some(ValidationRule {
+                    min_length: Some(10),
+                    pattern: Some(r"^[A-Z]+$".to_string()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        })]);
+            },
+        )]);
         let env = make_env(vec![("CODE", "abc")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 2); // too short AND wrong pattern
@@ -2307,7 +2605,10 @@ mod tests {
 
     #[test]
     fn test_enum_with_suggestion() {
-        let schema = make_schema(vec![("NODE_ENV", enum_spec(vec!["development", "staging", "production"]))]);
+        let schema = make_schema(vec![(
+            "NODE_ENV",
+            enum_spec(vec!["development", "staging", "production"]),
+        )]);
         let env = make_env(vec![("NODE_ENV", "dev")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
@@ -2711,10 +3012,14 @@ mod tests {
             "json", // format = json (invalid with watch)
             None,   // verify_hash
             None,   // ca_cert
+            None,   // rate_limit_seconds
         );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("JSON format is not supported in watch mode"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("JSON format is not supported in watch mode"));
 
         // Cleanup
         let _ = std::fs::remove_file(&schema_path);
@@ -2808,10 +3113,12 @@ mod tests {
         let issues = errors_to_issues(errors, &schema);
 
         // Should have both warnings and errors
-        let warnings: Vec<_> = issues.iter()
+        let warnings: Vec<_> = issues
+            .iter()
             .filter(|i| i.severity == crate::schema::Severity::Warning)
             .collect();
-        let errors_list: Vec<_> = issues.iter()
+        let errors_list: Vec<_> = issues
+            .iter()
             .filter(|i| i.severity == crate::schema::Severity::Error)
             .collect();
 
@@ -2841,19 +3148,25 @@ mod tests {
         let hash1 = hash_content(content1);
         let hash2 = hash_content(content2);
 
-        assert_ne!(hash1, hash2, "Different content should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "Different content should produce different hashes"
+        );
     }
 
     #[test]
     fn test_detect_changes_added_key() {
-        let old: std::collections::HashMap<String, String> = [
-            ("FOO".to_string(), "bar".to_string()),
-        ].into_iter().collect();
+        let old: std::collections::HashMap<String, String> =
+            [("FOO".to_string(), "bar".to_string())]
+                .into_iter()
+                .collect();
 
         let new: std::collections::HashMap<String, String> = [
             ("FOO".to_string(), "bar".to_string()),
             ("BAZ".to_string(), "qux".to_string()),
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
 
         let changes = detect_changes(&old, &new);
         assert!(!changes.is_empty(), "Should detect added key");
@@ -2866,11 +3179,14 @@ mod tests {
         let old: std::collections::HashMap<String, String> = [
             ("FOO".to_string(), "bar".to_string()),
             ("BAZ".to_string(), "qux".to_string()),
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
 
-        let new: std::collections::HashMap<String, String> = [
-            ("FOO".to_string(), "bar".to_string()),
-        ].into_iter().collect();
+        let new: std::collections::HashMap<String, String> =
+            [("FOO".to_string(), "bar".to_string())]
+                .into_iter()
+                .collect();
 
         let changes = detect_changes(&old, &new);
         assert!(!changes.is_empty(), "Should detect removed key");
@@ -2879,13 +3195,15 @@ mod tests {
 
     #[test]
     fn test_detect_changes_modified_key() {
-        let old: std::collections::HashMap<String, String> = [
-            ("FOO".to_string(), "bar".to_string()),
-        ].into_iter().collect();
+        let old: std::collections::HashMap<String, String> =
+            [("FOO".to_string(), "bar".to_string())]
+                .into_iter()
+                .collect();
 
-        let new: std::collections::HashMap<String, String> = [
-            ("FOO".to_string(), "baz".to_string()),
-        ].into_iter().collect();
+        let new: std::collections::HashMap<String, String> =
+            [("FOO".to_string(), "baz".to_string())]
+                .into_iter()
+                .collect();
 
         let changes = detect_changes(&old, &new);
         assert!(!changes.is_empty(), "Should detect modified key");
@@ -2894,14 +3212,18 @@ mod tests {
 
     #[test]
     fn test_detect_changes_no_changes() {
-        let old: std::collections::HashMap<String, String> = [
-            ("FOO".to_string(), "bar".to_string()),
-        ].into_iter().collect();
+        let old: std::collections::HashMap<String, String> =
+            [("FOO".to_string(), "bar".to_string())]
+                .into_iter()
+                .collect();
 
         let new = old.clone();
 
         let changes = detect_changes(&old, &new);
-        assert!(changes.is_empty(), "Should detect no changes for identical maps");
+        assert!(
+            changes.is_empty(),
+            "Should detect no changes for identical maps"
+        );
     }
 
     #[test]
@@ -2910,13 +3232,17 @@ mod tests {
             ("KEEP".to_string(), "same".to_string()),
             ("REMOVE".to_string(), "gone".to_string()),
             ("MODIFY".to_string(), "old".to_string()),
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
 
         let new: std::collections::HashMap<String, String> = [
             ("KEEP".to_string(), "same".to_string()),
             ("ADD".to_string(), "new".to_string()),
             ("MODIFY".to_string(), "new".to_string()),
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
 
         let changes = detect_changes(&old, &new);
         // Should have: 1 removed, 1 added, 1 modified = 3 changes
@@ -2935,9 +3261,10 @@ mod tests {
     #[test]
     fn test_watch_state_add_first_key() {
         let empty: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        let one_key: std::collections::HashMap<String, String> = [
-            ("FIRST".to_string(), "value".to_string()),
-        ].into_iter().collect();
+        let one_key: std::collections::HashMap<String, String> =
+            [("FIRST".to_string(), "value".to_string())]
+                .into_iter()
+                .collect();
 
         let changes = detect_changes(&empty, &one_key);
         assert_eq!(changes.len(), 1, "Adding first key should be one change");
@@ -2945,9 +3272,10 @@ mod tests {
 
     #[test]
     fn test_watch_state_remove_last_key() {
-        let one_key: std::collections::HashMap<String, String> = [
-            ("LAST".to_string(), "value".to_string()),
-        ].into_iter().collect();
+        let one_key: std::collections::HashMap<String, String> =
+            [("LAST".to_string(), "value".to_string())]
+                .into_iter()
+                .collect();
         let empty: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
         let changes = detect_changes(&one_key, &empty);
@@ -2956,13 +3284,16 @@ mod tests {
 
     #[test]
     fn test_watch_state_value_whitespace_change() {
-        let old: std::collections::HashMap<String, String> = [
-            ("KEY".to_string(), "value".to_string()),
-        ].into_iter().collect();
+        let old: std::collections::HashMap<String, String> =
+            [("KEY".to_string(), "value".to_string())]
+                .into_iter()
+                .collect();
 
         let new: std::collections::HashMap<String, String> = [
             ("KEY".to_string(), "value ".to_string()), // trailing space
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
 
         let changes = detect_changes(&old, &new);
         assert_eq!(changes.len(), 1, "Whitespace change should be detected");
@@ -2970,13 +3301,15 @@ mod tests {
 
     #[test]
     fn test_watch_state_case_sensitive_keys() {
-        let old: std::collections::HashMap<String, String> = [
-            ("KEY".to_string(), "value".to_string()),
-        ].into_iter().collect();
+        let old: std::collections::HashMap<String, String> =
+            [("KEY".to_string(), "value".to_string())]
+                .into_iter()
+                .collect();
 
-        let new: std::collections::HashMap<String, String> = [
-            ("key".to_string(), "value".to_string()),
-        ].into_iter().collect();
+        let new: std::collections::HashMap<String, String> =
+            [("key".to_string(), "value".to_string())]
+                .into_iter()
+                .collect();
 
         let changes = detect_changes(&old, &new);
         // KEY removed, key added = 2 changes
@@ -2985,13 +3318,13 @@ mod tests {
 
     #[test]
     fn test_watch_state_empty_value() {
-        let with_value: std::collections::HashMap<String, String> = [
-            ("KEY".to_string(), "value".to_string()),
-        ].into_iter().collect();
+        let with_value: std::collections::HashMap<String, String> =
+            [("KEY".to_string(), "value".to_string())]
+                .into_iter()
+                .collect();
 
-        let empty_value: std::collections::HashMap<String, String> = [
-            ("KEY".to_string(), "".to_string()),
-        ].into_iter().collect();
+        let empty_value: std::collections::HashMap<String, String> =
+            [("KEY".to_string(), "".to_string())].into_iter().collect();
 
         let changes = detect_changes(&with_value, &empty_value);
         assert_eq!(changes.len(), 1, "Value to empty should be a change");
@@ -3038,7 +3371,10 @@ mod tests {
         let schema = make_schema(vec![("VERSION", semver_spec(true))]);
         let env = make_env(vec![("VERSION", "1.0.0-alpha")]);
         let errors = validate(&schema, &env);
-        assert!(errors.is_empty(), "Semver with alpha prerelease should be valid");
+        assert!(
+            errors.is_empty(),
+            "Semver with alpha prerelease should be valid"
+        );
     }
 
     #[test]
@@ -3046,6 +3382,9 @@ mod tests {
         let schema = make_schema(vec![("VERSION", semver_spec(true))]);
         let env = make_env(vec![("VERSION", "2.1.0-beta.1")]);
         let errors = validate(&schema, &env);
-        assert!(errors.is_empty(), "Semver with numbered prerelease should be valid");
+        assert!(
+            errors.is_empty(),
+            "Semver with numbered prerelease should be valid"
+        );
     }
 }

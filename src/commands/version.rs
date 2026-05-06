@@ -211,7 +211,11 @@ env-checker = "2.0.0"    # Another package"#;
             }
         }
 
-        assert_eq!(result, Some("0.3.8".to_string()), "Should match our package only");
+        assert_eq!(
+            result,
+            Some("0.3.8".to_string()),
+            "Should match our package only"
+        );
     }
 
     #[test]
@@ -232,7 +236,11 @@ zorath-env = "0.3.8"    # Our package"#;
             }
         }
 
-        assert_eq!(result, Some("0.3.8".to_string()), "Should match exact package name");
+        assert_eq!(
+            result,
+            Some("0.3.8".to_string()),
+            "Should match exact package name"
+        );
     }
 
     #[test]

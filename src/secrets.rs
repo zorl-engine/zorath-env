@@ -1,6 +1,6 @@
+use regex::Regex;
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use regex::Regex;
 
 use crate::schema::Schema;
 
@@ -75,8 +75,9 @@ pub fn detect_secrets(
             continue;
         }
 
-        // Check for high-entropy strings (potential secrets)
-        if is_high_entropy(value) && value.len() >= 16 {
+        // Check for high-entropy strings (potential secrets).
+        // is_high_entropy already enforces the >=16 length floor internally.
+        if is_high_entropy(value) {
             let line = line_numbers.get(key).copied().unwrap_or(0);
             warnings.push(SecretWarning {
                 key: key.clone(),
@@ -94,83 +95,91 @@ pub fn detect_secrets(
 
 fn get_secret_patterns() -> &'static [SecretPattern] {
     static PATTERNS: OnceLock<Vec<SecretPattern>> = OnceLock::new();
-    PATTERNS.get_or_init(|| vec![
-        // AWS Access Key ID
-        SecretPattern {
-            name: "AWS Access Key ID",
-            pattern: Regex::new(r"^AKIA[0-9A-Z]{16}$").unwrap(),
-        },
-        // AWS Secret Access Key (40 char base64-ish)
-        SecretPattern {
-            name: "AWS Secret Access Key",
-            pattern: Regex::new(r"^[A-Za-z0-9/+=]{40}$").unwrap(),
-        },
-        // Stripe API keys
-        SecretPattern {
-            name: "Stripe API key",
-            pattern: Regex::new(r"^(sk|pk)_(live|test)_[0-9a-zA-Z]{24,}$").unwrap(),
-        },
-        // GitHub tokens
-        SecretPattern {
-            name: "GitHub token",
-            pattern: Regex::new(r"^(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}$").unwrap(),
-        },
-        // GitLab tokens
-        SecretPattern {
-            name: "GitLab token",
-            pattern: Regex::new(r"^glpat-[A-Za-z0-9\-]{20,}$").unwrap(),
-        },
-        // Slack tokens
-        SecretPattern {
-            name: "Slack token",
-            pattern: Regex::new(r"^xox[baprs]-[0-9A-Za-z\-]+$").unwrap(),
-        },
-        // Private key headers
-        SecretPattern {
-            name: "Private key",
-            pattern: Regex::new(r"-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----").unwrap(),
-        },
-        // JWT tokens
-        SecretPattern {
-            name: "JWT token",
-            pattern: Regex::new(r"^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$").unwrap(),
-        },
-        // Google API keys
-        SecretPattern {
-            name: "Google API key",
-            pattern: Regex::new(r"^AIza[0-9A-Za-z\-_]{35}$").unwrap(),
-        },
-        // Heroku API key
-        SecretPattern {
-            name: "Heroku API key",
-            pattern: Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").unwrap(),
-        },
-        // Generic API key patterns (common prefixes)
-        SecretPattern {
-            name: "API key (common prefix)",
-            pattern: Regex::new(r"^(api[_-]?key|apikey|api[_-]?secret)[_-]?[0-9a-zA-Z]{16,}$").unwrap(),
-        },
-        // npm tokens
-        SecretPattern {
-            name: "npm token",
-            pattern: Regex::new(r"^npm_[A-Za-z0-9]{36}$").unwrap(),
-        },
-        // SendGrid API key
-        SecretPattern {
-            name: "SendGrid API key",
-            pattern: Regex::new(r"^SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$").unwrap(),
-        },
-        // Twilio credentials
-        SecretPattern {
-            name: "Twilio credentials",
-            pattern: Regex::new(r"^(AC[a-z0-9]{32}|SK[a-z0-9]{32})$").unwrap(),
-        },
-        // Mailchimp API key
-        SecretPattern {
-            name: "Mailchimp API key",
-            pattern: Regex::new(r"^[a-z0-9]{32}-us[0-9]{1,2}$").unwrap(),
-        },
-    ])
+    PATTERNS.get_or_init(|| {
+        vec![
+            // AWS Access Key ID
+            SecretPattern {
+                name: "AWS Access Key ID",
+                pattern: Regex::new(r"^AKIA[0-9A-Z]{16}$").unwrap(),
+            },
+            // AWS Secret Access Key (40 char base64-ish)
+            SecretPattern {
+                name: "AWS Secret Access Key",
+                pattern: Regex::new(r"^[A-Za-z0-9/+=]{40}$").unwrap(),
+            },
+            // Stripe API keys
+            SecretPattern {
+                name: "Stripe API key",
+                pattern: Regex::new(r"^(sk|pk)_(live|test)_[0-9a-zA-Z]{24,}$").unwrap(),
+            },
+            // GitHub tokens
+            SecretPattern {
+                name: "GitHub token",
+                pattern: Regex::new(r"^(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}$").unwrap(),
+            },
+            // GitLab tokens
+            SecretPattern {
+                name: "GitLab token",
+                pattern: Regex::new(r"^glpat-[A-Za-z0-9\-]{20,}$").unwrap(),
+            },
+            // Slack tokens
+            SecretPattern {
+                name: "Slack token",
+                pattern: Regex::new(r"^xox[baprs]-[0-9A-Za-z\-]+$").unwrap(),
+            },
+            // Private key headers
+            SecretPattern {
+                name: "Private key",
+                pattern: Regex::new(r"-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----")
+                    .unwrap(),
+            },
+            // JWT tokens
+            SecretPattern {
+                name: "JWT token",
+                pattern: Regex::new(r"^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
+                    .unwrap(),
+            },
+            // Google API keys
+            SecretPattern {
+                name: "Google API key",
+                pattern: Regex::new(r"^AIza[0-9A-Za-z\-_]{35}$").unwrap(),
+            },
+            // Heroku API key
+            SecretPattern {
+                name: "Heroku API key",
+                pattern: Regex::new(
+                    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                )
+                .unwrap(),
+            },
+            // Generic API key patterns (common prefixes)
+            SecretPattern {
+                name: "API key (common prefix)",
+                pattern: Regex::new(r"^(api[_-]?key|apikey|api[_-]?secret)[_-]?[0-9a-zA-Z]{16,}$")
+                    .unwrap(),
+            },
+            // npm tokens
+            SecretPattern {
+                name: "npm token",
+                pattern: Regex::new(r"^npm_[A-Za-z0-9]{36}$").unwrap(),
+            },
+            // SendGrid API key
+            SecretPattern {
+                name: "SendGrid API key",
+                pattern: Regex::new(r"^SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$").unwrap(),
+            },
+            // Twilio credentials
+            SecretPattern {
+                name: "Twilio credentials",
+                pattern: Regex::new(r"^(AC[a-z0-9]{32}|SK[a-z0-9]{32})$").unwrap(),
+            },
+            // Mailchimp API key
+            SecretPattern {
+                name: "Mailchimp API key",
+                pattern: Regex::new(r"^[a-z0-9]{32}-us[0-9]{1,2}$").unwrap(),
+            },
+        ]
+    })
 }
 
 /// Check if a string has high entropy (randomness) - indicator of secrets
@@ -192,11 +201,18 @@ fn is_high_entropy(s: &str) -> bool {
 
     // Skip common placeholder values
     let lower = s.to_lowercase();
-    if lower.contains("example") || lower.contains("placeholder") ||
-       lower.contains("changeme") || lower.contains("your_") ||
-       lower.contains("xxx") || lower == "development" ||
-       lower == "production" || lower == "staging" ||
-       lower == "localhost" || lower == "true" || lower == "false" {
+    if lower.contains("example")
+        || lower.contains("placeholder")
+        || lower.contains("changeme")
+        || lower.contains("your_")
+        || lower.contains("xxx")
+        || lower == "development"
+        || lower == "production"
+        || lower == "staging"
+        || lower == "localhost"
+        || lower == "true"
+        || lower == "false"
+    {
         return false;
     }
 
@@ -242,16 +258,22 @@ fn contains_url_password(value: &str) -> bool {
     static URL_PASS_CAPTURE: OnceLock<Regex> = OnceLock::new();
 
     let url_with_pass = URL_PASS_DETECT.get_or_init(|| Regex::new(r"://[^:]+:[^@]+@").unwrap());
-    let url_pass_capture = URL_PASS_CAPTURE.get_or_init(|| Regex::new(r"://[^:]+:([^@]+)@").unwrap());
+    let url_pass_capture =
+        URL_PASS_CAPTURE.get_or_init(|| Regex::new(r"://[^:]+:([^@]+)@").unwrap());
 
     if url_with_pass.is_match(value) {
         if let Some(caps) = url_pass_capture.captures(value) {
             if let Some(password) = caps.get(1) {
                 let pass = password.as_str().to_lowercase();
                 // Skip common placeholders
-                if pass == "password" || pass == "pass" || pass == "secret" ||
-                   pass.contains("xxx") || pass.contains("example") ||
-                   pass.contains("changeme") || pass.contains("your") {
+                if pass == "password"
+                    || pass == "pass"
+                    || pass == "secret"
+                    || pass.contains("xxx")
+                    || pass.contains("example")
+                    || pass.contains("changeme")
+                    || pass.contains("your")
+                {
                     return false;
                 }
                 return true;
@@ -261,13 +283,15 @@ fn contains_url_password(value: &str) -> bool {
     false
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn make_env(pairs: Vec<(&str, &str)>) -> HashMap<String, String> {
-        pairs.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn make_lines(content: &str) -> HashMap<String, usize> {
@@ -294,7 +318,10 @@ mod tests {
 
     #[test]
     fn test_detects_github_token() {
-        let env = make_env(vec![("GH_TOKEN", "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")]);
+        let env = make_env(vec![(
+            "GH_TOKEN",
+            "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        )]);
         let content = "GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         let warnings = detect_secrets(&env, &make_lines(content), None);
         assert_eq!(warnings.len(), 1);
@@ -312,7 +339,10 @@ mod tests {
 
     #[test]
     fn test_detects_url_with_password() {
-        let env = make_env(vec![("DB_URL", "postgres://user:actualPassword123@host/db")]);
+        let env = make_env(vec![(
+            "DB_URL",
+            "postgres://user:actualPassword123@host/db",
+        )]);
         let content = "DB_URL=postgres://user:actualPassword123@host/db";
         let warnings = detect_secrets(&env, &make_lines(content), None);
         assert_eq!(warnings.len(), 1);

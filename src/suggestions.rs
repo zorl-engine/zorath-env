@@ -35,7 +35,11 @@ pub fn levenshtein_distance(a: &str, b: &str) -> usize {
     // Fill in the rest of the matrix
     for i in 1..=a_len {
         for j in 1..=b_len {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
 
             matrix[i][j] = (matrix[i - 1][j] + 1) // deletion
                 .min(matrix[i][j - 1] + 1) // insertion
@@ -83,8 +87,22 @@ pub fn suggest_variable_name<'a>(
     let max_distance = 3;
 
     let candidates: Vec<&str> = schema_keys.into_iter().map(|s| s.as_str()).collect();
-    find_closest_match(unknown_key, candidates, max_distance)
-        .map(|(candidate, distance)| format!("Did you mean {}? (edit distance: {})", candidate, distance))
+
+    // Prefix match first (e.g., DATABASE -> DATABASE_URL) so common
+    // truncation typos beyond Levenshtein's max_distance still get a hint.
+    let lower_unknown = unknown_key.to_lowercase();
+    if !lower_unknown.is_empty() {
+        for candidate in &candidates {
+            let lower_candidate = candidate.to_lowercase();
+            if lower_candidate.starts_with(&lower_unknown) && *candidate != unknown_key {
+                return Some(format!("Did you mean {}? (prefix match)", candidate));
+            }
+        }
+    }
+
+    find_closest_match(unknown_key, candidates, max_distance).map(|(candidate, distance)| {
+        format!("Did you mean {}? (edit distance: {})", candidate, distance)
+    })
 }
 
 /// Suggest an enum value from allowed values
@@ -99,14 +117,22 @@ pub fn suggest_enum_value<'a>(
 
     // First check for prefix match (e.g., "dev" -> "development")
     for candidate in &candidates {
-        if candidate.to_lowercase().starts_with(&invalid_value.to_lowercase()) && candidate != &invalid_value {
+        if candidate
+            .to_lowercase()
+            .starts_with(&invalid_value.to_lowercase())
+            && candidate != &invalid_value
+        {
             return Some(format!("Did you mean \"{}\"? (prefix match)", candidate));
         }
     }
 
     // Then check for edit distance
-    find_closest_match(invalid_value, candidates, max_distance)
-        .map(|(candidate, distance)| format!("Did you mean \"{}\"? (edit distance: {})", candidate, distance))
+    find_closest_match(invalid_value, candidates, max_distance).map(|(candidate, distance)| {
+        format!(
+            "Did you mean \"{}\"? (edit distance: {})",
+            candidate, distance
+        )
+    })
 }
 
 #[cfg(test)]
@@ -195,6 +221,30 @@ mod tests {
         ];
         let suggestion = suggest_variable_name("COMPLETELY_UNKNOWN", schema_keys.iter());
         assert!(suggestion.is_none());
+    }
+
+    #[test]
+    fn test_suggest_variable_name_prefix_match() {
+        // Prefix beyond Levenshtein max_distance (3) should still suggest.
+        // DATABASE -> DATABASE_URL has edit distance 4, but matches as prefix.
+        let schema_keys = [
+            "DATABASE_URL".to_string(),
+            "PORT".to_string(),
+            "NODE_ENV".to_string(),
+        ];
+        let suggestion = suggest_variable_name("DATABASE", schema_keys.iter());
+        assert!(suggestion.is_some());
+        let s = suggestion.unwrap();
+        assert!(s.contains("DATABASE_URL"));
+        assert!(s.contains("prefix match"));
+    }
+
+    #[test]
+    fn test_suggest_variable_name_prefix_match_case_insensitive() {
+        let schema_keys = ["NODE_ENV".to_string()];
+        let suggestion = suggest_variable_name("node", schema_keys.iter());
+        assert!(suggestion.is_some());
+        assert!(suggestion.unwrap().contains("NODE_ENV"));
     }
 
     // Suggest enum value tests

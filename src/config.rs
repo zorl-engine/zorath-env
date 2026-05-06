@@ -33,7 +33,6 @@ pub struct Config {
     pub no_color: Option<bool>,
 
     // Security options for remote schemas
-
     /// Expected SHA-256 hash for remote schema integrity verification
     #[serde(default)]
     pub verify_hash: Option<String>,
@@ -103,10 +102,7 @@ impl Config {
                             .collect::<Vec<_>>()
                             .join(", ")
                     );
-                    eprintln!(
-                        "  Valid keys: {}",
-                        VALID_CONFIG_KEYS.join(", ")
-                    );
+                    eprintln!("  Valid keys: {}", VALID_CONFIG_KEYS.join(", "));
                 }
             }
         }
@@ -123,7 +119,11 @@ impl Config {
             }
             Err(e) => {
                 if env::var("ZENV_QUIET").is_err() {
-                    eprintln!("zenv warning: invalid .zenvrc at {}: {}", config_path.display(), e);
+                    eprintln!(
+                        "zenv warning: invalid .zenvrc at {}: {}",
+                        config_path.display(),
+                        e
+                    );
                 }
                 None
             }
@@ -406,9 +406,19 @@ mod tests {
         // All valid keys should be recognized
         for key in VALID_CONFIG_KEYS.iter() {
             assert!(
-                ["schema", "env", "allow_missing_env", "detect_secrets",
-                 "no_cache", "no_color", "verify_hash", "ca_cert", "rate_limit_seconds", "format"]
-                    .contains(key),
+                [
+                    "schema",
+                    "env",
+                    "allow_missing_env",
+                    "detect_secrets",
+                    "no_cache",
+                    "no_color",
+                    "verify_hash",
+                    "ca_cert",
+                    "rate_limit_seconds",
+                    "format"
+                ]
+                .contains(key),
                 "Key '{}' is in VALID_CONFIG_KEYS but not in expected list",
                 key
             );

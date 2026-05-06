@@ -3,9 +3,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
-use ureq::tls::{TlsConfig, RootCerts, PemItem, parse_pem};
+use ureq::tls::{parse_pem, PemItem, RootCerts, TlsConfig};
 
 #[derive(Error, Debug)]
 pub enum RemoteError {
@@ -32,6 +32,17 @@ pub const CACHE_TTL_SECS: u64 = 3600;
 
 /// Default rate limit: 60 seconds between fetches per URL
 pub const DEFAULT_RATE_LIMIT_SECS: u64 = 60;
+
+/// HTTP request timeout
+pub const HTTP_TIMEOUT_SECS: u64 = 30;
+
+/// Maximum schema response body size (5 MiB).
+pub const MAX_RESPONSE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Minimum length for a SHA-256 hash *prefix* to be accepted as a
+/// verification value. 32 hex chars = 128 bits, low enough collision risk
+/// while still allowing convenient short pins.
+pub const MIN_HASH_PREFIX_LEN: usize = 32;
 
 /// Security options for remote schema fetching
 #[derive(Debug, Clone)]
@@ -80,15 +91,6 @@ pub fn is_remote_url(path: &str) -> bool {
     path.starts_with("https://") || path.starts_with("http://")
 }
 
-/// Fetch schema content from a remote URL (backward compatible)
-///
-/// If `no_cache` is true, always fetches fresh content.
-/// Otherwise, uses cached content if available and not expired.
-#[allow(dead_code)]
-pub fn fetch_remote_schema(url: &str, no_cache: bool) -> Result<String, RemoteError> {
-    fetch_remote_schema_secure(url, no_cache, &SecurityOptions::new())
-}
-
 /// Fetch schema content from a remote URL with security options
 ///
 /// Supports hash verification, rate limiting, and custom CA certificates.
@@ -106,6 +108,9 @@ pub fn fetch_remote_schema_secure(
     if !url.starts_with("https://") {
         return Err(RemoteError::InvalidUrl(url.to_string()));
     }
+
+    // SSRF defense: reject internal hostnames and IP ranges before fetching
+    validate_url_host(url)?;
 
     // Check rate limit (unless no_cache bypasses it)
     if !no_cache && security.rate_limit_seconds > 0 {
@@ -140,14 +145,29 @@ pub fn fetch_remote_schema_secure(
     Ok(content)
 }
 
-/// Verify content matches expected SHA-256 hash
+/// Verify content matches expected SHA-256 hash.
+///
+/// Accepts the full 64-char hex hash, or a prefix at least
+/// `MIN_HASH_PREFIX_LEN` (128 bits) long. Shorter prefixes are rejected
+/// because they offer false integrity (8 hex chars = 32 bits is collidable).
 pub fn verify_content_hash(content: &str, expected_hash: &str) -> Result<(), RemoteError> {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
     let actual_hash = format!("{:x}", hasher.finalize());
 
-    // Support both full hash and prefix matching (for convenience)
     let expected_lower = expected_hash.to_lowercase();
+
+    // Reject prefixes shorter than the minimum acceptable length.
+    if expected_lower.len() < MIN_HASH_PREFIX_LEN {
+        return Err(RemoteError::HashMismatch {
+            expected: format!(
+                "{} (rejected: hash prefix must be at least {} hex chars)",
+                expected_hash, MIN_HASH_PREFIX_LEN
+            ),
+            actual: actual_hash,
+        });
+    }
+
     if actual_hash == expected_lower || actual_hash.starts_with(&expected_lower) {
         Ok(())
     } else {
@@ -165,18 +185,80 @@ pub fn compute_content_hash(content: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Perform HTTP GET request (backward compatible, uses system root certs)
-#[allow(dead_code)]
-fn fetch_url(url: &str) -> Result<String, RemoteError> {
-    fetch_url_secure(url, None)
+/// Reject URLs whose host is loopback, private, link-local, or otherwise
+/// internal. Resolves the host via the OS resolver and checks every
+/// returned address.
+fn validate_url_host(url: &str) -> Result<(), RemoteError> {
+    use std::net::ToSocketAddrs;
+
+    let parsed = url::Url::parse(url).map_err(|_| RemoteError::InvalidUrl(url.to_string()))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| RemoteError::InvalidUrl(url.to_string()))?;
+
+    let lower = host.to_ascii_lowercase();
+    if lower == "localhost"
+        || lower == "ip6-localhost"
+        || lower.ends_with(".local")
+        || lower.ends_with(".localhost")
+        || lower.ends_with(".internal")
+    {
+        return Err(RemoteError::InvalidUrl(format!(
+            "internal host not allowed: {}",
+            host
+        )));
+    }
+
+    let port = parsed.port().unwrap_or(443);
+    let target = format!("{}:{}", host, port);
+
+    // If resolution fails, defer to ureq for the actual error.
+    if let Ok(addrs) = target.to_socket_addrs() {
+        for addr in addrs {
+            if is_forbidden_ip(&addr.ip()) {
+                return Err(RemoteError::InvalidUrl(format!(
+                    "host resolves to internal/loopback address: {} -> {}",
+                    host,
+                    addr.ip()
+                )));
+            }
+        }
+    }
+
+    Ok(())
 }
 
-/// Perform HTTP GET request with optional custom CA certificate
+fn is_forbidden_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.octets() == [169, 254, 169, 254] // AWS/GCP metadata IP (also link_local, but explicit)
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+        }
+    }
+}
+
+/// Perform HTTP GET request with optional custom CA certificate.
+///
+/// Disables redirects to prevent post-validation host pivoting and caps the
+/// response body to `MAX_RESPONSE_BYTES`.
 fn fetch_url_secure(url: &str, ca_cert_path: Option<&str>) -> Result<String, RemoteError> {
     let tls_config = build_tls_config(ca_cert_path)?;
 
     let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(30)))
+        .timeout_global(Some(Duration::from_secs(HTTP_TIMEOUT_SECS)))
+        .max_redirects(0)
         .tls_config(tls_config)
         .build()
         .new_agent();
@@ -196,6 +278,8 @@ fn fetch_url_secure(url: &str, ca_cert_path: Option<&str>) -> Result<String, Rem
 
     response
         .body_mut()
+        .with_config()
+        .limit(MAX_RESPONSE_BYTES)
         .read_to_string()
         .map_err(|e| RemoteError::Network(e.to_string()))
 }
@@ -203,34 +287,40 @@ fn fetch_url_secure(url: &str, ca_cert_path: Option<&str>) -> Result<String, Rem
 /// Build TLS configuration with optional custom CA certificate
 fn build_tls_config(ca_cert_path: Option<&str>) -> Result<TlsConfig, RemoteError> {
     if let Some(ca_path) = ca_cert_path {
-        let pem_data = fs::read(ca_path)
-            .map_err(|e| RemoteError::CertificateError(format!("failed to read {}: {}", ca_path, e)))?;
+        let pem_data = fs::read(ca_path).map_err(|e| {
+            RemoteError::CertificateError(format!("failed to read {}: {}", ca_path, e))
+        })?;
 
         let mut certs = Vec::new();
         for item in parse_pem(&pem_data) {
             match item {
                 Ok(PemItem::Certificate(cert)) => certs.push(cert),
                 Ok(_) => {} // skip non-certificate PEM items (keys, etc.)
-                Err(e) => return Err(RemoteError::CertificateError(
-                    format!("failed to parse PEM from {}: {}", ca_path, e)
-                )),
+                Err(e) => {
+                    return Err(RemoteError::CertificateError(format!(
+                        "failed to parse PEM from {}: {}",
+                        ca_path, e
+                    )))
+                }
             }
         }
 
         if certs.is_empty() {
-            return Err(RemoteError::CertificateError(
-                format!("no valid certificates found in {}", ca_path)
-            ));
+            return Err(RemoteError::CertificateError(format!(
+                "no valid certificates found in {}",
+                ca_path
+            )));
         }
 
         let count = certs.len();
         let root_certs = RootCerts::new_with_certs(&certs);
 
-        eprintln!("zenv: using CA certificate from {} ({} cert(s))", ca_path, count);
+        eprintln!(
+            "zenv: using CA certificate from {} ({} cert(s))",
+            ca_path, count
+        );
 
-        Ok(TlsConfig::builder()
-            .root_certs(root_certs)
-            .build())
+        Ok(TlsConfig::builder().root_certs(root_certs).build())
     } else {
         Ok(TlsConfig::default())
     }
@@ -258,7 +348,9 @@ fn check_rate_limit(url: &str, rate_limit_seconds: u64) -> Result<(), RemoteErro
             let elapsed = now.saturating_sub(metadata.fetched_at);
             if elapsed < rate_limit_seconds {
                 let wait_seconds = rate_limit_seconds - elapsed;
-                return Err(RemoteError::RateLimited { seconds: wait_seconds });
+                return Err(RemoteError::RateLimited {
+                    seconds: wait_seconds,
+                });
             }
         }
     }
@@ -276,7 +368,12 @@ struct CacheMetadata {
 
 /// Get metadata file path for a URL
 fn metadata_path_for_url(url: &str) -> Option<PathBuf> {
-    cache_dir().map(|d| d.join(format!("{}.meta", cache_filename(url).trim_end_matches(".json"))))
+    cache_dir().map(|d| {
+        d.join(format!(
+            "{}.meta",
+            cache_filename(url).trim_end_matches(".json")
+        ))
+    })
 }
 
 /// Write schema content to cache with metadata
@@ -301,11 +398,10 @@ fn write_cache_with_metadata(url: &str, content: &str) -> Result<(), RemoteError
         content_hash: compute_content_hash(content),
     };
 
-    let metadata_json = serde_json::to_string(&metadata)
-        .map_err(|e| RemoteError::Cache(e.to_string()))?;
+    let metadata_json =
+        serde_json::to_string(&metadata).map_err(|e| RemoteError::Cache(e.to_string()))?;
 
-    fs::write(&metadata_path, metadata_json)
-        .map_err(|e| RemoteError::Cache(e.to_string()))?;
+    fs::write(&metadata_path, metadata_json).map_err(|e| RemoteError::Cache(e.to_string()))?;
 
     Ok(())
 }
@@ -315,13 +411,14 @@ pub fn cache_dir() -> Option<PathBuf> {
     dirs::cache_dir().map(|p| p.join("zorath-env"))
 }
 
-/// Generate cache filename from URL (simple hash)
+/// Generate cache filename from URL using SHA-256 (truncated to 16 hex
+/// chars / 64 bits) to make collisions cryptographically infeasible to
+/// craft, vs. the prior trivially-collidable byte sum.
 pub fn cache_filename(url: &str) -> String {
-    // Simple hash: sum of bytes mod large prime, hex encoded
-    let hash: u64 = url.bytes().enumerate().fold(0u64, |acc, (i, b)| {
-        acc.wrapping_add((b as u64).wrapping_mul((i as u64).wrapping_add(1)))
-    });
-    format!("{:016x}.json", hash)
+    let mut hasher = Sha256::new();
+    hasher.update(url.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format!("{}.json", &digest[..16])
 }
 
 /// Read cached schema if available and not expired
@@ -411,7 +508,11 @@ mod tests {
 
     #[test]
     fn test_http_rejected() {
-        let result = fetch_remote_schema("http://example.com/schema.json", true);
+        let result = fetch_remote_schema_secure(
+            "http://example.com/schema.json",
+            true,
+            &SecurityOptions::new(),
+        );
         assert!(matches!(result, Err(RemoteError::HttpNotAllowed)));
     }
 
@@ -463,8 +564,14 @@ mod tests {
         // Uppercase hash should match
         assert!(verify_content_hash(content, &hash.to_uppercase()).is_ok());
 
-        // Prefix should match (convenience feature)
-        assert!(verify_content_hash(content, &hash[..16]).is_ok());
+        // Prefix at the documented minimum (32 hex / 128 bits) should match.
+        assert!(verify_content_hash(content, &hash[..MIN_HASH_PREFIX_LEN]).is_ok());
+
+        // 16-char prefix is now rejected as too short.
+        assert!(matches!(
+            verify_content_hash(content, &hash[..16]),
+            Err(RemoteError::HashMismatch { .. })
+        ));
     }
 
     #[test]
@@ -593,11 +700,82 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_hash_short_prefix() {
+    fn test_verify_hash_short_prefix_rejected() {
         let content = "test";
         let hash = compute_content_hash(content);
-        // Even very short prefix should work (convenience feature)
-        assert!(verify_content_hash(content, &hash[..8]).is_ok());
+        // 8-char prefix (32 bits) is now rejected for false-integrity reasons.
+        let result = verify_content_hash(content, &hash[..8]);
+        assert!(matches!(result, Err(RemoteError::HashMismatch { .. })));
+    }
+
+    #[test]
+    fn test_verify_hash_min_prefix_accepted() {
+        let content = "test";
+        let hash = compute_content_hash(content);
+        // 32-char prefix (128 bits) meets the minimum and should pass.
+        assert!(verify_content_hash(content, &hash[..MIN_HASH_PREFIX_LEN]).is_ok());
+    }
+
+    #[test]
+    fn test_verify_hash_just_under_min_rejected() {
+        let content = "test";
+        let hash = compute_content_hash(content);
+        // 31 chars is one short of the floor.
+        let result = verify_content_hash(content, &hash[..MIN_HASH_PREFIX_LEN - 1]);
+        assert!(matches!(result, Err(RemoteError::HashMismatch { .. })));
+    }
+
+    #[test]
+    fn test_validate_url_host_rejects_localhost() {
+        assert!(matches!(
+            validate_url_host("https://localhost/schema.json"),
+            Err(RemoteError::InvalidUrl(_))
+        ));
+        assert!(matches!(
+            validate_url_host("https://foo.local/schema.json"),
+            Err(RemoteError::InvalidUrl(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_url_host_rejects_metadata_ip() {
+        assert!(matches!(
+            validate_url_host("https://169.254.169.254/latest/meta-data/"),
+            Err(RemoteError::InvalidUrl(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_url_host_rejects_loopback_ip() {
+        assert!(matches!(
+            validate_url_host("https://127.0.0.1/schema.json"),
+            Err(RemoteError::InvalidUrl(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_url_host_rejects_private_ranges() {
+        for url in [
+            "https://10.0.0.1/schema.json",
+            "https://192.168.1.1/schema.json",
+            "https://172.16.0.1/schema.json",
+        ] {
+            assert!(
+                matches!(validate_url_host(url), Err(RemoteError::InvalidUrl(_))),
+                "expected rejection for {}",
+                url
+            );
+        }
+    }
+
+    #[test]
+    fn test_cache_filename_uses_sha256_prefix() {
+        let name = cache_filename("https://example.com/a.json");
+        // 16 hex chars + ".json"
+        assert_eq!(name.len(), 16 + 5);
+        assert!(name.ends_with(".json"));
+        let stem = name.trim_end_matches(".json");
+        assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     // =========================================================================

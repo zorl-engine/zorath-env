@@ -1,9 +1,20 @@
 /target
 **/*.rs.bk
 .DS_Store
+
+# Env files: gitignore everything in the .env family. zenv exists to prevent
+# secret leaks; shipping a real .env in the zenv repo would be hypocritical.
+# /bench writes .env fixtures to disk during benchmarking.
 .env
+.env.*
+!.env.example
+!examples/.env.example
+
+# zenv schema convention: the project schema lives at the root, but we ship
+# a reference schema under examples/.
 env.schema.json
 !examples/env.schema.json
+
 distribution/
 .claude/
 TODO.md

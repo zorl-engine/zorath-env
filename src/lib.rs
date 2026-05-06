@@ -7,7 +7,7 @@
 //! - [`schema::load_schema_with_options`] -- Load JSON/YAML schemas (local or remote)
 //! - [`commands::check::validate`], [`commands::check::validate_files`] -- Validation
 //! - [`commands::export::export_to_string`] -- Export env to shell/docker/k8s/json/systemd
-//! - [`commands::docs::generate_markdown`], [`commands::docs::generate_json`] -- Generate docs
+//! - [`commands::docs::generate`], [`commands::docs::generate_markdown`], [`commands::docs::generate_json`] -- Generate docs
 //! - [`commands::example::generate`] -- Generate .env.example content
 //!
 //! # Internal modules

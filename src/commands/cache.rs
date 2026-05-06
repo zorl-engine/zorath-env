@@ -6,7 +6,8 @@ use std::time::SystemTime;
 /// List all cached remote schemas
 #[doc(hidden)]
 pub fn run_list() -> Result<(), CliError> {
-    let dir = cache_dir().ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
+    let dir = cache_dir()
+        .ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
 
     if !dir.exists() {
         println!("Cache directory: {}", dir.display());
@@ -88,7 +89,8 @@ pub fn run_list() -> Result<(), CliError> {
 /// Clear cached schemas
 #[doc(hidden)]
 pub fn run_clear(url: Option<&str>) -> Result<(), CliError> {
-    let dir = cache_dir().ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
+    let dir = cache_dir()
+        .ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
 
     if !dir.exists() {
         println!("Cache is already empty.");
@@ -102,8 +104,9 @@ pub fn run_clear(url: Option<&str>) -> Result<(), CliError> {
             let cache_path = dir.join(&filename);
 
             if cache_path.exists() {
-                fs::remove_file(&cache_path)
-                    .map_err(|e| CliError::Input(format!("Failed to remove cached schema: {}", e)))?;
+                fs::remove_file(&cache_path).map_err(|e| {
+                    CliError::Input(format!("Failed to remove cached schema: {}", e))
+                })?;
                 println!("Cleared: {}", url);
                 println!("  ({})", filename);
             } else {
@@ -140,7 +143,8 @@ pub fn run_clear(url: Option<&str>) -> Result<(), CliError> {
 /// Print cache directory path
 #[doc(hidden)]
 pub fn run_path() -> Result<(), CliError> {
-    let dir = cache_dir().ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
+    let dir = cache_dir()
+        .ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
     println!("{}", dir.display());
     Ok(())
 }
@@ -148,7 +152,8 @@ pub fn run_path() -> Result<(), CliError> {
 /// Show cache statistics
 #[doc(hidden)]
 pub fn run_stats() -> Result<(), CliError> {
-    let dir = cache_dir().ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
+    let dir = cache_dir()
+        .ok_or_else(|| CliError::Input("Cache directory not available on this system".into()))?;
 
     println!("Cache Statistics");
     println!("================");

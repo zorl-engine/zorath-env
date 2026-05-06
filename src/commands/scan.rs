@@ -58,13 +58,14 @@ pub fn run(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
+    rate_limit_seconds: Option<u64>,
 ) -> Result<(), CliError> {
     // Load schema
     let options = LoadOptions {
         no_cache,
         verify_hash: verify_hash.map(|s| s.to_string()),
         ca_cert: ca_cert.map(|s| s.to_string()),
-        rate_limit_seconds: None,
+        rate_limit_seconds,
     };
     let schema = schema::load_schema_with_options(schema_path, &options)
         .map_err(|e| CliError::Schema(format!("failed to load schema: {}", e)))?;
@@ -110,43 +111,41 @@ fn build_patterns() -> Vec<EnvPattern> {
         ("rust", r#"env::var\s*\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)"#),
         ("rust", r#"env::var_os\s*\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)"#),
         ("rust", r#"dotenvy::var\s*\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)"#),
-
         // JavaScript/TypeScript patterns
         ("javascript", r#"process\.env\.([A-Z_][A-Z0-9_]*)"#),
         ("javascript", r#"process\.env\["([A-Z_][A-Z0-9_]*)"\]"#),
         ("javascript", r#"process\.env\['([A-Z_][A-Z0-9_]*)'\]"#),
-
         // Python patterns
         ("python", r#"os\.environ\["([A-Z_][A-Z0-9_]*)"\]"#),
         ("python", r#"os\.environ\['([A-Z_][A-Z0-9_]*)'\]"#),
         ("python", r#"os\.getenv\s*\(\s*["']([A-Z_][A-Z0-9_]*)["']"#),
-        ("python", r#"os\.environ\.get\s*\(\s*["']([A-Z_][A-Z0-9_]*)["']"#),
-
+        (
+            "python",
+            r#"os\.environ\.get\s*\(\s*["']([A-Z_][A-Z0-9_]*)["']"#,
+        ),
         // Go patterns
         ("go", r#"os\.Getenv\s*\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)"#),
         ("go", r#"os\.LookupEnv\s*\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)"#),
-
         // PHP patterns
         ("php", r#"getenv\s*\(\s*["']([A-Z_][A-Z0-9_]*)["']\s*\)"#),
         ("php", r#"\$_ENV\["([A-Z_][A-Z0-9_]*)"\]"#),
         ("php", r#"\$_ENV\['([A-Z_][A-Z0-9_]*)'\]"#),
         ("php", r#"\$_SERVER\["([A-Z_][A-Z0-9_]*)"\]"#),
         ("php", r#"\$_SERVER\['([A-Z_][A-Z0-9_]*)'\]"#),
-
         // Ruby patterns
         ("ruby", r#"ENV\["([A-Z_][A-Z0-9_]*)"\]"#),
         ("ruby", r#"ENV\['([A-Z_][A-Z0-9_]*)'\]"#),
         ("ruby", r#"ENV\.fetch\s*\(\s*["']([A-Z_][A-Z0-9_]*)["']"#),
-
         // Shell patterns (bash, sh, zsh)
         ("shell", r#"\$\{([A-Z_][A-Z0-9_]*)\}"#),
         ("shell", r#"\$([A-Z_][A-Z0-9_]*)"#),
-
         // Java patterns
         ("java", r#"System\.getenv\s*\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)"#),
-
         // C# / .NET patterns
-        ("csharp", r#"Environment\.GetEnvironmentVariable\s*\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)"#),
+        (
+            "csharp",
+            r#"Environment\.GetEnvironmentVariable\s*\(\s*"([A-Z_][A-Z0-9_]*)"\s*\)"#,
+        ),
     ];
 
     pattern_defs
@@ -246,8 +245,19 @@ fn scan_directory(
     })
 }
 
+/// Maximum source file size to scan (skip larger files to avoid OOM
+/// on vendored/minified blobs).
+const SCAN_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Scan a single file for environment variable usage
 fn scan_file(path: &Path, patterns: &[EnvPattern]) -> Result<Vec<EnvUsage>, String> {
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > SCAN_MAX_FILE_BYTES {
+            // Silently skip oversized files. (Loud warnings would spam scan output
+            // on large monorepos with vendored bundles.)
+            return Ok(Vec::new());
+        }
+    }
     let content = fs::read_to_string(path)
         .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
 
@@ -313,7 +323,13 @@ fn is_common_false_positive(var_name: &str) -> bool {
 }
 
 /// Print results in human-readable text format
-fn print_text_output(results: &ScanResults, path: &str, show_unused: bool, show_paths: bool, schema: &Schema) {
+fn print_text_output(
+    results: &ScanResults,
+    path: &str,
+    show_unused: bool,
+    show_paths: bool,
+    schema: &Schema,
+) {
     println!("Scanning {} ...", path);
     println!();
     println!(
@@ -334,7 +350,11 @@ fn print_text_output(results: &ScanResults, path: &str, show_unused: bool, show_
 
         for var_name in sorted {
             let in_schema = schema.contains_key(var_name);
-            let status = if in_schema { "in schema" } else { "NOT in schema" };
+            let status = if in_schema {
+                "in schema"
+            } else {
+                "NOT in schema"
+            };
             if let Some(usages) = results.found_vars.get(var_name) {
                 println!("  {} ({} usages, {})", var_name, usages.len(), status);
                 for usage in usages {
@@ -377,7 +397,13 @@ fn print_text_output(results: &ScanResults, path: &str, show_unused: bool, show_
         for var_name in sorted {
             let required = schema
                 .get(var_name)
-                .map(|spec| if spec.required { "required" } else { "optional" })
+                .map(|spec| {
+                    if spec.required {
+                        "required"
+                    } else {
+                        "optional"
+                    }
+                })
                 .unwrap_or("unknown");
             println!("  {} ({})", var_name, required);
         }
@@ -389,7 +415,10 @@ fn print_text_output(results: &ScanResults, path: &str, show_unused: bool, show_
     println!("Summary:");
     println!("  Total variables found: {}", results.found_vars.len());
     println!("  Matched in schema: {}", matched);
-    println!("  Missing from schema: {}", results.missing_from_schema.len());
+    println!(
+        "  Missing from schema: {}",
+        results.missing_from_schema.len()
+    );
     if show_unused {
         println!("  Unused in code: {}", results.unused_in_code.len());
     }
@@ -401,7 +430,13 @@ fn print_text_output(results: &ScanResults, path: &str, show_unused: bool, show_
 }
 
 /// Print results in JSON format (CI-friendly)
-fn print_json_output(results: &ScanResults, path: &str, show_unused: bool, show_paths: bool, schema: &Schema) {
+fn print_json_output(
+    results: &ScanResults,
+    path: &str,
+    show_unused: bool,
+    show_paths: bool,
+    schema: &Schema,
+) {
     let mut output = serde_json::json!({
         "scanned_path": path,
         "files_scanned": results.files_scanned,
@@ -490,7 +525,10 @@ fn print_json_output(results: &ScanResults, path: &str, show_unused: bool, show_
 
     output["success"] = serde_json::json!(results.missing_from_schema.is_empty());
 
-    println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).unwrap_or_default()
+    );
 }
 
 #[cfg(test)]
@@ -649,27 +687,35 @@ const config = {
 
         // Create a schema
         let schema: Schema = [
-            ("API_KEY".to_string(), crate::schema::VarSpec {
-                var_type: crate::schema::VarType::String,
-                required: true,
-                description: None,
-                values: None,
-                default: None,
-                validate: None,
-                secret: None,
-                ..Default::default()
-            }),
-            ("UNUSED_VAR".to_string(), crate::schema::VarSpec {
-                var_type: crate::schema::VarType::String,
-                required: false,
-                description: None,
-                values: None,
-                default: None,
-                validate: None,
-                secret: None,
-                ..Default::default()
-            }),
-        ].into_iter().collect();
+            (
+                "API_KEY".to_string(),
+                crate::schema::VarSpec {
+                    var_type: crate::schema::VarType::String,
+                    required: true,
+                    description: None,
+                    values: None,
+                    default: None,
+                    validate: None,
+                    secret: None,
+                    ..Default::default()
+                },
+            ),
+            (
+                "UNUSED_VAR".to_string(),
+                crate::schema::VarSpec {
+                    var_type: crate::schema::VarType::String,
+                    required: false,
+                    description: None,
+                    values: None,
+                    default: None,
+                    validate: None,
+                    secret: None,
+                    ..Default::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
 
         let patterns = build_patterns();
         let results = scan_directory(dir.path(), &patterns, &schema).unwrap();
@@ -744,8 +790,14 @@ func main() {
         let usages = scan_file(&file_path, &patterns).unwrap();
 
         let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
-        assert!(var_names.contains("API_KEY"), "Should find API_KEY in Go file");
-        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in Go file");
+        assert!(
+            var_names.contains("API_KEY"),
+            "Should find API_KEY in Go file"
+        );
+        assert!(
+            var_names.contains("DATABASE_URL"),
+            "Should find DATABASE_URL in Go file"
+        );
     }
 
     // ====== PHP Language Tests ======
@@ -826,9 +878,18 @@ $secret = $_SERVER['SECRET_KEY'];
         let usages = scan_file(&file_path, &patterns).unwrap();
 
         let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
-        assert!(var_names.contains("API_KEY"), "Should find API_KEY in PHP file");
-        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in PHP file");
-        assert!(var_names.contains("SECRET_KEY"), "Should find SECRET_KEY in PHP file");
+        assert!(
+            var_names.contains("API_KEY"),
+            "Should find API_KEY in PHP file"
+        );
+        assert!(
+            var_names.contains("DATABASE_URL"),
+            "Should find DATABASE_URL in PHP file"
+        );
+        assert!(
+            var_names.contains("SECRET_KEY"),
+            "Should find SECRET_KEY in PHP file"
+        );
     }
 
     // ====== Ruby Language Tests ======
@@ -891,9 +952,18 @@ secret = ENV.fetch("SECRET_KEY")
         let usages = scan_file(&file_path, &patterns).unwrap();
 
         let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
-        assert!(var_names.contains("API_KEY"), "Should find API_KEY in Ruby file");
-        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in Ruby file");
-        assert!(var_names.contains("SECRET_KEY"), "Should find SECRET_KEY in Ruby file");
+        assert!(
+            var_names.contains("API_KEY"),
+            "Should find API_KEY in Ruby file"
+        );
+        assert!(
+            var_names.contains("DATABASE_URL"),
+            "Should find DATABASE_URL in Ruby file"
+        );
+        assert!(
+            var_names.contains("SECRET_KEY"),
+            "Should find SECRET_KEY in Ruby file"
+        );
     }
 
     // ====== Shell Language Tests ======
@@ -956,8 +1026,14 @@ export DB=$DATABASE_URL
         let usages = scan_file(&file_path, &patterns).unwrap();
 
         let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
-        assert!(var_names.contains("API_KEY"), "Should find API_KEY in shell file");
-        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in shell file");
+        assert!(
+            var_names.contains("API_KEY"),
+            "Should find API_KEY in shell file"
+        );
+        assert!(
+            var_names.contains("DATABASE_URL"),
+            "Should find DATABASE_URL in shell file"
+        );
     }
 
     // ====== Java Language Tests ======
@@ -1005,8 +1081,14 @@ public class Config {
         let usages = scan_file(&file_path, &patterns).unwrap();
 
         let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
-        assert!(var_names.contains("API_KEY"), "Should find API_KEY in Java file");
-        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in Java file");
+        assert!(
+            var_names.contains("API_KEY"),
+            "Should find API_KEY in Java file"
+        );
+        assert!(
+            var_names.contains("DATABASE_URL"),
+            "Should find DATABASE_URL in Java file"
+        );
     }
 
     // ====== C# Language Tests ======
@@ -1031,7 +1113,10 @@ public class Config {
                 }
             }
         }
-        assert!(found, "Should detect API_KEY in C# Environment.GetEnvironmentVariable");
+        assert!(
+            found,
+            "Should detect API_KEY in C# Environment.GetEnvironmentVariable"
+        );
     }
 
     #[test]
@@ -1055,7 +1140,13 @@ class Program {
         let usages = scan_file(&file_path, &patterns).unwrap();
 
         let var_names: HashSet<_> = usages.iter().map(|u| u.var_name.as_str()).collect();
-        assert!(var_names.contains("API_KEY"), "Should find API_KEY in C# file");
-        assert!(var_names.contains("DATABASE_URL"), "Should find DATABASE_URL in C# file");
+        assert!(
+            var_names.contains("API_KEY"),
+            "Should find API_KEY in C# file"
+        );
+        assert!(
+            var_names.contains("DATABASE_URL"),
+            "Should find DATABASE_URL in C# file"
+        );
     }
 }

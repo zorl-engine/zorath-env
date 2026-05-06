@@ -117,9 +117,9 @@ zenv scan --show-unused         # JS, Python, Go, Rust, PHP, Ruby, Java, C#, Kot
 **4. Export to deployment formats:**
 
 ```bash
-zenv export .env --format k8s           # Kubernetes ConfigMap
-zenv export .env --format docker        # Dockerfile ENV directives
-zenv export .env --format github-secrets # GitHub CLI gh secret set
+zenv export --env .env --format k8s            # Kubernetes ConfigMap
+zenv export --env .env --format docker         # Dockerfile ENV directives
+zenv export --env .env --format github-secrets # GitHub CLI gh secret set
 ```
 
 **5. Generate docs and examples:**
@@ -305,16 +305,16 @@ zenv cache path                   # Show cache directory location
 Export `.env` to various formats for deployment.
 
 ```bash
-zenv export .env --format shell          # Shell script (export FOO="bar")
-zenv export .env --format docker         # Dockerfile (ENV FOO=bar)
-zenv export .env --format k8s            # Kubernetes ConfigMap YAML
-zenv export .env --format json           # JSON object
-zenv export .env --format systemd        # systemd Environment directives
-zenv export .env --format dotenv         # Standard .env format
-zenv export .env --format github-secrets # GitHub CLI (gh secret set)
+zenv export --env .env --format shell          # Shell script (export FOO="bar")
+zenv export --env .env --format docker         # Dockerfile (ENV FOO=bar)
+zenv export --env .env --format k8s            # Kubernetes ConfigMap YAML
+zenv export --env .env --format json           # JSON object
+zenv export --env .env --format systemd        # systemd Environment directives
+zenv export --env .env --format dotenv         # Standard .env format
+zenv export --env .env --format github-secrets # GitHub CLI (gh secret set)
 
-zenv export .env --schema s.json         # Only export vars in schema
-zenv export .env -f shell -o setup.sh    # Write to file
+zenv export --env .env --schema s.json         # Only export vars in schema
+zenv export --env .env -f shell -o setup.sh    # Write to file
 ```
 
 ### `zenv doctor`
@@ -564,9 +564,10 @@ Create a `.zenvrc` file in your project root to set default options. CLI argumen
 | `detect_secrets` | boolean | Enable secret detection during validation |
 | `no_cache` | boolean | Skip cache when fetching remote schemas |
 | `no_color` | boolean | Disable colored terminal output |
-| `verify_hash` | string | SHA-256 hash to verify remote schema integrity |
+| `verify_hash` | string | SHA-256 hash (full or >=32-char prefix) to verify remote schema integrity |
 | `ca_cert` | string | Path to custom CA certificate (PEM format) |
 | `rate_limit_seconds` | number | Seconds between remote schema fetches (default: 60) |
+| `format` | string | Default output format for `check`/`docs`/`diff`/`scan`/`export` (per-command default if omitted) |
 
 ### Example: Full Configuration
 
@@ -580,7 +581,8 @@ Create a `.zenvrc` file in your project root to set default options. CLI argumen
   "no_color": false,
   "verify_hash": "a1b2c3d4e5f6...",
   "ca_cert": "/etc/ssl/certs/internal-ca.pem",
-  "rate_limit_seconds": 120
+  "rate_limit_seconds": 120,
+  "format": "json"
 }
 ```
 

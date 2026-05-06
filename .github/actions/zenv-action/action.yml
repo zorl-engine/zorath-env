@@ -18,7 +18,7 @@ inputs:
   allow-missing-env:
     description: 'Allow missing .env file (validates schema defaults only)'
     required: false
-    default: 'true'
+    default: 'false'
   version:
     description: 'Version of zenv to use (e.g., "0.3.1" or "latest")'
     required: false

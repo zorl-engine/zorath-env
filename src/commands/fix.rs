@@ -8,7 +8,7 @@ use std::path::Path;
 // Import cached regex functions and utilities from check module
 use super::check::{
     date_regex, email_regex, hostname_regex, ipv4_regex, ipv6_regex, is_sensitive_key,
-    semver_regex, uuid_regex,
+    mask_value_with_spec, semver_regex, uuid_regex,
 };
 
 /// Actions that can be automatically fixed
@@ -34,6 +34,7 @@ struct FixAnalysis {
 
 /// Run the fix command
 #[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     env_path: &str,
     schema_path: &str,
@@ -42,19 +43,22 @@ pub fn run(
     no_cache: bool,
     verify_hash: Option<&str>,
     ca_cert: Option<&str>,
+    rate_limit_seconds: Option<u64>,
 ) -> Result<(), CliError> {
     // Load schema
     let options = LoadOptions {
         no_cache,
         verify_hash: verify_hash.map(|s| s.to_string()),
         ca_cert: ca_cert.map(|s| s.to_string()),
-        rate_limit_seconds: None,
+        rate_limit_seconds,
     };
-    let schema = load_schema_with_options(schema_path, &options).map_err(|e| CliError::Schema(e.to_string()))?;
+    let schema = load_schema_with_options(schema_path, &options)
+        .map_err(|e| CliError::Schema(e.to_string()))?;
 
     // Read original file content
     let original_content = if Path::new(env_path).exists() {
-        fs::read_to_string(env_path).map_err(|e| CliError::Input(format!("failed to read {}: {}", env_path, e)))?
+        fs::read_to_string(env_path)
+            .map_err(|e| CliError::Input(format!("failed to read {}: {}", env_path, e)))?
     } else {
         String::new()
     };
@@ -170,32 +174,32 @@ fn get_default_value(spec: &VarSpec) -> (String, bool) {
 fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
     use crate::schema::VarType;
 
+    let masked = || mask_value_with_spec(key, value, spec.secret);
+
     match spec.var_type {
         VarType::Int => {
             if value.parse::<i64>().is_err() {
-                return Some(format!("{}: expected int, got '{}'", key, value));
+                return Some(format!("{}: expected int, got '{}'", key, masked()));
             }
         }
         VarType::Float => {
             if value.parse::<f64>().is_err() {
-                return Some(format!("{}: expected float, got '{}'", key, value));
+                return Some(format!("{}: expected float, got '{}'", key, masked()));
             }
         }
         VarType::Bool => {
             let lower = value.to_lowercase();
-            if !matches!(
-                lower.as_str(),
-                "true" | "false" | "1" | "0" | "yes" | "no"
-            ) {
+            if !matches!(lower.as_str(), "true" | "false" | "1" | "0" | "yes" | "no") {
                 return Some(format!(
                     "{}: expected bool (true/false/1/0/yes/no), got '{}'",
-                    key, value
+                    key,
+                    masked()
                 ));
             }
         }
         VarType::Url => {
             if url::Url::parse(value).is_err() {
-                return Some(format!("{}: expected url, got '{}'", key, value));
+                return Some(format!("{}: expected url, got '{}'", key, masked()));
             }
         }
         VarType::Enum => {
@@ -205,7 +209,7 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
                         "{}: expected one of [{}], got '{}'",
                         key,
                         values.join(", "),
-                        value
+                        masked()
                     ));
                 }
             }
@@ -234,11 +238,23 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
                     }
                 }
                 if let Some(ref pattern) = validate.pattern {
-                    if let Ok(re) = regex::Regex::new(pattern) {
+                    if pattern.len() > 4096 {
+                        return Some(format!(
+                            "{}: pattern too long ({} chars, max 4096)",
+                            key,
+                            pattern.len()
+                        ));
+                    }
+                    let built = regex::RegexBuilder::new(pattern)
+                        .size_limit(1 << 20)
+                        .build();
+                    if let Ok(re) = built {
                         if !re.is_match(value) {
                             return Some(format!(
                                 "{}: value '{}' does not match pattern '{}'",
-                                key, value, pattern
+                                key,
+                                masked(),
+                                pattern
                             ));
                         }
                     }
@@ -250,7 +266,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             if !uuid_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'",
-                    key, value
+                    key,
+                    masked()
                 ));
             }
         }
@@ -259,7 +276,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             if !email_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected email (user@domain.tld), got '{}'",
-                    key, value
+                    key,
+                    masked()
                 ));
             }
         }
@@ -272,7 +290,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
                             if octet > 255 {
                                 return Some(format!(
                                     "{}: expected ipv4 (x.x.x.x where x is 0-255), got '{}'",
-                                    key, value
+                                    key,
+                                    masked()
                                 ));
                             }
                         }
@@ -281,7 +300,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             } else {
                 return Some(format!(
                     "{}: expected ipv4 (x.x.x.x where x is 0-255), got '{}'",
-                    key, value
+                    key,
+                    masked()
                 ));
             }
         }
@@ -290,7 +310,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             if !semver_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected semver (x.y.z[-prerelease][+build]), got '{}'",
-                    key, value
+                    key,
+                    masked()
                 ));
             }
         }
@@ -299,7 +320,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             if !ipv6_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected ipv6 address, got '{}'",
-                    key, value
+                    key,
+                    masked()
                 ));
             }
         }
@@ -311,16 +333,21 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
                     return Some(format!("{}: port must be between 1 and 65535", key));
                 }
                 Err(_) => {
-                    return Some(format!("{}: expected port (1-65535), got '{}'", key, value));
+                    return Some(format!(
+                        "{}: expected port (1-65535), got '{}'",
+                        key,
+                        masked()
+                    ));
                 }
             }
         }
         VarType::Date => {
-            // ISO 8601 date format: YYYY-MM-DD (using cached regex)
+            // ISO 8601 date format: YYYY-MM-DD (using cased regex)
             if !date_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected date (YYYY-MM-DD), got '{}'",
-                    key, value
+                    key,
+                    masked()
                 ));
             }
         }
@@ -329,7 +356,8 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
             if value.len() > 253 || !hostname_regex().is_match(value) {
                 return Some(format!(
                     "{}: expected hostname (RFC 1123), got '{}'",
-                    key, value
+                    key,
+                    masked()
                 ));
             }
         }
@@ -448,7 +476,11 @@ fn print_dry_run(analysis: &FixAnalysis, env_path: &str) {
 }
 
 /// Apply fixes to the env file
-fn apply_fixes(env_path: &str, original_content: &str, analysis: &FixAnalysis) -> Result<(), String> {
+fn apply_fixes(
+    env_path: &str,
+    original_content: &str,
+    analysis: &FixAnalysis,
+) -> Result<(), String> {
     if analysis.fixable.is_empty() {
         return Ok(());
     }
@@ -534,8 +566,31 @@ fn apply_fixes(env_path: &str, original_content: &str, analysis: &FixAnalysis) -
         format!("{}\n", new_content)
     };
 
-    fs::write(env_path, &final_content)
-        .map_err(|e| format!("failed to write {}: {}", env_path, e))?;
+    // Atomic write: stage to a temp file in the same directory, then rename
+    // over the target. Survives SIGKILL between stages -- the original .env
+    // is replaced as a single filesystem operation, never observed empty
+    // by readers (POSIX rename is atomic; on Windows ReplaceFileW is used).
+    let env_path_obj = Path::new(env_path);
+    let parent = env_path_obj.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = env_path_obj
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".env".to_string());
+    let pid = std::process::id();
+    let tmp_path = parent.join(format!(".{}.zenvtmp.{}", file_name, pid));
+
+    fs::write(&tmp_path, &final_content)
+        .map_err(|e| format!("failed to write {}: {}", tmp_path.display(), e))?;
+    if let Err(e) = fs::rename(&tmp_path, env_path) {
+        // Clean up the temp file if rename failed
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!(
+            "failed to rename {} -> {}: {}",
+            tmp_path.display(),
+            env_path,
+            e
+        ));
+    }
 
     // Print summary
     println!();
@@ -583,8 +638,7 @@ fn create_backup(env_path: &str, content: &str) -> Result<String, String> {
         }
     };
 
-    fs::write(&backup_path, content)
-        .map_err(|e| format!("failed to create backup: {}", e))?;
+    fs::write(&backup_path, content).map_err(|e| format!("failed to create backup: {}", e))?;
 
     Ok(backup_path)
 }
@@ -794,6 +848,7 @@ mod tests {
             false,
             None,
             None,
+            None,
         );
 
         assert!(result.is_ok());
@@ -821,6 +876,7 @@ mod tests {
             false,
             false, // not dry_run
             false,
+            None,
             None,
             None,
         );
@@ -852,7 +908,11 @@ mod tests {
     fn test_check_value_error_enum() {
         let spec = VarSpec {
             var_type: VarType::Enum,
-            values: Some(vec!["dev".to_string(), "staging".to_string(), "prod".to_string()]),
+            values: Some(vec![
+                "dev".to_string(),
+                "staging".to_string(),
+                "prod".to_string(),
+            ]),
             ..Default::default()
         };
 
@@ -906,18 +966,24 @@ mod tests {
     fn test_analyze_multiple_missing_required() {
         let env_map = HashMap::new();
         let mut schema = Schema::new();
-        schema.insert("KEY1".to_string(), VarSpec {
-            var_type: VarType::String,
-            required: true,
-            default: Some(serde_json::json!("val1")),
-            ..Default::default()
-        });
-        schema.insert("KEY2".to_string(), VarSpec {
-            var_type: VarType::String,
-            required: true,
-            default: Some(serde_json::json!("val2")),
-            ..Default::default()
-        });
+        schema.insert(
+            "KEY1".to_string(),
+            VarSpec {
+                var_type: VarType::String,
+                required: true,
+                default: Some(serde_json::json!("val1")),
+                ..Default::default()
+            },
+        );
+        schema.insert(
+            "KEY2".to_string(),
+            VarSpec {
+                var_type: VarType::String,
+                required: true,
+                default: Some(serde_json::json!("val2")),
+                ..Default::default()
+            },
+        );
 
         let analysis = analyze_fixes(&env_map, "", &schema, false);
 
@@ -947,6 +1013,7 @@ mod tests {
             false,
             true, // dry_run
             false,
+            None,
             None,
             None,
         );
@@ -979,6 +1046,7 @@ mod tests {
             false,
             None,
             None,
+            None,
         );
 
         assert!(result.is_ok());
@@ -993,11 +1061,7 @@ mod tests {
         let dir = tempdir().unwrap();
 
         let schema_path = dir.path().join("schema.json");
-        fs::write(
-            &schema_path,
-            r#"{"KNOWN": {"type": "string"}}"#,
-        )
-        .unwrap();
+        fs::write(&schema_path, r#"{"KNOWN": {"type": "string"}}"#).unwrap();
 
         let env_path = dir.path().join(".env");
         fs::write(&env_path, "KNOWN=value\nUNKNOWN=should_be_removed\n").unwrap();
@@ -1006,9 +1070,10 @@ mod tests {
         let result = run(
             env_path.to_str().unwrap(),
             schema_path.to_str().unwrap(),
-            true, // remove_unknown
+            true,  // remove_unknown
             false, // not dry_run
             false,
+            None,
             None,
             None,
         );
@@ -1024,11 +1089,14 @@ mod tests {
     fn test_fix_analysis_empty_env_file() {
         let env_map = HashMap::new();
         let mut schema = Schema::new();
-        schema.insert("OPTIONAL".to_string(), VarSpec {
-            var_type: VarType::String,
-            required: false,
-            ..Default::default()
-        });
+        schema.insert(
+            "OPTIONAL".to_string(),
+            VarSpec {
+                var_type: VarType::String,
+                required: false,
+                ..Default::default()
+            },
+        );
 
         let analysis = analyze_fixes(&env_map, "", &schema, false);
 

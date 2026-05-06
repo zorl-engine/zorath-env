@@ -33,14 +33,21 @@ impl HealthStatus {
 }
 
 #[doc(hidden)]
-pub fn run(env_path: &str, schema_path: &str, no_cache: bool, verify_hash: Option<&str>, ca_cert: Option<&str>) -> Result<(), CliError> {
+pub fn run(
+    env_path: &str,
+    schema_path: &str,
+    no_cache: bool,
+    verify_hash: Option<&str>,
+    ca_cert: Option<&str>,
+    rate_limit_seconds: Option<u64>,
+) -> Result<(), CliError> {
     println!("zenv doctor - Health Check\n");
 
     let load_options = LoadOptions {
         no_cache,
         verify_hash: verify_hash.map(|s| s.to_string()),
         ca_cert: ca_cert.map(|s| s.to_string()),
-        rate_limit_seconds: None,
+        rate_limit_seconds,
     };
 
     let mut items = vec![
@@ -111,7 +118,12 @@ fn check_schema_path(schema_path: &str, load_options: &LoadOptions) -> HealthIte
                     return HealthItem {
                         name: "Schema".to_string(),
                         status: HealthStatus::Ok,
-                        message: format!("Found {} ({} format, {} variables)", path, format.name(), schema.len()),
+                        message: format!(
+                            "Found {} ({} format, {} variables)",
+                            path,
+                            format.name(),
+                            schema.len()
+                        ),
                         suggestion: None,
                     };
                 }
@@ -254,14 +266,21 @@ fn check_cache() -> HealthItem {
                 HealthItem {
                     name: "Cache".to_string(),
                     status: HealthStatus::Ok,
-                    message: format!("{} cached remote schema(s) at {}", count, cache_dir.display()),
+                    message: format!(
+                        "{} cached remote schema(s) at {}",
+                        count,
+                        cache_dir.display()
+                    ),
                     suggestion: None,
                 }
             } else {
                 HealthItem {
                     name: "Cache".to_string(),
                     status: HealthStatus::Ok,
-                    message: format!("Cache directory exists but is empty: {}", cache_dir.display()),
+                    message: format!(
+                        "Cache directory exists but is empty: {}",
+                        cache_dir.display()
+                    ),
                     suggestion: None,
                 }
             }
@@ -275,7 +294,11 @@ fn check_cache() -> HealthItem {
     }
 }
 
-fn check_validation_paths(env_path: &str, schema_path: &str, load_options: &LoadOptions) -> Option<HealthItem> {
+fn check_validation_paths(
+    env_path: &str,
+    schema_path: &str,
+    load_options: &LoadOptions,
+) -> Option<HealthItem> {
     // Both must exist for validation
     let schema_exists = Path::new(schema_path).exists();
     let env_exists = find_env_file(env_path).is_some();
@@ -555,7 +578,11 @@ mod tests {
         let schema_path = temp_dir.join("test_doctor_val_schema.json");
         let env_path = temp_dir.join("test_doctor_val.env");
 
-        std::fs::write(&schema_path, r#"{"PORT": {"type": "int", "required": true}}"#).unwrap();
+        std::fs::write(
+            &schema_path,
+            r#"{"PORT": {"type": "int", "required": true}}"#,
+        )
+        .unwrap();
         std::fs::write(&env_path, "PORT=3000").unwrap();
 
         let result = check_validation_paths(
@@ -608,7 +635,11 @@ mod tests {
         let schema_path = temp_dir.join("test_doctor_type_schema.json");
         let env_path = temp_dir.join("test_doctor_type.env");
 
-        std::fs::write(&schema_path, r#"{"PORT": {"type": "int", "required": true}}"#).unwrap();
+        std::fs::write(
+            &schema_path,
+            r#"{"PORT": {"type": "int", "required": true}}"#,
+        )
+        .unwrap();
         std::fs::write(&env_path, "PORT=not_a_number").unwrap();
 
         let result = check_validation_paths(
@@ -716,11 +747,7 @@ ANOTHER=final
             }"#,
         )
         .unwrap();
-        std::fs::write(
-            &env_path,
-            "HOST=example.com\nFULL_URL=https://${HOST}/api",
-        )
-        .unwrap();
+        std::fs::write(&env_path, "HOST=example.com\nFULL_URL=https://${HOST}/api").unwrap();
 
         let result = check_validation_paths(
             env_path.to_str().unwrap(),
@@ -731,7 +758,11 @@ ANOTHER=final
         // Should pass if interpolation works correctly
         assert!(result.is_some());
         let item = result.unwrap();
-        assert_eq!(item.status, HealthStatus::Ok, "Interpolated URL should be valid");
+        assert_eq!(
+            item.status,
+            HealthStatus::Ok,
+            "Interpolated URL should be valid"
+        );
 
         let _ = std::fs::remove_file(&schema_path);
         let _ = std::fs::remove_file(&env_path);

@@ -23,21 +23,32 @@ pub fn generate_to_writer<W: io::Write>(shell: Shell, cmd: &mut Command, writer:
 mod tests {
     use super::*;
 
-    /// Create a mock command for testing (simulates the real CLI structure)
+    /// All Cli command variants. Keep in sync with `Command` in `main.rs` --
+    /// the test below asserts every entry shows up in generated completions
+    /// so a missing item fails CI rather than silently skipping coverage.
+    const ALL_SUBCOMMANDS: &[&str] = &[
+        "check",
+        "docs",
+        "init",
+        "example",
+        "diff",
+        "fix",
+        "scan",
+        "cache",
+        "doctor",
+        "export",
+        "template",
+        "completions",
+        "version",
+    ];
+
+    /// Create a mock command for testing that includes every Cli variant.
     fn mock_command() -> Command {
-        Command::new("zenv")
-            .subcommand(Command::new("check"))
-            .subcommand(Command::new("docs"))
-            .subcommand(Command::new("init"))
-            .subcommand(Command::new("example"))
-            .subcommand(Command::new("diff"))
-            .subcommand(Command::new("fix"))
-            .subcommand(Command::new("scan"))
-            .subcommand(Command::new("cache"))
-            .subcommand(Command::new("doctor"))
-            .subcommand(Command::new("export"))
-            .subcommand(Command::new("completions"))
-            .subcommand(Command::new("version"))
+        let mut cmd = Command::new("zenv");
+        for name in ALL_SUBCOMMANDS {
+            cmd = cmd.subcommand(Command::new(*name));
+        }
+        cmd
     }
 
     #[test]
@@ -87,9 +98,18 @@ mod tests {
         generate_to_writer(Shell::Bash, &mut cmd, &mut output);
         let output_str = String::from_utf8(output).unwrap();
         // Verify subcommands are mentioned in completions
-        assert!(output_str.contains("check"), "Should include check subcommand");
-        assert!(output_str.contains("docs"), "Should include docs subcommand");
-        assert!(output_str.contains("init"), "Should include init subcommand");
+        assert!(
+            output_str.contains("check"),
+            "Should include check subcommand"
+        );
+        assert!(
+            output_str.contains("docs"),
+            "Should include docs subcommand"
+        );
+        assert!(
+            output_str.contains("init"),
+            "Should include init subcommand"
+        );
     }
 
     #[test]
@@ -99,9 +119,18 @@ mod tests {
         generate_to_writer(Shell::Zsh, &mut cmd, &mut output);
         let output_str = String::from_utf8(output).unwrap();
         // Verify subcommands are mentioned in completions
-        assert!(output_str.contains("check"), "Should include check subcommand");
-        assert!(output_str.contains("export"), "Should include export subcommand");
-        assert!(output_str.contains("doctor"), "Should include doctor subcommand");
+        assert!(
+            output_str.contains("check"),
+            "Should include check subcommand"
+        );
+        assert!(
+            output_str.contains("export"),
+            "Should include export subcommand"
+        );
+        assert!(
+            output_str.contains("doctor"),
+            "Should include doctor subcommand"
+        );
     }
 
     #[test]
@@ -111,9 +140,18 @@ mod tests {
         generate_to_writer(Shell::Fish, &mut cmd, &mut output);
         let output_str = String::from_utf8(output).unwrap();
         // Verify subcommands are mentioned in completions
-        assert!(output_str.contains("check"), "Should include check subcommand");
-        assert!(output_str.contains("scan"), "Should include scan subcommand");
-        assert!(output_str.contains("cache"), "Should include cache subcommand");
+        assert!(
+            output_str.contains("check"),
+            "Should include check subcommand"
+        );
+        assert!(
+            output_str.contains("scan"),
+            "Should include scan subcommand"
+        );
+        assert!(
+            output_str.contains("cache"),
+            "Should include cache subcommand"
+        );
     }
 
     #[test]
@@ -128,12 +166,39 @@ mod tests {
 
     #[test]
     fn test_completions_output_non_empty_all_shells() {
-        let shells = [Shell::Bash, Shell::Zsh, Shell::Fish, Shell::PowerShell, Shell::Elvish];
+        let shells = [
+            Shell::Bash,
+            Shell::Zsh,
+            Shell::Fish,
+            Shell::PowerShell,
+            Shell::Elvish,
+        ];
         for shell in shells {
             let mut cmd = mock_command();
             let mut output = Vec::new();
             generate_to_writer(shell, &mut cmd, &mut output);
-            assert!(!output.is_empty(), "{:?} should produce non-empty output", shell);
+            assert!(
+                !output.is_empty(),
+                "{:?} should produce non-empty output",
+                shell
+            );
+        }
+    }
+
+    /// Defends against subcommand drift -- every variant in ALL_SUBCOMMANDS
+    /// must appear in generated bash completions.
+    #[test]
+    fn test_bash_completions_include_every_subcommand() {
+        let mut cmd = mock_command();
+        let mut output = Vec::new();
+        generate_to_writer(Shell::Bash, &mut cmd, &mut output);
+        let output_str = String::from_utf8(output).unwrap();
+        for name in ALL_SUBCOMMANDS {
+            assert!(
+                output_str.contains(name),
+                "bash completions missing subcommand: {}",
+                name
+            );
         }
     }
 }
