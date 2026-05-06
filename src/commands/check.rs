@@ -206,7 +206,13 @@ fn is_valid_ipv4(value: &str) -> bool {
     }
 }
 
-/// Check if a key name suggests it contains sensitive data
+/// Check if a key name suggests it contains sensitive data.
+///
+/// Audit-extended (May 2026 second pass) with names that frequently embed
+/// secrets in production: DATABASE_URL / REDIS_URL / MONGO_URL all
+/// commonly contain `user:password@host`; webhook URLs ARE the secret;
+/// MNEMONIC / SALT / SEED are cryptographic material; DSN often holds
+/// a Sentry/database connection key.
 pub fn is_sensitive_key(key: &str) -> bool {
     let lower = key.to_lowercase();
     let sensitive_patterns = [
@@ -218,6 +224,19 @@ pub fn is_sensitive_key(key: &str) -> bool {
         "apikey",
         "private_key",
         "privatekey",
+        // Audit-added patterns:
+        "database_url",
+        "database_uri",
+        "redis_url",
+        "mongo_url",
+        "mongodb_uri",
+        "connection_string",
+        "conn_string",
+        "dsn",
+        "webhook",
+        "mnemonic",
+        "salt",
+        "seed_phrase",
         "auth",
         "credential",
         "jwt",
@@ -239,7 +258,11 @@ pub fn is_sensitive_key(key: &str) -> bool {
     }
 
     // Also check for common suffixes
-    lower.ends_with("_key") || lower.ends_with("_token") || lower.ends_with("_secret")
+    lower.ends_with("_key")
+        || lower.ends_with("_token")
+        || lower.ends_with("_secret")
+        || lower.ends_with("_url")  // URL values often embed credentials
+        || lower.ends_with("_uri")
 }
 
 /// Mask sensitive values for safe display (truncates non-sensitive values)
@@ -247,9 +270,14 @@ pub fn mask_value(key: &str, value: &str) -> String {
     mask_value_with_spec(key, value, None)
 }
 
-/// Mask a value if the key is sensitive OR the schema explicitly marks it secret.
+/// Mask a value if the key is sensitive, the schema explicitly marks it
+/// secret, OR the value itself contains an embedded URL password
+/// (e.g. `postgres://user:secret@host` regardless of key name).
 pub fn mask_value_with_spec(key: &str, value: &str, spec_secret: Option<bool>) -> String {
-    if spec_secret.unwrap_or(false) || is_sensitive_key(key) {
+    if spec_secret.unwrap_or(false)
+        || is_sensitive_key(key)
+        || crate::secrets::value_looks_secret(value)
+    {
         "***MASKED***".to_string()
     } else {
         truncate_value(value)
@@ -827,10 +855,26 @@ fn run_watch_mode(
                         }
                     }
 
-                    // Check for env file changes with delta detection
+                    // Check for env file changes with delta detection.
+                    // Read errors here are usually editor mid-write or file
+                    // briefly unreadable -- log a debounced warning instead
+                    // of swallowing silently, so users see what's happening.
                     let resolved_path = resolve_env_file(env_path);
                     if let Some(ref resolved) = resolved_path {
-                        if let Ok(content) = fs::read_to_string(resolved) {
+                        let read_result = fs::read_to_string(resolved);
+                        let content = match read_result {
+                            Ok(c) => c,
+                            Err(e) => {
+                                eprintln!(
+                                    "[{}] read of {} failed: {} -- waiting for next event",
+                                    local_timestamp(),
+                                    resolved,
+                                    e
+                                );
+                                continue;
+                            }
+                        };
+                        {
                             let new_hash = compute_hash(&content);
 
                             // Skip if content unchanged (editor touch without changes)
@@ -1203,7 +1247,10 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
                 }
                 Ok(format!("int: {}", n))
             }
-            Err(_) => Err(format!("expected int, got '{}'", mask_value(key, value))),
+            Err(_) => Err(format!(
+                "expected int, got '{}'",
+                mask_value_with_spec(key, value, spec.secret)
+            )),
         },
         VarType::Float => match value.parse::<f64>() {
             Ok(n) => {
@@ -1221,21 +1268,30 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
                 }
                 Ok(format!("float: {}", n))
             }
-            Err(_) => Err(format!("expected float, got '{}'", mask_value(key, value))),
+            Err(_) => Err(format!(
+                "expected float, got '{}'",
+                mask_value_with_spec(key, value, spec.secret)
+            )),
         },
         VarType::Bool => {
             let v = value.to_lowercase();
             if matches!(v.as_str(), "true" | "false" | "1" | "0" | "yes" | "no") {
                 Ok(format!("bool: {}", v))
             } else {
-                Err(format!("expected bool, got '{}'", mask_value(key, value)))
+                Err(format!(
+                    "expected bool, got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ))
             }
         }
         VarType::Url => {
             if Url::parse(value).is_ok() {
                 Ok("url".to_string())
             } else {
-                Err(format!("expected url, got '{}'", mask_value(key, value)))
+                Err(format!(
+                    "expected url, got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ))
             }
         }
         VarType::Enum => match spec.values.as_ref() {
@@ -1254,7 +1310,7 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
             } else {
                 Err(format!(
                     "expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'",
-                    mask_value(key, value)
+                    mask_value_with_spec(key, value, spec.secret)
                 ))
             }
         }
@@ -1264,7 +1320,7 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
             } else {
                 Err(format!(
                     "expected email (user@domain.tld), got '{}'",
-                    mask_value(key, value)
+                    mask_value_with_spec(key, value, spec.secret)
                 ))
             }
         }
@@ -1274,7 +1330,7 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
             } else {
                 Err(format!(
                     "expected ipv4 (x.x.x.x where x is 0-255), got '{}'",
-                    mask_value(key, value)
+                    mask_value_with_spec(key, value, spec.secret)
                 ))
             }
         }
@@ -1284,7 +1340,7 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
             } else {
                 Err(format!(
                     "expected semver (x.y.z[-prerelease][+build]), got '{}'",
-                    mask_value(key, value)
+                    mask_value_with_spec(key, value, spec.secret)
                 ))
             }
         }
@@ -1294,7 +1350,7 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
             } else {
                 Err(format!(
                     "expected ipv6 address, got '{}'",
-                    mask_value(key, value)
+                    mask_value_with_spec(key, value, spec.secret)
                 ))
             }
         }
@@ -1303,7 +1359,7 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
             Ok(_) => Err("port must be between 1 and 65535".to_string()),
             Err(_) => Err(format!(
                 "expected port (1-65535), got '{}'",
-                mask_value(key, value)
+                mask_value_with_spec(key, value, spec.secret)
             )),
         },
         VarType::Date => {
@@ -1312,7 +1368,7 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
             } else {
                 Err(format!(
                     "expected date (YYYY-MM-DD), got '{}'",
-                    mask_value(key, value)
+                    mask_value_with_spec(key, value, spec.secret)
                 ))
             }
         }
@@ -1322,7 +1378,7 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
             } else {
                 Err(format!(
                     "expected hostname (RFC 1123), got '{}'",
-                    mask_value(key, value)
+                    mask_value_with_spec(key, value, spec.secret)
                 ))
             }
         }
@@ -1453,20 +1509,30 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 if let Some(ref rules) = spec.validate {
                     if let Some(min_len) = rules.min_length {
                         if value.len() < min_len {
-                            errors.push(format!(
-                                "{key}: length {} is less than minimum {}",
-                                value.len(),
-                                min_len
-                            ));
+                            // For sensitive values, hide the exact length --
+                            // it's a side channel for HMAC/AES key sizes.
+                            if spec.secret.unwrap_or(false) || is_sensitive_key(key) {
+                                errors.push(format!("{key}: length below minimum {}", min_len));
+                            } else {
+                                errors.push(format!(
+                                    "{key}: length {} is less than minimum {}",
+                                    value.len(),
+                                    min_len
+                                ));
+                            }
                         }
                     }
                     if let Some(max_len) = rules.max_length {
                         if value.len() > max_len {
-                            errors.push(format!(
-                                "{key}: length {} exceeds maximum {}",
-                                value.len(),
-                                max_len
-                            ));
+                            if spec.secret.unwrap_or(false) || is_sensitive_key(key) {
+                                errors.push(format!("{key}: length exceeds maximum {}", max_len));
+                            } else {
+                                errors.push(format!(
+                                    "{key}: length {} exceeds maximum {}",
+                                    value.len(),
+                                    max_len
+                                ));
+                            }
                         }
                     }
                     if let Some(ref pattern) = rules.pattern {
@@ -1491,7 +1557,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                     Err(_) => {
                         errors.push(format!(
                             "{key}: expected int, got '{}'",
-                            mask_value(key, value)
+                            mask_value_with_spec(key, value, spec.secret)
                         ));
                     }
                     Ok(n) => {
@@ -1519,7 +1585,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                     Err(_) => {
                         errors.push(format!(
                             "{key}: expected float, got '{}'",
-                            mask_value(key, value)
+                            mask_value_with_spec(key, value, spec.secret)
                         ));
                     }
                     Ok(n) => {
@@ -1550,7 +1616,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 if !ok {
                     errors.push(format!(
                         "{key}: expected bool (true/false/1/0/yes/no), got '{}'",
-                        mask_value(key, value)
+                        mask_value_with_spec(key, value, spec.secret)
                     ));
                 }
             }
@@ -1559,7 +1625,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 if Url::parse(value).is_err() {
                     errors.push(format!(
                         "{key}: expected url, got '{}'",
-                        mask_value(key, value)
+                        mask_value_with_spec(key, value, spec.secret)
                     ));
                 }
             }
@@ -1574,7 +1640,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                             let mut error_msg = format!(
                                 "{key}: expected one of {:?}, got '{}'",
                                 allowed,
-                                mask_value(key, value)
+                                mask_value_with_spec(key, value, spec.secret)
                             );
                             // Add "Did you mean?" suggestion
                             if let Some(suggestion) =
@@ -1592,7 +1658,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 if !uuid_regex().is_match(value) {
                     errors.push(format!(
                         "{key}: expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'",
-                        mask_value(key, value)
+                        mask_value_with_spec(key, value, spec.secret)
                     ));
                 }
             }
@@ -1601,7 +1667,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 if !email_regex().is_match(value) {
                     errors.push(format!(
                         "{key}: expected email (user@domain.tld), got '{}'",
-                        mask_value(key, value)
+                        mask_value_with_spec(key, value, spec.secret)
                     ));
                 }
             }
@@ -1610,7 +1676,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 if !is_valid_ipv4(value) {
                     errors.push(format!(
                         "{key}: expected ipv4 (x.x.x.x where x is 0-255), got '{}'",
-                        mask_value(key, value)
+                        mask_value_with_spec(key, value, spec.secret)
                     ));
                 }
             }
@@ -1619,7 +1685,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 if !semver_regex().is_match(value) {
                     errors.push(format!(
                         "{key}: expected semver (x.y.z[-prerelease][+build]), got '{}'",
-                        mask_value(key, value)
+                        mask_value_with_spec(key, value, spec.secret)
                     ));
                 }
             }
@@ -1628,7 +1694,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 if !ipv6_regex().is_match(value) {
                     errors.push(format!(
                         "{key}: expected ipv6 address, got '{}'",
-                        mask_value(key, value)
+                        mask_value_with_spec(key, value, spec.secret)
                     ));
                 }
             }
@@ -1641,7 +1707,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 Err(_) => {
                     errors.push(format!(
                         "{key}: expected port (1-65535), got '{}'",
-                        mask_value(key, value)
+                        mask_value_with_spec(key, value, spec.secret)
                     ));
                 }
             },
@@ -1650,7 +1716,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 if !date_regex().is_match(value) {
                     errors.push(format!(
                         "{key}: expected date (YYYY-MM-DD), got '{}'",
-                        mask_value(key, value)
+                        mask_value_with_spec(key, value, spec.secret)
                     ));
                 }
             }
@@ -1659,7 +1725,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
                 if value.len() > 253 || !hostname_regex().is_match(value) {
                     errors.push(format!(
                         "{key}: expected hostname (RFC 1123), got '{}'",
-                        mask_value(key, value)
+                        mask_value_with_spec(key, value, spec.secret)
                     ));
                 }
             }
@@ -2265,7 +2331,14 @@ mod tests {
         let env = make_env(vec![("API_KEY", "short")]);
         let errors = validate(&schema, &env);
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("less than minimum"));
+        // For sensitive keys (API_KEY), the audit-fixed format hides
+        // exact length: "length below minimum N". For non-sensitive
+        // keys it would show "length M is less than minimum N".
+        assert!(
+            errors[0].contains("below minimum") || errors[0].contains("less than minimum"),
+            "expected length-error message, got: {}",
+            errors[0]
+        );
     }
 
     #[test]
@@ -2657,10 +2730,26 @@ mod tests {
 
     #[test]
     fn test_is_sensitive_key_not_sensitive() {
-        assert!(!is_sensitive_key("DATABASE_URL"));
+        // DATABASE_URL is NOW sensitive (audit-extended policy: URL values
+        // commonly embed user:password@host credentials).
         assert!(!is_sensitive_key("PORT"));
         assert!(!is_sensitive_key("NODE_ENV"));
         assert!(!is_sensitive_key("DEBUG"));
+        assert!(!is_sensitive_key("LOG_LEVEL"));
+    }
+
+    #[test]
+    fn test_is_sensitive_key_audit_extended() {
+        // Audit-added patterns (May 2026 second pass): URL-bearing keys
+        // and crypto-material names are now masked by default.
+        assert!(is_sensitive_key("DATABASE_URL"));
+        assert!(is_sensitive_key("REDIS_URL"));
+        assert!(is_sensitive_key("MONGO_URL"));
+        assert!(is_sensitive_key("CONNECTION_STRING"));
+        assert!(is_sensitive_key("DSN"));
+        assert!(is_sensitive_key("WEBHOOK_URL"));
+        assert!(is_sensitive_key("MNEMONIC"));
+        assert!(is_sensitive_key("SLACK_WEBHOOK"));
     }
 
     #[test]

@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -43,6 +42,11 @@ pub const MAX_RESPONSE_BYTES: u64 = 5 * 1024 * 1024;
 /// verification value. 32 hex chars = 128 bits, low enough collision risk
 /// while still allowing convenient short pins.
 pub const MIN_HASH_PREFIX_LEN: usize = 32;
+
+/// Maximum CA certificate file size to read. Defends against malicious
+/// `--ca-cert /dev/zero` or symlink-to-huge-file inputs that would
+/// otherwise exhaust memory before parse_pem rejects.
+pub const MAX_CA_CERT_BYTES: u64 = 1024 * 1024;
 
 /// Security options for remote schema fetching
 #[derive(Debug, Clone)]
@@ -284,9 +288,22 @@ fn fetch_url_secure(url: &str, ca_cert_path: Option<&str>) -> Result<String, Rem
         .map_err(|e| RemoteError::Network(e.to_string()))
 }
 
-/// Build TLS configuration with optional custom CA certificate
+/// Build TLS configuration with optional custom CA certificate.
+///
+/// Caps the cert file size at MAX_CA_CERT_BYTES (1 MiB) before reading
+/// to defend against `--ca-cert /dev/zero` and symlink-to-huge-file.
 fn build_tls_config(ca_cert_path: Option<&str>) -> Result<TlsConfig, RemoteError> {
     if let Some(ca_path) = ca_cert_path {
+        if let Ok(meta) = fs::metadata(ca_path) {
+            if meta.len() > MAX_CA_CERT_BYTES {
+                return Err(RemoteError::CertificateError(format!(
+                    "CA certificate file {} is {} bytes, exceeds {} byte limit",
+                    ca_path,
+                    meta.len(),
+                    MAX_CA_CERT_BYTES
+                )));
+            }
+        }
         let pem_data = fs::read(ca_path).map_err(|e| {
             RemoteError::CertificateError(format!("failed to read {}: {}", ca_path, e))
         })?;
@@ -376,12 +393,17 @@ fn metadata_path_for_url(url: &str) -> Option<PathBuf> {
     })
 }
 
-/// Write schema content to cache with metadata
+/// Write schema content to cache with metadata, atomically.
+///
+/// Both files (content + .meta sidecar) are staged to .tmp paths in the
+/// same directory then renamed into place. POSIX rename is atomic; on
+/// Windows fs::rename maps to ReplaceFileW. A SIGKILL between the two
+/// renames can leave content fresh + .meta stale, but the read path
+/// recomputes SHA-256 against .meta.content_hash and treats mismatch
+/// as a cache miss, so the worst case is a refetch.
 fn write_cache_with_metadata(url: &str, content: &str) -> Result<(), RemoteError> {
-    // Write content
     write_cache(url, content)?;
 
-    // Write metadata
     let metadata_path = match metadata_path_for_url(url) {
         Some(p) => p,
         None => return Ok(()),
@@ -401,8 +423,32 @@ fn write_cache_with_metadata(url: &str, content: &str) -> Result<(), RemoteError
     let metadata_json =
         serde_json::to_string(&metadata).map_err(|e| RemoteError::Cache(e.to_string()))?;
 
-    fs::write(&metadata_path, metadata_json).map_err(|e| RemoteError::Cache(e.to_string()))?;
+    write_atomic(&metadata_path, metadata_json.as_bytes())
+        .map_err(|e| RemoteError::Cache(e.to_string()))?;
 
+    Ok(())
+}
+
+/// Stage `bytes` to `<path>.tmp` then rename atomically over `path`.
+/// Cleans up the temp file on rename failure. Exposed crate-internal so
+/// command modules (init/example/template/export) can use the same
+/// pattern fix.rs uses for `.env` rewrites.
+pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(match path.extension() {
+        Some(ext) => format!("{}.tmp", ext.to_string_lossy()),
+        None => "tmp".to_string(),
+    });
+    if let Err(e) = fs::write(&tmp, bytes) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -421,7 +467,10 @@ pub fn cache_filename(url: &str) -> String {
     format!("{}.json", &digest[..16])
 }
 
-/// Read cached schema if available and not expired
+/// Read cached schema if available, not expired, and content_hash in the
+/// .meta sidecar matches the on-disk content. A mismatch (cache poisoning,
+/// torn write, missing .meta) is treated as a cache miss so the caller
+/// will refetch from origin.
 fn read_cache(url: &str) -> Result<Option<String>, RemoteError> {
     let cache_dir = match cache_dir() {
         Some(dir) => dir,
@@ -429,52 +478,89 @@ fn read_cache(url: &str) -> Result<Option<String>, RemoteError> {
     };
 
     let cache_path = cache_dir.join(cache_filename(url));
-
     if !cache_path.exists() {
         return Ok(None);
     }
 
-    // Check if cache is expired
     let metadata = fs::metadata(&cache_path).map_err(|e| RemoteError::Cache(e.to_string()))?;
-
     let modified = metadata
         .modified()
         .map_err(|e| RemoteError::Cache(e.to_string()))?;
-
     let age = SystemTime::now()
         .duration_since(modified)
         .unwrap_or(Duration::MAX);
-
     if age.as_secs() > CACHE_TTL_SECS {
-        // Cache expired
         return Ok(None);
     }
 
-    // Read cached content
     let content = fs::read_to_string(&cache_path).map_err(|e| RemoteError::Cache(e.to_string()))?;
+
+    // Verify content against .meta sidecar's content_hash. A mismatch can be
+    // caused by cache poisoning, torn writes, or a missing/corrupt .meta.
+    // Treat any of those as a cache miss -- safer to refetch than to trust.
+    if let Some(meta_path) = metadata_path_for_url(url) {
+        if meta_path.exists() {
+            if let Ok(meta_content) = fs::read_to_string(&meta_path) {
+                if let Ok(meta) = serde_json::from_str::<CacheMetadata>(&meta_content) {
+                    let actual_hash = compute_content_hash(&content);
+                    if actual_hash != meta.content_hash {
+                        eprintln!(
+                            "warning: cache content hash mismatch for {} -- refetching",
+                            url
+                        );
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    }
 
     Ok(Some(content))
 }
 
-/// Write schema content to cache
+/// Write schema content to cache atomically (stage to .tmp + rename).
 fn write_cache(url: &str, content: &str) -> Result<(), RemoteError> {
     let cache_dir = match cache_dir() {
         Some(dir) => dir,
         None => return Ok(()), // No cache dir available, skip caching
     };
 
-    // Create cache directory if it doesn't exist
     fs::create_dir_all(&cache_dir).map_err(|e| RemoteError::Cache(e.to_string()))?;
+    restrict_dir_permissions(&cache_dir);
 
     let cache_path = cache_dir.join(cache_filename(url));
-
-    let mut file = fs::File::create(&cache_path).map_err(|e| RemoteError::Cache(e.to_string()))?;
-
-    file.write_all(content.as_bytes())
-        .map_err(|e| RemoteError::Cache(e.to_string()))?;
-
+    write_atomic(&cache_path, content.as_bytes()).map_err(|e| RemoteError::Cache(e.to_string()))?;
+    restrict_file_permissions(&cache_path);
     Ok(())
 }
+
+/// On Unix, set cache directory mode to 0700 so other local users cannot
+/// read cached schema bodies (which may contain sensitive comments or
+/// embedded URLs from authenticated fetches).
+#[cfg(unix)]
+fn restrict_dir_permissions(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_mode(0o700);
+        let _ = fs::set_permissions(path, perms);
+    }
+}
+#[cfg(not(unix))]
+fn restrict_dir_permissions(_path: &std::path::Path) {}
+
+/// On Unix, restrict cached file mode to 0600 (owner read/write only).
+#[cfg(unix)]
+fn restrict_file_permissions(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_mode(0o600);
+        let _ = fs::set_permissions(path, perms);
+    }
+}
+#[cfg(not(unix))]
+fn restrict_file_permissions(_path: &std::path::Path) {}
 
 /// Resolve a relative URL against a base URL
 pub fn resolve_relative_url(base_url: &str, relative_path: &str) -> Result<String, RemoteError> {

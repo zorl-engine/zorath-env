@@ -1,7 +1,5 @@
 //! CI/CD template generation for zenv validation workflows
 
-use std::fs;
-
 use crate::errors::CliError;
 
 /// Available template names
@@ -53,7 +51,7 @@ pub fn run(
 
     match output {
         Some(path) => {
-            fs::write(path, &content)
+            crate::remote::write_atomic(std::path::Path::new(path), content.as_bytes())
                 .map_err(|e| CliError::Input(format!("Failed to write {}: {}", path, e)))?;
             println!("Template written to {}", path);
         }

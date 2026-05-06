@@ -33,6 +33,60 @@ struct FixAnalysis {
 }
 
 /// Run the fix command
+/// Reject `--env` paths that look like traversal attempts. zenv fix
+/// mutates the file in place and drops a backup beside it -- without
+/// this check, `zenv fix --env "../../etc/.env"` becomes a generic
+/// file-rewrite primitive.
+///
+/// Allows: plain `.env`, `.env.local`, `.env.production` (any `.env*`
+/// basename), and absolute paths (user explicitly chose the location).
+///
+/// Rejects: relative paths containing `..` components that resolve outside
+/// CWD, and basenames that don't match `.env*` (defends against
+/// `zenv fix --env /home/victim/.ssh/config`).
+fn validate_env_path(env_path: &str) -> Result<(), CliError> {
+    let path = Path::new(env_path);
+
+    // Basename gate: must look like a .env* file.
+    let basename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| CliError::Input(format!("invalid --env path: {}", env_path)))?;
+    if !(basename == ".env" || basename.starts_with(".env.")) {
+        return Err(CliError::Input(format!(
+            "--env basename must match '.env' or '.env.*', got '{}'",
+            basename
+        )));
+    }
+
+    // Containment check ONLY for relative paths with `..` traversal.
+    // Absolute paths are user-chosen and need no traversal containment.
+    use std::path::Component;
+    let has_parent_dir = path.components().any(|c| c == Component::ParentDir);
+    if has_parent_dir && !path.is_absolute() {
+        let cwd = std::env::current_dir()
+            .map_err(|e| CliError::Input(format!("cannot read current directory: {}", e)))?;
+        let cwd_canon = fs::canonicalize(&cwd).unwrap_or(cwd.clone());
+        let resolved = cwd.join(path);
+        let mut existing = resolved.as_path();
+        while !existing.exists() {
+            match existing.parent() {
+                Some(p) => existing = p,
+                None => break,
+            }
+        }
+        if let Ok(existing_canon) = fs::canonicalize(existing) {
+            if !existing_canon.starts_with(&cwd_canon) {
+                return Err(CliError::Input(format!(
+                    "--env path '{}' escapes current directory via '..' traversal",
+                    env_path
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -45,6 +99,7 @@ pub fn run(
     ca_cert: Option<&str>,
     rate_limit_seconds: Option<u64>,
 ) -> Result<(), CliError> {
+    validate_env_path(env_path)?;
     // Load schema
     let options = LoadOptions {
         no_cache,
@@ -579,10 +634,44 @@ fn apply_fixes(
     let pid = std::process::id();
     let tmp_path = parent.join(format!(".{}.zenvtmp.{}", file_name, pid));
 
+    // Capture the original .env mode so we can restore it after rename.
+    // On Unix, fs::write of the temp file uses the current umask (typically
+    // 0644). We tighten to the original mode (or 0600 if no original)
+    // before the atomic rename so other local users never see the rewritten
+    // file as world-readable, even briefly.
+    #[cfg(unix)]
+    let original_mode: Option<u32> = {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(env_path)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o7777)
+    };
+    #[cfg(not(unix))]
+    let original_mode: Option<u32> = None;
+
     fs::write(&tmp_path, &final_content)
         .map_err(|e| format!("failed to write {}: {}", tmp_path.display(), e))?;
+
+    // Restrict tmp file permissions BEFORE rename so the rewritten file
+    // is never observable as 0644 by other users.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = original_mode.unwrap_or(0o600);
+        let mut perms = match fs::metadata(&tmp_path) {
+            Ok(m) => m.permissions(),
+            Err(_) => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(format!("failed to stat temp file {}", tmp_path.display()));
+            }
+        };
+        perms.set_mode(mode);
+        let _ = fs::set_permissions(&tmp_path, perms);
+    }
+    #[cfg(not(unix))]
+    let _ = original_mode; // silence unused on non-Unix
+
     if let Err(e) = fs::rename(&tmp_path, env_path) {
-        // Clean up the temp file if rename failed
         let _ = fs::remove_file(&tmp_path);
         return Err(format!(
             "failed to rename {} -> {}: {}",
@@ -617,11 +706,12 @@ fn apply_fixes(
     Ok(())
 }
 
-/// Create a backup of the original file
+/// Create a backup of the original file. On Unix, restricts the backup
+/// to the original file's mode (or 0600 if the original is missing) so
+/// secrets can't leak via a world-readable backup.
 fn create_backup(env_path: &str, content: &str) -> Result<String, String> {
     let base_backup = format!("{}.backup", env_path);
 
-    // Find available backup filename
     let backup_path = if !Path::new(&base_backup).exists() {
         base_backup
     } else {
@@ -639,6 +729,20 @@ fn create_backup(env_path: &str, content: &str) -> Result<String, String> {
     };
 
     fs::write(&backup_path, content).map_err(|e| format!("failed to create backup: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(env_path)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o7777)
+            .unwrap_or(0o600);
+        if let Ok(meta) = fs::metadata(&backup_path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(mode);
+            let _ = fs::set_permissions(&backup_path, perms);
+        }
+    }
 
     Ok(backup_path)
 }

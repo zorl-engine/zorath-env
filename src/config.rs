@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const CONFIG_FILENAME: &str = ".zenvrc";
 
@@ -185,23 +185,82 @@ impl Config {
     }
 }
 
-/// Find .zenvrc file starting from current directory and walking up
+/// Find .zenvrc file starting from current directory and walking up.
+///
+/// Walks upward but STOPS at the first repo-root marker (`.git`,
+/// `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`). This
+/// prevents an attacker who can drop a `.zenvrc` in a shared parent
+/// (e.g. `/tmp/.zenvrc` when running zenv from `/tmp/myproj`) from
+/// silently changing defaults like `schema`, `ca_cert`, or `verify_hash`.
+///
+/// On Unix, additionally skips any `.zenvrc` not owned by the current
+/// uid (mirrors git's `safe.directory` model). The skip is a warning,
+/// not an error -- next iteration continues walking upward.
 fn find_config_file() -> Option<PathBuf> {
+    const REPO_MARKERS: &[&str] = &[
+        ".git",
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "go.mod",
+    ];
+
     let mut current = env::current_dir().ok()?;
 
     loop {
         let config_path = current.join(CONFIG_FILENAME);
         if config_path.exists() {
-            return Some(config_path);
+            if config_owner_is_safe(&config_path) {
+                return Some(config_path);
+            } else if env::var("ZENV_QUIET").is_err() {
+                eprintln!(
+                    "warning: skipping {} -- not owned by current user",
+                    config_path.display()
+                );
+                // Fall through and continue walking upward.
+            }
         }
 
-        // Move to parent directory
+        // Stop at repo root markers. This bounds the walk to the project
+        // tree, even when the project sits under a world-writable parent.
+        for marker in REPO_MARKERS {
+            if current.join(marker).exists() {
+                return None;
+            }
+        }
+
         if !current.pop() {
             break;
         }
     }
 
     None
+}
+
+/// On Unix, returns true if the file is owned by the current uid.
+/// On other platforms (Windows), returns true unconditionally (no
+/// equivalent ownership check available without elevated APIs).
+#[cfg(unix)]
+fn config_owner_is_safe(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match fs::metadata(path) {
+        Ok(meta) => {
+            // SAFETY: getuid() is always safe; returns the current real UID.
+            let current_uid = unsafe { libc_getuid() };
+            meta.uid() == current_uid
+        }
+        Err(_) => false,
+    }
+}
+#[cfg(not(unix))]
+fn config_owner_is_safe(_path: &Path) -> bool {
+    true
+}
+
+#[cfg(unix)]
+extern "C" {
+    #[link_name = "getuid"]
+    fn libc_getuid() -> u32;
 }
 
 #[cfg(test)]

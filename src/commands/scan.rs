@@ -273,8 +273,14 @@ fn scan_file(path: &Path, patterns: &[EnvPattern]) -> Result<Vec<EnvUsage>, Stri
         }
 
         for pattern in patterns {
-            // Optionally filter by file language for more accurate results
-            // For now, we apply all patterns to allow cross-language detection
+            // Language-gate the noisy `$VAR` shell pattern so it doesn't
+            // false-positive on Markdown citing `$AWS_SECRET_ACCESS_KEY`,
+            // PHP `$_ENV` superglobal, makefile vars, etc. All other
+            // language patterns are specific enough (require `os.Getenv`,
+            // `process.env`, etc.) to be safe cross-language.
+            if pattern.language == "shell" && file_lang != Some("shell") {
+                continue;
+            }
 
             for cap in pattern.pattern.captures_iter(line) {
                 if let Some(var_match) = cap.get(1) {

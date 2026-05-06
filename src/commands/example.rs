@@ -1,6 +1,5 @@
 use crate::errors::CliError;
 use crate::schema::{load_schema_with_options, LoadOptions, Schema, VarSpec, VarType};
-use std::fs;
 
 /// Generate .env.example content from a Schema (library function)
 ///
@@ -62,9 +61,9 @@ pub fn run(
     // Use the library function
     let output = generate(&schema, include_defaults);
 
-    // Output to file or stdout
+    // Output to file (atomically) or stdout
     if let Some(path) = output_path {
-        fs::write(path, &output)
+        crate::remote::write_atomic(std::path::Path::new(path), output.as_bytes())
             .map_err(|e| CliError::Input(format!("failed to write output: {}", e)))?;
         println!("Generated: {}", path);
     } else {
@@ -458,7 +457,7 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        let content = fs::read_to_string(&output_path).unwrap();
+        let content = std::fs::read_to_string(&output_path).unwrap();
         assert!(content.contains("DEBUG=false"));
         assert!(content.contains("PORT=3000"));
         assert!(content.contains("# HTTP port"));
@@ -484,7 +483,7 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        let content = fs::read_to_string(&output_path).unwrap();
+        let content = std::fs::read_to_string(&output_path).unwrap();
         // Should use smart placeholder (3000 for port), not schema default (8080)
         assert!(content.contains("PORT=3000"));
         assert!(!content.contains("PORT=8080"));
@@ -517,7 +516,7 @@ mod tests {
         )
         .unwrap();
 
-        let content = fs::read_to_string(&output_path).unwrap();
+        let content = std::fs::read_to_string(&output_path).unwrap();
         let apple_pos = content.find("APPLE=").unwrap();
         let mango_pos = content.find("MANGO=").unwrap();
         let zebra_pos = content.find("ZEBRA=").unwrap();
@@ -556,7 +555,7 @@ mod tests {
         )
         .unwrap();
 
-        let content = fs::read_to_string(&output_path).unwrap();
+        let content = std::fs::read_to_string(&output_path).unwrap();
         assert!(content.contains("# Type: string"));
         assert!(content.contains("# Type: int"));
         assert!(content.contains("# Type: float"));

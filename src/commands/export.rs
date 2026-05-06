@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fs;
 
 use crate::envfile;
 use crate::errors::CliError;
@@ -141,6 +140,10 @@ pub fn run(
             .filter(|(k, _)| schema.contains_key(k))
             .collect();
 
+        // Warn when emitting `secret: true` keys to plaintext formats.
+        // ConfigMaps / dotenv / json on disk are not encrypted at rest.
+        warn_if_secret_to_plaintext(&filtered, &schema, export_format);
+
         let result = export(&filtered, export_format).map_err(CliError::Input)?;
         output_result(&result, output)
     } else {
@@ -149,10 +152,47 @@ pub fn run(
     }
 }
 
+/// Print a warning if any key being exported has `secret: true` in the
+/// schema and the target format stores the value in plaintext (k8s
+/// ConfigMap, JSON, dotenv, systemd, shell). Skipped for github-secrets
+/// which is the intended target for sensitive values.
+fn warn_if_secret_to_plaintext(
+    env_map: &HashMap<String, String>,
+    schema: &schema::Schema,
+    format: ExportFormat,
+) {
+    use ExportFormat::*;
+    let target_is_plaintext = matches!(format, K8s | Json | Dotenv | Systemd | Shell | Docker);
+    if !target_is_plaintext {
+        return;
+    }
+    let mut leaked: Vec<&str> = env_map
+        .keys()
+        .filter_map(|k| {
+            let spec = schema.get(k)?;
+            if spec.secret == Some(true) {
+                Some(k.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    leaked.sort();
+    if !leaked.is_empty() && std::env::var("ZENV_QUIET").is_err() {
+        eprintln!(
+            "warning: exporting {} key(s) marked secret: true to plaintext format '{}': {}",
+            leaked.len(),
+            format.name(),
+            leaked.join(", ")
+        );
+        eprintln!("         consider --format github-secrets or your platform's secrets manager.");
+    }
+}
+
 fn output_result(result: &str, output: Option<&str>) -> Result<(), CliError> {
     match output {
         Some(path) => {
-            fs::write(path, result)
+            crate::remote::write_atomic(std::path::Path::new(path), result.as_bytes())
                 .map_err(|e| CliError::Input(format!("Failed to write {}: {}", path, e)))?;
             eprintln!("Exported to {}", path);
             Ok(())
@@ -324,12 +364,18 @@ fn escape_docker_value(value: &str) -> String {
     }
 }
 
-/// Escape a value for YAML
+/// Escape a value for YAML.
+///
+/// Force-quotes when the value would be misparsed by `kubectl apply` or any
+/// YAML 1.2 parser. Includes the YAML "indicator" leading characters that
+/// the prior implementation missed: `&` (anchor), `*` (alias), `!` (tag),
+/// `|` `>` (block scalars), `%` (directive), `@` ``` (reserved),
+/// `?` (mapping key), `-` (sequence entry), `[` `{` `,` (flow indicators).
 fn escape_yaml_value(value: &str) -> String {
-    // YAML needs quoting for certain characters
-    if value.contains(':')
+    let needs_quote = value.contains(':')
         || value.contains('#')
         || value.contains('\n')
+        || value.contains('\t')
         || value.contains('"')
         || value.contains('\'')
         || value.is_empty()
@@ -339,12 +385,20 @@ fn escape_yaml_value(value: &str) -> String {
         || value == "false"
         || value == "null"
         || value.parse::<f64>().is_ok()
-    {
-        // Use double quotes and escape
+        // Leading YAML indicators that change parsing
+        || matches!(
+            value.as_bytes().first(),
+            Some(b'&' | b'*' | b'!' | b'|' | b'>' | b'%' | b'@' | b'`' | b'?' | b'-' | b'[' | b'{' | b',')
+        )
+        // Any control character (other than tab/newline already handled)
+        || value.chars().any(|c| c.is_control() && c != '\t' && c != '\n');
+
+    if needs_quote {
         let escaped = value
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
-            .replace('\n', "\\n");
+            .replace('\n', "\\n")
+            .replace('\t', "\\t");
         format!("\"{}\"", escaped)
     } else {
         value.to_string()

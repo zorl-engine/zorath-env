@@ -102,10 +102,53 @@ fn get_secret_patterns() -> &'static [SecretPattern] {
                 name: "AWS Access Key ID",
                 pattern: Regex::new(r"^AKIA[0-9A-Z]{16}$").unwrap(),
             },
-            // AWS Secret Access Key (40 char base64-ish)
+            // AWS Secret Access Key (40 char base64-ish). Tightened to
+            // require base64 padding-style ending so we don't false-positive
+            // on every 40-char hex/base64 blob (Git SHA-1, hash digests,
+            // etc.). Pure-hex 40-char values still hit via entropy fallback.
             SecretPattern {
                 name: "AWS Secret Access Key",
-                pattern: Regex::new(r"^[A-Za-z0-9/+=]{40}$").unwrap(),
+                pattern: Regex::new(r"^(?:[A-Za-z0-9+/]{40}|[A-Za-z0-9+/]{38}==|[A-Za-z0-9+/]{39}=)$")
+                    .unwrap(),
+            },
+            // OpenAI API keys (sk-... and sk-proj-...)
+            SecretPattern {
+                name: "OpenAI API key",
+                pattern: Regex::new(r"^sk-(proj-)?[A-Za-z0-9_\-]{20,}$").unwrap(),
+            },
+            // Anthropic API keys (sk-ant-api... / sk-ant-admin...)
+            SecretPattern {
+                name: "Anthropic API key",
+                pattern: Regex::new(r"^sk-ant-(api|admin)\d+-[A-Za-z0-9_\-]{20,}$").unwrap(),
+            },
+            // Discord bot tokens (3-segment dot-separated)
+            SecretPattern {
+                name: "Discord bot token",
+                pattern: Regex::new(r"^[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27}$").unwrap(),
+            },
+            // Discord webhook URL (the URL itself IS the secret)
+            SecretPattern {
+                name: "Discord webhook URL",
+                pattern: Regex::new(
+                    r"^https?://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+$",
+                )
+                .unwrap(),
+            },
+            // Slack webhook URL
+            SecretPattern {
+                name: "Slack webhook URL",
+                pattern: Regex::new(r"^https?://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+$")
+                    .unwrap(),
+            },
+            // HuggingFace user access tokens
+            SecretPattern {
+                name: "HuggingFace token",
+                pattern: Regex::new(r"^hf_[A-Za-z0-9]{34,}$").unwrap(),
+            },
+            // Datadog API keys (32 hex chars; pair with key-name context to reduce FP)
+            SecretPattern {
+                name: "Datadog API key",
+                pattern: Regex::new(r"^[a-f0-9]{32}$").unwrap(),
             },
             // Stripe API keys
             SecretPattern {
@@ -281,6 +324,26 @@ fn contains_url_password(value: &str) -> bool {
         }
     }
     false
+}
+
+/// Public predicate exposed for the masking helpers in commands::check.
+/// Returns true if the value looks like it contains a secret regardless
+/// of the key name -- catches `DATABASE_URL=postgres://u:p@h` even when
+/// the key heuristic doesn't fire, and catches Slack/Discord webhook
+/// URLs whose path IS the secret.
+pub fn value_looks_secret(value: &str) -> bool {
+    if contains_url_password(value) {
+        return true;
+    }
+    // Slack and Discord webhook URLs: path component is the secret.
+    static WEBHOOK_DETECT: OnceLock<Regex> = OnceLock::new();
+    let re = WEBHOOK_DETECT.get_or_init(|| {
+        Regex::new(
+            r"https?://(hooks\.slack\.com/services/|(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/)",
+        )
+        .unwrap()
+    });
+    re.is_match(value)
 }
 
 #[cfg(test)]
