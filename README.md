@@ -12,24 +12,29 @@
 
 **Built by Zorath -- infrastructure for builders.**
 
-A fast, single-binary CLI that validates `.env` files against typed schemas, detects secrets, scans your code, generates docs, exports to 7 deployment formats, and auto-fixes issues. No runtime dependencies. Works with any stack.
+**AI-native `.env` validation in any language.** A fast, single-binary CLI that validates `.env` files against typed schemas, detects secrets, scans your code, generates docs, exports to 7 deployment formats, and auto-fixes issues -- with a Claude Code skill AND a stdio MCP server built into the binary so AI coding agents can drive it directly. No runtime, no hosting, no telemetry.
 
-`14 types` -- `7 export formats` -- `9 language scan` -- `15 secret patterns` -- `6 framework presets` -- `686 tests`
+`14 types` -- `7 export formats` -- `9 language scan` -- `22 secret patterns` -- `6 framework presets` -- `784 tests` -- `stdio MCP` -- `Claude Code skill`
+
+> zenv is the only single-binary `.env` validator that ships a local stdio MCP server, a typed schema language with cryptographically-pinned remote inheritance, and a built-in 22-pattern secret-detection engine.
 
 ## Why zenv
 
-`.env` files drift. Teams copy/paste secrets. CI fails at 3am. Docs go stale. Nobody catches the typo until production.
+`.env` files drift. Teams copy/paste secrets. CI fails at 3am. Docs go stale. Nobody catches the typo until production. AI coding agents need a tool they can drive without a Node runtime.
 
-`zenv` catches config bugs at build time, not runtime. Your schema is the single source of truth -- docs, examples, and validation are all generated from it.
+`zenv` catches config bugs at build time, not runtime. Your schema is the single source of truth -- docs, examples, and validation are all generated from it. And every AI coding agent in your workflow can drive it through MCP without any hosted infrastructure.
 
 **What makes zenv different:**
 
+- **AI-native** -- ships a Claude Code skill AND an `mcp` subcommand that speaks JSON-RPC 2.0 over stdio per [MCP spec 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25). 5 tools, 3 resources, 3 prompts. No hosting, no telemetry, no vendor URL -- the agent drives the local binary as a subprocess
 - **Validate with real types** -- 14 validators (url, email, port, semver, uuid, ipv4, ipv6, date, hostname, and more), not just "is it a string?"
+- **Detect secrets in the validation pass** -- 22 patterns (AWS, OpenAI, Anthropic, Stripe, GitHub, GitLab, Discord/Slack webhooks, JWT, private keys, more) PLUS value-aware URL-password detection that catches `postgres://user:pass@host` even under innocuous keys like `FOO`
+- **Cryptographically-pinned remote schemas** -- fetch over HTTPS with `--verify-hash <sha256>`, custom CA, SSRF allowlist (loopback / RFC1918 / link-local / cloud metadata / IPv4-mapped IPv6). Share schemas across repos without trusting the host
 - **Scan your code** -- find env vars used in source code across 9 languages that aren't in your schema yet
 - **Export anywhere** -- shell, Docker, Kubernetes, systemd, GitHub Secrets, JSON, dotenv
-- **Detect secrets** -- 15 patterns (AWS, Stripe, GitHub, Slack, JWT, PGP keys) plus entropy analysis
-- **Auto-fix** -- add missing vars, remove unknown keys, preview changes safely with `--dry-run`
+- **Auto-fix** -- add missing vars, remove unknown keys, preview changes safely with `--dry-run`. Atomic write with Unix mode preservation
 - **One binary, any stack** -- Rust binary with no runtime deps. Node, Python, Go, Ruby, Java, PHP, Kotlin -- doesn't matter
+- **Verified supply chain** -- SLSA build provenance attestations + OIDC trusted publishing to crates.io
 
 > See how zenv compares to dotenv-linter, envalid, dotenvx, and others: [docs/comparison.md](docs/comparison.md)
 
