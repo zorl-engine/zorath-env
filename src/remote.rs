@@ -253,6 +253,62 @@ fn is_forbidden_ip(ip: &std::net::IpAddr) -> bool {
     }
 }
 
+/// Fetch a small JSON metadata response over the hardened remote pipeline
+/// (HTTPS-only, SSRF-validated host, no redirects, bounded body). Skips the
+/// schema cache and rate-limit machinery, which exist to protect SCHEMA
+/// fetches where the response is reused -- one-off metadata fetches (e.g.
+/// the version-check command querying crates.io) should hit the origin each
+/// time. Sets a stable User-Agent so origins that reject blank UA strings
+/// (crates.io among them) accept the request.
+///
+/// Routing the version check through this entry point closes the gap where
+/// `cargo search` subprocess bypassed our SSRF allowlist, response-size cap,
+/// HTTPS-only gate, and zero-redirect policy.
+pub fn fetch_metadata(url: &str) -> Result<String, RemoteError> {
+    if url.starts_with("http://") {
+        return Err(RemoteError::HttpNotAllowed);
+    }
+    if !url.starts_with("https://") {
+        return Err(RemoteError::InvalidUrl(url.to_string()));
+    }
+    validate_url_host(url)?;
+
+    let tls_config = build_tls_config(None)?;
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(HTTP_TIMEOUT_SECS)))
+        .max_redirects(0)
+        .tls_config(tls_config)
+        .build()
+        .new_agent();
+
+    let ua = format!(
+        "zenv/{} (+https://github.com/zorl-engine/zorath-env)",
+        env!("CARGO_PKG_VERSION")
+    );
+
+    let mut response = agent
+        .get(url)
+        .header("User-Agent", ua.as_str())
+        .header("Accept", "application/json")
+        .call()
+        .map_err(|e| RemoteError::Network(e.to_string()))?;
+
+    if response.status() != 200 {
+        return Err(RemoteError::HttpStatus(format!(
+            "status {} for {}",
+            response.status(),
+            url
+        )));
+    }
+
+    response
+        .body_mut()
+        .with_config()
+        .limit(MAX_RESPONSE_BYTES)
+        .read_to_string()
+        .map_err(|e| RemoteError::Network(e.to_string()))
+}
+
 /// Perform HTTP GET request with optional custom CA certificate.
 ///
 /// Disables redirects to prevent post-validation host pivoting and caps the
@@ -445,6 +501,74 @@ pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Atomic write that preserves the target file's existing Unix mode (or
+/// applies `fallback_mode` if the target doesn't exist yet). Consolidates
+/// the inline atomic-write that fix.rs::apply_fixes previously open-coded
+/// for `.env` rewrites: write_atomic above does NOT preserve mode, which
+/// would leak the user's hand-tightened `.env` perms back to the umask
+/// default (typically 0644) after a fix run.
+///
+/// Uses a PID-tagged temp filename (`.{name}.zenvtmp.{pid}`) staged in the
+/// same directory as the target so concurrent zenv invocations against the
+/// same path don't collide and `fs::rename` stays a single-FS atomic op.
+/// Tightens tmp perms BEFORE the rename so other local users never see the
+/// rewritten file at the umask default, even briefly.
+pub(crate) fn write_atomic_preserve_mode(
+    path: &std::path::Path,
+    bytes: &[u8],
+    fallback_mode: u32,
+) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "zenvtmp".to_string());
+    let pid = std::process::id();
+    let tmp = parent.join(format!(".{}.zenvtmp.{}", file_name, pid));
+
+    #[cfg(unix)]
+    let original_mode: Option<u32> = {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o7777)
+    };
+    #[cfg(not(unix))]
+    let original_mode: Option<u32> = None;
+
+    if let Err(e) = fs::write(&tmp, bytes) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = original_mode.unwrap_or(fallback_mode);
+        match fs::metadata(&tmp) {
+            Ok(meta) => {
+                let mut perms = meta.permissions();
+                perms.set_mode(mode);
+                let _ = fs::set_permissions(&tmp, perms);
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (original_mode, fallback_mode);
+    }
+
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
         return Err(e);

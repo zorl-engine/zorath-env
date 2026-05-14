@@ -618,65 +618,13 @@ fn apply_fixes(
         format!("{}\n", new_content)
     };
 
-    // Atomic write: stage to a temp file in the same directory, then rename
-    // over the target. Survives SIGKILL between stages -- the original .env
-    // is replaced as a single filesystem operation, never observed empty
-    // by readers (POSIX rename is atomic; on Windows ReplaceFileW is used).
-    let env_path_obj = Path::new(env_path);
-    let parent = env_path_obj.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = env_path_obj
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".env".to_string());
-    let pid = std::process::id();
-    let tmp_path = parent.join(format!(".{}.zenvtmp.{}", file_name, pid));
-
-    // Capture the original .env mode so we can restore it after rename.
-    // On Unix, fs::write of the temp file uses the current umask (typically
-    // 0644). We tighten to the original mode (or 0600 if no original)
-    // before the atomic rename so other local users never see the rewritten
-    // file as world-readable, even briefly.
-    #[cfg(unix)]
-    let original_mode: Option<u32> = {
-        use std::os::unix::fs::PermissionsExt;
-        fs::metadata(env_path)
-            .ok()
-            .map(|m| m.permissions().mode() & 0o7777)
-    };
-    #[cfg(not(unix))]
-    let original_mode: Option<u32> = None;
-
-    fs::write(&tmp_path, &final_content)
-        .map_err(|e| format!("failed to write {}: {}", tmp_path.display(), e))?;
-
-    // Restrict tmp file permissions BEFORE rename so the rewritten file
-    // is never observable as 0644 by other users.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = original_mode.unwrap_or(0o600);
-        let mut perms = match fs::metadata(&tmp_path) {
-            Ok(m) => m.permissions(),
-            Err(_) => {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(format!("failed to stat temp file {}", tmp_path.display()));
-            }
-        };
-        perms.set_mode(mode);
-        let _ = fs::set_permissions(&tmp_path, perms);
-    }
-    #[cfg(not(unix))]
-    let _ = original_mode; // silence unused on non-Unix
-
-    if let Err(e) = fs::rename(&tmp_path, env_path) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(format!(
-            "failed to rename {} -> {}: {}",
-            tmp_path.display(),
-            env_path,
-            e
-        ));
-    }
+    // Atomic write with mode preservation: stages to a PID-tagged temp file
+    // in the same directory, tightens perms to match the original .env (or
+    // 0600 for new files) BEFORE rename, then renames atomically over the
+    // target. Survives SIGKILL between stages -- the original .env is
+    // replaced as a single filesystem op, never observed empty by readers.
+    crate::remote::write_atomic_preserve_mode(Path::new(env_path), final_content.as_bytes(), 0o600)
+        .map_err(|e| format!("failed to atomically write {}: {}", env_path, e))?;
 
     // Print summary
     println!();

@@ -31,14 +31,54 @@ pub enum SchemaFormat {
 }
 
 impl SchemaFormat {
-    /// Detect format from file path extension
+    /// Detect format from file path extension. Falls back to JSON for paths
+    /// without a recognized extension. Use this for permissive paths (remote
+    /// URLs, paths that may legitimately omit an extension); prefer
+    /// `from_path_strict` for local file loads where a typo like
+    /// `schema.jsno` should be rejected before the JSON parser is asked to
+    /// chew on a YAML or unrelated file and emit a misleading "expected `{`"
+    /// error.
     pub fn from_path(path: &str) -> Self {
+        Self::detect(path).unwrap_or(SchemaFormat::Json)
+    }
+
+    /// Detect format from extension. Returns None when the path either has
+    /// no extension at all or carries an unknown extension (e.g.
+    /// `schema.jsno`, `schema.txt`).
+    fn detect(path: &str) -> Option<Self> {
         let lower = path.to_lowercase();
         if lower.ends_with(".yaml") || lower.ends_with(".yml") {
-            SchemaFormat::Yaml
+            Some(SchemaFormat::Yaml)
+        } else if lower.ends_with(".json") {
+            Some(SchemaFormat::Json)
         } else {
-            SchemaFormat::Json // Default to JSON for backwards compatibility
+            None
         }
+    }
+
+    /// Detect format from a LOCAL file path. Errors with a clear message
+    /// when the extension is present but unrecognized (e.g. the user typed
+    /// `schema.jsno` instead of `.json`) so the resulting failure points at
+    /// the path rather than at a confusing serde parse error 200 lines
+    /// later. A missing extension (no dot in the basename) is permitted and
+    /// defaults to JSON for backwards compatibility with extension-less
+    /// schemas already in the wild.
+    pub fn from_path_strict(path: &str) -> Result<Self, SchemaError> {
+        if let Some(fmt) = Self::detect(path) {
+            return Ok(fmt);
+        }
+        // Use Path::extension which already handles the leading-dot case
+        // correctly: `.env` / `.tmpXYZ` (tempfile-style names) report None,
+        // so they fall through to the JSON default rather than tripping the
+        // typo guard. Only fail when there IS an extension component and we
+        // don't recognize it.
+        if std::path::Path::new(path).extension().is_some() {
+            return Err(SchemaError::Read(format!(
+                "schema file '{}' has unrecognized extension; expected .json, .yaml, or .yml",
+                path
+            )));
+        }
+        Ok(SchemaFormat::Json)
     }
 
     /// Get format name for error messages
@@ -237,8 +277,16 @@ fn load_schema_with_chain(
         fs::read_to_string(path).map_err(|e| SchemaError::Read(e.to_string()))?
     };
 
-    // Detect format and parse
-    let format = SchemaFormat::from_path(path);
+    // Detect format. Remote URLs keep the permissive default-to-JSON path
+    // (paths like https://example.com/api/schema legitimately have no
+    // extension); local files use the strict variant so `schema.jsno`
+    // fails fast with a clear message instead of a misleading JSON parse
+    // error pointing at column 1.
+    let format = if remote::is_remote_url(path) {
+        SchemaFormat::from_path(path)
+    } else {
+        SchemaFormat::from_path_strict(path)?
+    };
     let schema_file: SchemaFile = parse_schema_content(&content, format)?;
 
     // Start with parent schema if extends is specified
@@ -355,9 +403,11 @@ fn resolve_relative_path(base_path: &str, relative_path: &str) -> Result<String,
 }
 
 /// Save schema to file atomically (stage to `.tmp` + rename).
-/// Format auto-detected from path extension.
+/// Format auto-detected from path extension; strict detection rejects
+/// typos like `schema.jsno` rather than silently writing JSON to a file
+/// whose extension implies a different format.
 pub fn save_schema(path: &str, schema: &Schema) -> Result<(), SchemaError> {
-    let format = SchemaFormat::from_path(path);
+    let format = SchemaFormat::from_path_strict(path)?;
     let content = match format {
         SchemaFormat::Json => serde_json::to_string_pretty(schema)
             .map_err(|e| SchemaError::Parse(format.name().to_string(), e.to_string()))?,
@@ -734,9 +784,64 @@ mod tests {
 
     #[test]
     fn test_schema_format_detection_default() {
-        // Unknown extensions default to JSON
+        // Unknown extensions default to JSON via the permissive helper
         assert_eq!(SchemaFormat::from_path("schema"), SchemaFormat::Json);
         assert_eq!(SchemaFormat::from_path("schema.txt"), SchemaFormat::Json);
+    }
+
+    #[test]
+    fn test_schema_format_strict_recognized_extensions() {
+        assert_eq!(
+            SchemaFormat::from_path_strict("schema.json").unwrap(),
+            SchemaFormat::Json
+        );
+        assert_eq!(
+            SchemaFormat::from_path_strict("schema.yaml").unwrap(),
+            SchemaFormat::Yaml
+        );
+        assert_eq!(
+            SchemaFormat::from_path_strict("schema.yml").unwrap(),
+            SchemaFormat::Yaml
+        );
+    }
+
+    #[test]
+    fn test_schema_format_strict_rejects_typo_extension() {
+        // The whole point of the strict variant: `schema.jsno` should fail
+        // with a path-pointing error, not with a confusing JSON parse error
+        // 200 lines later.
+        let err = SchemaFormat::from_path_strict("schema.jsno").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unrecognized extension"), "msg was: {}", msg);
+        assert!(msg.contains("schema.jsno"), "msg was: {}", msg);
+
+        let err = SchemaFormat::from_path_strict("schema.txt").unwrap_err();
+        assert!(err.to_string().contains("unrecognized extension"));
+    }
+
+    #[test]
+    fn test_schema_format_strict_allows_extensionless() {
+        // No dot in basename -> permitted (remote-URL paths legitimately
+        // have no extension; bare local files are a tolerated edge case).
+        assert_eq!(
+            SchemaFormat::from_path_strict("schema").unwrap(),
+            SchemaFormat::Json
+        );
+    }
+
+    #[test]
+    fn test_schema_load_rejects_typo_extension() {
+        // End-to-end: passing a .jsno path to load_schema must error before
+        // serde_json is invoked, with the message pointing at the file.
+        let dir = tempfile::TempDir::new().unwrap();
+        let bad_path = dir.path().join("env.schema.jsno");
+        std::fs::write(&bad_path, r#"{"FOO": {"type": "string"}}"#).unwrap();
+
+        let result = load_schema(bad_path.to_str().unwrap());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unrecognized extension"), "msg was: {}", msg);
     }
 
     #[test]

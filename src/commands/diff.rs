@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::envfile;
 use crate::errors::CliError;
 use crate::schema::{self, LoadOptions};
-use crate::secrets::is_sensitive_key;
+use crate::secrets::{is_sensitive_key, truncate_value_for_display};
 use crate::suggestions::find_closest_match;
 use serde::Serialize;
 
@@ -133,7 +133,7 @@ pub fn run(
         println!("Only in {}:", env_a);
         for key in &only_in_a {
             let val = map_a.get(*key).unwrap();
-            println!("  + {}={}", key, truncate_value(key, val, 50));
+            println!("  + {}={}", key, truncate_value_for_display(key, val, 50));
         }
         println!();
     }
@@ -144,7 +144,7 @@ pub fn run(
         println!("Only in {}:", env_b);
         for key in &only_in_b {
             let val = map_b.get(*key).unwrap();
-            println!("  + {}={}", key, truncate_value(key, val, 50));
+            println!("  + {}={}", key, truncate_value_for_display(key, val, 50));
         }
         println!();
     }
@@ -183,8 +183,8 @@ pub fn run(
             println!("  {}:", key);
             println!(
                 "    {} -> {}",
-                truncate_value(key, val_a, 40),
-                truncate_value(key, val_b, 40)
+                truncate_value_for_display(key, val_a, 40),
+                truncate_value_for_display(key, val_b, 40)
             );
         }
         println!();
@@ -252,23 +252,6 @@ pub fn run(
     }
 
     Ok(())
-}
-
-/// Truncate a value for display, masking sensitive-keyed values.
-/// Returns the literal `***MASKED***` for keys that look sensitive,
-/// regardless of `max_len`.
-fn truncate_value(key: &str, value: &str, max_len: usize) -> String {
-    if is_sensitive_key(key) {
-        return "***MASKED***".to_string();
-    }
-    // Replace newlines for display
-    let display = value.replace('\n', "\\n").replace('\r', "\\r");
-
-    if display.len() <= max_len {
-        display
-    } else {
-        format!("{}...", &display[..max_len])
-    }
 }
 
 /// Check for missing required variables
@@ -384,34 +367,6 @@ mod tests {
         let path = dir.path().join(name);
         fs::write(&path, content).unwrap();
         path.to_string_lossy().to_string()
-    }
-
-    #[test]
-    fn test_truncate_value_short() {
-        assert_eq!(truncate_value("FOO", "short", 10), "short");
-    }
-
-    #[test]
-    fn test_truncate_value_long() {
-        assert_eq!(
-            truncate_value("FOO", "this is a very long value", 10),
-            "this is a ..."
-        );
-    }
-
-    #[test]
-    fn test_truncate_value_newlines() {
-        assert_eq!(truncate_value("FOO", "line1\nline2", 20), "line1\\nline2");
-    }
-
-    #[test]
-    fn test_truncate_value_masks_sensitive_key() {
-        assert_eq!(
-            truncate_value("API_KEY", "sk_live_abc123", 50),
-            "***MASKED***"
-        );
-        assert_eq!(truncate_value("DB_PASSWORD", "hunter2", 50), "***MASKED***");
-        assert_eq!(truncate_value("JWT_SECRET", "x", 50), "***MASKED***");
     }
 
     #[test]
@@ -552,26 +507,6 @@ mod tests {
 
         let result = run(&env_a, &env_b, None, "text", false, None, None, None);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_truncate_value_exact_limit() {
-        // Value exactly at limit should not be truncated
-        let value = "0123456789";
-        assert_eq!(truncate_value("FOO", value, 10), value);
-    }
-
-    #[test]
-    fn test_truncate_value_one_over_limit() {
-        // Value one char over limit should be truncated
-        let value = "01234567890";
-        let result = truncate_value("FOO", value, 10);
-        assert!(result.ends_with("..."));
-    }
-
-    #[test]
-    fn test_truncate_value_empty() {
-        assert_eq!(truncate_value("FOO", "", 10), "");
     }
 
     #[test]

@@ -430,6 +430,23 @@ pub(crate) fn truncate_value(value: &str) -> String {
     }
 }
 
+/// Truncate a value for display with a caller-specified max length, masking
+/// if the key looks sensitive OR the value itself looks secret (URL with
+/// embedded password, Slack/Discord webhook). Consolidates the parallel
+/// 3-arg truncate previously duplicated in commands::diff -- callers there
+/// pass max_len=40 or 50 vs the watch-mode 30-char default.
+pub(crate) fn truncate_value_for_display(key: &str, value: &str, max_len: usize) -> String {
+    if is_sensitive_key(key) || value_looks_secret(value) {
+        return "***MASKED***".to_string();
+    }
+    let display = value.replace('\n', "\\n").replace('\r', "\\r");
+    if display.len() <= max_len {
+        display
+    } else {
+        format!("{}...", &display[..max_len])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,5 +623,91 @@ mod tests {
 
         let warnings = detect_secrets(&env, &make_lines(content), Some(&schema));
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn test_truncate_value_for_display_short() {
+        assert_eq!(truncate_value_for_display("FOO", "short", 10), "short");
+    }
+
+    #[test]
+    fn test_truncate_value_for_display_long() {
+        assert_eq!(
+            truncate_value_for_display("FOO", "this is a very long value", 10),
+            "this is a ..."
+        );
+    }
+
+    #[test]
+    fn test_truncate_value_for_display_newlines() {
+        assert_eq!(
+            truncate_value_for_display("FOO", "line1\nline2", 20),
+            "line1\\nline2"
+        );
+    }
+
+    #[test]
+    fn test_truncate_value_for_display_carriage_returns() {
+        assert_eq!(
+            truncate_value_for_display("FOO", "line1\r\nline2", 20),
+            "line1\\r\\nline2"
+        );
+    }
+
+    #[test]
+    fn test_truncate_value_for_display_masks_sensitive_key() {
+        assert_eq!(
+            truncate_value_for_display("API_KEY", "sk_live_abc123", 50),
+            "***MASKED***"
+        );
+        assert_eq!(
+            truncate_value_for_display("DB_PASSWORD", "hunter2", 50),
+            "***MASKED***"
+        );
+        assert_eq!(
+            truncate_value_for_display("JWT_SECRET", "x", 50),
+            "***MASKED***"
+        );
+    }
+
+    #[test]
+    fn test_truncate_value_for_display_masks_url_password() {
+        // Strict security improvement over the old diff.rs version: value-aware
+        // masking catches embedded URL passwords even when the key name is
+        // innocuous (e.g. plain FOO holding a postgres connection string).
+        assert_eq!(
+            truncate_value_for_display("FOO", "postgres://user:hunter2@host/db", 60),
+            "***MASKED***"
+        );
+    }
+
+    #[test]
+    fn test_truncate_value_for_display_masks_slack_webhook() {
+        assert_eq!(
+            truncate_value_for_display(
+                "HOOK",
+                "https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXX",
+                80
+            ),
+            "***MASKED***"
+        );
+    }
+
+    #[test]
+    fn test_truncate_value_for_display_exact_limit() {
+        let value = "0123456789";
+        assert_eq!(truncate_value_for_display("FOO", value, 10), value);
+    }
+
+    #[test]
+    fn test_truncate_value_for_display_one_over_limit() {
+        let value = "01234567890";
+        let result = truncate_value_for_display("FOO", value, 10);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_value_for_display_empty() {
+        assert_eq!(truncate_value_for_display("FOO", "", 10), "");
     }
 }

@@ -1,5 +1,6 @@
 const CHANGELOG_URL: &str = "https://github.com/zorl-engine/zorath-env/blob/main/CHANGELOG.md";
 const RELEASES_URL: &str = "https://github.com/zorl-engine/zorath-env/releases";
+const CRATES_IO_API: &str = "https://crates.io/api/v1/crates/zorath-env";
 
 use crate::errors::CliError;
 
@@ -33,31 +34,29 @@ pub fn run(check_update: bool) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Query crates.io API for the latest version
+/// Query crates.io API for the latest version via the hardened remote
+/// pipeline. Routing through `remote::fetch_metadata` keeps version checks
+/// behind the same gates as schema fetches (HTTPS-only, SSRF allowlist,
+/// zero redirects, bounded response body) instead of shelling out to
+/// `cargo search`, which would bypass every one of those.
 fn check_latest_version() -> Result<Option<String>, String> {
-    // Use cargo search output parsing (simpler than HTTP client)
-    let output = std::process::Command::new("cargo")
-        .args(["search", "zorath-env", "--limit", "1"])
-        .output()
-        .map_err(|e| format!("failed to run cargo search: {e}"))?;
+    let body = crate::remote::fetch_metadata(CRATES_IO_API)
+        .map_err(|e| format!("failed to query crates.io: {e}"))?;
+    parse_newest_version(&body)
+}
 
-    if !output.status.success() {
-        return Err("cargo search failed".into());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Parse: zorath-env = "0.2.1"    # description...
-    for line in stdout.lines() {
-        if line.starts_with("zorath-env") {
-            if let Some(start) = line.find('"') {
-                if let Some(end) = line[start + 1..].find('"') {
-                    return Ok(Some(line[start + 1..start + 1 + end].to_string()));
-                }
-            }
-        }
-    }
-
-    Ok(None)
+/// Parse the `crate.newest_version` field out of the crates.io JSON
+/// response. Returns `Ok(None)` only when the field is missing entirely;
+/// a malformed body is an error so the user sees something is wrong instead
+/// of a misleading "Could not determine latest version".
+fn parse_newest_version(body: &str) -> Result<Option<String>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("invalid JSON from crates.io: {e}"))?;
+    Ok(value
+        .get("crate")
+        .and_then(|c| c.get("newest_version"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string()))
 }
 
 #[cfg(test)]
@@ -73,174 +72,70 @@ mod tests {
 
     #[test]
     fn test_version_urls_defined() {
-        // Verify URL constants are defined correctly
         assert!(CHANGELOG_URL.starts_with("https://"));
         assert!(RELEASES_URL.starts_with("https://"));
+        assert!(CRATES_IO_API.starts_with("https://"));
         assert!(CHANGELOG_URL.contains("CHANGELOG"));
         assert!(RELEASES_URL.contains("releases"));
+        assert!(CRATES_IO_API.contains("crates.io/api/v1/crates/zorath-env"));
     }
 
     #[test]
-    fn test_parse_cargo_search_output() {
-        // Test the version parsing logic used in check_latest_version
-        let sample_output = r#"zorath-env = "0.3.7"    # Validate .env files against a schema"#;
-
-        // Simulate the parsing logic
-        let mut result: Option<String> = None;
-        for line in sample_output.lines() {
-            if line.starts_with("zorath-env") {
-                if let Some(start) = line.find('"') {
-                    if let Some(end) = line[start + 1..].find('"') {
-                        result = Some(line[start + 1..start + 1 + end].to_string());
-                    }
-                }
-            }
-        }
-
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), "0.3.7");
+    fn test_parse_newest_version_typical() {
+        let body = r#"{"crate":{"id":"zorath-env","name":"zorath-env","newest_version":"0.3.9"}}"#;
+        assert_eq!(
+            parse_newest_version(body).unwrap(),
+            Some("0.3.9".to_string())
+        );
     }
 
     #[test]
-    fn test_parse_cargo_search_output_with_prerelease() {
-        // Test parsing a prerelease version
-        let sample_output = r#"zorath-env = "1.0.0-beta.1"    # Description"#;
-
-        let mut result: Option<String> = None;
-        for line in sample_output.lines() {
-            if line.starts_with("zorath-env") {
-                if let Some(start) = line.find('"') {
-                    if let Some(end) = line[start + 1..].find('"') {
-                        result = Some(line[start + 1..start + 1 + end].to_string());
-                    }
-                }
-            }
-        }
-
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), "1.0.0-beta.1");
+    fn test_parse_newest_version_prerelease() {
+        let body = r#"{"crate":{"newest_version":"1.0.0-beta.1"}}"#;
+        assert_eq!(
+            parse_newest_version(body).unwrap(),
+            Some("1.0.0-beta.1".to_string())
+        );
     }
 
     #[test]
-    fn test_parse_cargo_search_no_match() {
-        // Test when package is not found
-        let sample_output = "other-package = \"1.0.0\"    # Different package";
+    fn test_parse_newest_version_missing_field() {
+        let body = r#"{"crate":{"id":"zorath-env"}}"#;
+        assert_eq!(parse_newest_version(body).unwrap(), None);
+    }
 
-        let mut result: Option<String> = None;
-        for line in sample_output.lines() {
-            if line.starts_with("zorath-env") {
-                if let Some(start) = line.find('"') {
-                    if let Some(end) = line[start + 1..].find('"') {
-                        result = Some(line[start + 1..start + 1 + end].to_string());
-                    }
-                }
-            }
-        }
+    #[test]
+    fn test_parse_newest_version_missing_crate_object() {
+        let body = r#"{"unrelated":42}"#;
+        assert_eq!(parse_newest_version(body).unwrap(), None);
+    }
 
-        assert!(result.is_none());
+    #[test]
+    fn test_parse_newest_version_invalid_json() {
+        let body = "not json at all";
+        let result = parse_newest_version(body);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid JSON"));
+    }
+
+    #[test]
+    fn test_parse_newest_version_wrong_type() {
+        // `newest_version` is not a string -- treat as missing rather than
+        // exploding, since the field exists but isn't useful.
+        let body = r#"{"crate":{"newest_version":42}}"#;
+        assert_eq!(parse_newest_version(body).unwrap(), None);
     }
 
     #[test]
     fn test_current_version_format() {
-        // Verify the current version is a valid semver
         let version = env!("CARGO_PKG_VERSION");
         let parts: Vec<&str> = version.split('.').collect();
         assert!(parts.len() >= 3, "Version should have at least 3 parts");
 
-        // First two parts should be numeric
         assert!(parts[0].parse::<u32>().is_ok());
         assert!(parts[1].parse::<u32>().is_ok());
-        // Third part might have prerelease suffix
         let patch = parts[2].split('-').next().unwrap();
         assert!(patch.parse::<u32>().is_ok());
-    }
-
-    #[test]
-    fn test_parse_cargo_search_empty_output() {
-        // Test when cargo search returns empty output
-        let sample_output = "";
-
-        let mut result: Option<String> = None;
-        for line in sample_output.lines() {
-            if line.starts_with("zorath-env") {
-                if let Some(start) = line.find('"') {
-                    if let Some(end) = line[start + 1..].find('"') {
-                        result = Some(line[start + 1..start + 1 + end].to_string());
-                    }
-                }
-            }
-        }
-
-        assert!(result.is_none(), "Empty output should return None");
-    }
-
-    #[test]
-    fn test_parse_cargo_search_malformed_line() {
-        // Test when the line is malformed (no quotes)
-        let sample_output = "zorath-env = 0.3.7    # No quotes";
-
-        let mut result: Option<String> = None;
-        for line in sample_output.lines() {
-            if line.starts_with("zorath-env") {
-                if let Some(start) = line.find('"') {
-                    if let Some(end) = line[start + 1..].find('"') {
-                        result = Some(line[start + 1..start + 1 + end].to_string());
-                    }
-                }
-            }
-        }
-
-        assert!(result.is_none(), "Malformed line should return None");
-    }
-
-    #[test]
-    fn test_parse_cargo_search_multiple_results() {
-        // Test when cargo search returns multiple results (should only match our package)
-        let sample_output = r#"zorath-env = "0.3.8"    # Validate .env files
-other-env = "1.0.0"    # Different package
-env-checker = "2.0.0"    # Another package"#;
-
-        let mut result: Option<String> = None;
-        for line in sample_output.lines() {
-            if line.starts_with("zorath-env") {
-                if let Some(start) = line.find('"') {
-                    if let Some(end) = line[start + 1..].find('"') {
-                        result = Some(line[start + 1..start + 1 + end].to_string());
-                    }
-                }
-            }
-        }
-
-        assert_eq!(
-            result,
-            Some("0.3.8".to_string()),
-            "Should match our package only"
-        );
-    }
-
-    #[test]
-    fn test_parse_cargo_search_similar_package_names() {
-        // Test that we don't accidentally match similar package names
-        let sample_output = r#"zorath-env-extra = "1.0.0"    # Different package
-zorath-env = "0.3.8"    # Our package"#;
-
-        let mut result: Option<String> = None;
-        for line in sample_output.lines() {
-            if line.starts_with("zorath-env =") || line.starts_with("zorath-env=\"") {
-                // More precise matching
-                if let Some(start) = line.find('"') {
-                    if let Some(end) = line[start + 1..].find('"') {
-                        result = Some(line[start + 1..start + 1 + end].to_string());
-                    }
-                }
-            }
-        }
-
-        assert_eq!(
-            result,
-            Some("0.3.8".to_string()),
-            "Should match exact package name"
-        );
     }
 
     #[test]
