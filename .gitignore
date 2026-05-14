@@ -19,3 +19,7 @@ distribution/
 .claude/
 TODO.md
 nul
+
+# Local developer tooling -- not part of the public project.
+.mcp.json
+.mcp.json.example
