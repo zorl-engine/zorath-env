@@ -7,7 +7,12 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
 
@@ -23,10 +28,56 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
-      - name: Smoke test (check/docs/init)
+      - name: Smoke test (all 13 commands)
+        shell: bash
         run: |
+          # Stage fixtures once. The smoke test exercises binary-level clap
+          # dispatch for every Command variant -- unit tests cover internals
+          # but a typo in a clap derive macro or a removed flag would slip
+          # past them. Each invocation asserts exit code 0 unless a
+          # non-zero is expected (none currently). Runs on all three OSes
+          # via bash -- on Windows that's Git Bash which the runner ships,
+          # and $RUNNER_TEMP keeps the temp path portable.
+          set -e
           cp examples/.env.example .env
           cp examples/env.schema.json env.schema.json
+          OUT="$RUNNER_TEMP/zenv-smoke"
+          mkdir -p "$OUT"
+
+          # Core validation + introspection
           cargo run -- check
-          cargo run -- docs > /tmp/ENVIRONMENT.md
-          cargo run -- init --example examples/.env.example --schema /tmp/env.schema.json
+          cargo run -- docs > "$OUT/ENVIRONMENT.md"
+          cargo run -- init --example examples/.env.example --schema "$OUT/env.schema.json"
+
+          # Output generators
+          cargo run -- example > "$OUT/example.env"
+          cargo run -- example --include-defaults > "$OUT/example-with-defaults.env"
+          cargo run -- export --format shell > "$OUT/export.sh"
+          cargo run -- export --format docker > "$OUT/export.dockerfile"
+          cargo run -- template github > "$OUT/template-github.yml"
+          cargo run -- template gitlab > "$OUT/template-gitlab.yml"
+          cargo run -- template --list
+
+          # Comparison + repair (write to temp copies so we don't mutate fixtures)
+          cp .env "$OUT/.env.copy"
+          cargo run -- diff .env "$OUT/.env.copy"
+          cargo run -- fix --env "$OUT/.env.copy" --dry-run
+
+          # Scanning + diagnostics. Scan emits warnings to stderr for
+          # missing-from-schema vars but still exits 0 unless the binary
+          # itself crashes -- the strict exit is for CI catching panics.
+          cargo run -- scan --path src
+          cargo run -- doctor
+
+          # Cache subcommands (the only nested-action variant)
+          cargo run -- cache stats
+          cargo run -- cache clear
+
+          # Shell completions for every supported shell
+          cargo run -- completions bash       > "$OUT/completions.bash"
+          cargo run -- completions zsh        > "$OUT/completions.zsh"
+          cargo run -- completions fish       > "$OUT/completions.fish"
+          cargo run -- completions powershell > "$OUT/completions.ps1"
+
+          # Version (no network call -- --check-update would hit crates.io)
+          cargo run -- version

@@ -18,15 +18,15 @@ struct Cli {
     config: Option<String>,
 
     /// Show verbose diagnostic output
-    #[arg(long, global = true, conflicts_with = "quiet")]
+    #[arg(long, global = true, conflicts_with = "quiet", env = "ZENV_VERBOSE")]
     verbose: bool,
 
     /// Suppress all diagnostic output
-    #[arg(long, global = true, conflicts_with = "verbose")]
+    #[arg(long, global = true, conflicts_with = "verbose", env = "ZENV_QUIET")]
     quiet: bool,
 
     /// Disable colored output (also respects NO_COLOR env var and .zenvrc)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "NO_COLOR")]
     no_color: bool,
 }
 
@@ -439,7 +439,49 @@ enum CacheAction {
     Stats,
 }
 
+/// Pure boolish-value test. Returns false for the standard falsy strings
+/// (empty, "false", "0", "no", "n", "off") and true for anything else --
+/// liberal acceptance matching the no-color.org spec ("set to a value
+/// other than the empty string") and the convention most CLIs honor for
+/// boolean env vars. Extracted from normalize_boolish_env so the spec
+/// compliance is unit-testable without mutating real process env vars.
+fn is_truthy_boolish(value: &str) -> bool {
+    let trimmed = value.trim().to_ascii_lowercase();
+    !(trimmed.is_empty()
+        || trimmed == "false"
+        || trimmed == "0"
+        || trimmed == "no"
+        || trimmed == "n"
+        || trimmed == "off")
+}
+
+/// Normalize a boolish env var so both clap's strict bool parser AND
+/// internal `env::var(name).is_err()` presence checks match user intent.
+/// Truthy values (per `is_truthy_boolish`) are canonicalized to literal
+/// "true" -- clap 4.x rejects "1" for `env=` on a SetTrue bool flag, but
+/// accepts "true"; internal modules only check presence so the specific
+/// value doesn't matter to them. Falsy values are REMOVED entirely so
+/// presence checks correctly return Err. Without this, `ZENV_QUIET=0`
+/// would be indistinguishable from `ZENV_QUIET=1` (both leave the var
+/// SET).
+fn normalize_boolish_env(name: &str) {
+    if let Ok(val) = std::env::var(name) {
+        if is_truthy_boolish(&val) {
+            std::env::set_var(name, "true");
+        } else {
+            std::env::remove_var(name);
+        }
+    }
+}
+
 fn main() {
+    // Pre-normalize boolish env vars BEFORE Cli::parse() so users can set
+    // NO_COLOR=1, ZENV_QUIET=yes, ZENV_VERBOSE=on, etc. without hitting
+    // clap's strict bool parser. See normalize_boolish_env for rationale.
+    normalize_boolish_env("ZENV_QUIET");
+    normalize_boolish_env("ZENV_VERBOSE");
+    normalize_boolish_env("NO_COLOR");
+
     let cli = Cli::parse();
 
     // Set verbosity via env vars so modules can check without threading args
@@ -692,5 +734,43 @@ fn main() {
     if let Err(e) = result {
         eprintln!("zenv error: {e}");
         std::process::exit(e.exit_code());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_truthy_boolish;
+
+    #[test]
+    fn boolish_truthy_forms() {
+        for v in [
+            "1",
+            "yes",
+            "y",
+            "on",
+            "true",
+            "enabled",
+            "anything-non-empty",
+            "TRUE",
+            "Yes",
+        ] {
+            assert!(is_truthy_boolish(v), "{} should be truthy", v);
+        }
+    }
+
+    #[test]
+    fn boolish_falsy_forms() {
+        // no-color.org compliance: empty string MUST be falsy. The other
+        // falsy strings match the conventions users expect from boolean
+        // env vars in modern CLIs.
+        for v in [
+            "", "0", "false", "no", "n", "off", "FALSE", "No", " 0 ", "  ",
+        ] {
+            assert!(
+                !is_truthy_boolish(v),
+                "{:?} should be falsy (no-color.org compliance)",
+                v
+            );
+        }
     }
 }

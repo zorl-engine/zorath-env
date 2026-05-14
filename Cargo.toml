@@ -2,6 +2,11 @@
 name = "zorath-env"
 version = "0.3.9"
 edition = "2021"
+# MSRV: 1.74 is required by clap 4.5.x. zenv also uses Ipv6Addr::to_ipv4_mapped
+# (stable since 1.63) and std::sync::OnceLock (stable since 1.70), both well
+# below this floor. Bumping clap or adopting newer std features is the main
+# driver to revisit this -- check `cargo msrv find` if either changes.
+rust-version = "1.74"
 description = "Fast CLI for .env validation against JSON/YAML schemas. 14 types, secret detection, watch mode, remote schemas, 7 export formats, CI templates, health diagnostics, code scanning, auto-fix. Language-agnostic single binary."
 license = "MIT"
 repository = "https://github.com/zorl-engine/zorath-env"
@@ -20,7 +25,7 @@ name = "zenv"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
