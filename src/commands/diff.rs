@@ -3,14 +3,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::envfile;
 use crate::errors::CliError;
 use crate::schema::{self, LoadOptions};
-use crate::secrets::{is_sensitive_key, truncate_value_for_display};
+use crate::secrets::{is_sensitive_key, truncate_value_for_display, value_looks_secret};
 use crate::suggestions::find_closest_match;
 use serde::Serialize;
 
-/// Mask sensitive values in diff output (uses key heuristic only;
-/// schema is optional for diff and may not be loaded).
+/// Mask sensitive values for the JSON diff output. Returns the literal
+/// `***MASKED***` for keys that look sensitive OR values that look secret
+/// (URL with embedded password, Slack/Discord webhook URL); otherwise
+/// returns the full value untruncated. JSON consumers are programmatic
+/// (CI scripts, jq pipelines) and rely on the full value for non-sensitive
+/// keys -- truncation belongs to the text output path's
+/// `truncate_value_for_display`. The value-aware check closes the gap
+/// where the old key-only version leaked DATABASE_URL-style passwords
+/// behind innocuous key names.
 fn mask_for_diff(key: &str, value: &str) -> String {
-    if is_sensitive_key(key) {
+    if is_sensitive_key(key) || value_looks_secret(value) {
         "***MASKED***".to_string()
     } else {
         value.to_string()
@@ -373,6 +380,47 @@ mod tests {
     fn test_mask_for_diff_masks_sensitive() {
         assert_eq!(mask_for_diff("API_KEY", "sk_live_abc"), "***MASKED***");
         assert_eq!(mask_for_diff("PORT", "3000"), "3000");
+    }
+
+    #[test]
+    fn test_mask_for_diff_masks_url_password_with_innocuous_key() {
+        // Regression guard for the C1 finding in audit-2026-05-14: the JSON
+        // output path used to mask only on is_sensitive_key, leaking embedded
+        // URL passwords when the key name was innocuous (e.g. plain FOO
+        // holding a postgres connection string).
+        assert_eq!(
+            mask_for_diff("FOO", "postgres://user:hunter2@host/db"),
+            "***MASKED***"
+        );
+        // Use a non-placeholder password -- `contains_url_password` deliberately
+        // skips `password`/`pass`/`secret`/`xxx*`/`example*`/`changeme*`/`your*`
+        // to avoid false positives on example .env files. Real-world stolen
+        // creds rarely look like that, so the value-aware mask must still fire
+        // here.
+        assert_eq!(
+            mask_for_diff("CONFIG", "mysql://admin:Tr0ub4dor!@db.internal:3306/app"),
+            "***MASKED***"
+        );
+    }
+
+    #[test]
+    fn test_mask_for_diff_masks_slack_webhook_with_innocuous_key() {
+        assert_eq!(
+            mask_for_diff(
+                "HOOK",
+                "https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXX"
+            ),
+            "***MASKED***"
+        );
+    }
+
+    #[test]
+    fn test_mask_for_diff_emits_full_value_for_safe_input() {
+        // Non-sensitive key, non-secret-shaped value must round-trip unchanged
+        // -- JSON consumers (CI scripts, jq pipelines) rely on the full value
+        // for programmatic use; truncation belongs to the text path only.
+        let long = "a-fairly-long-but-not-secret-config-value-that-must-not-be-truncated-in-json";
+        assert_eq!(mask_for_diff("DESCRIPTION", long), long);
     }
 
     #[test]

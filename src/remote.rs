@@ -244,6 +244,16 @@ fn is_forbidden_ip(ip: &std::net::IpAddr) -> bool {
                 || v4.octets() == [169, 254, 169, 254] // AWS/GCP metadata IP (also link_local, but explicit)
         }
         std::net::IpAddr::V6(v6) => {
+            // IPv4-mapped IPv6 (::ffff:0:0/96) fast path: dual-stack systems
+            // route these to the underlying IPv4 destination, so an attacker
+            // URL like https://[::ffff:127.0.0.1]/ would hit local loopback
+            // unless we apply the V4 rules. v6.is_loopback() only matches
+            // ::1, so without this recursion the V6 arm falls through and
+            // returns false for ::ffff:127.0.0.1, ::ffff:169.254.169.254
+            // (cloud metadata), and ::ffff:10.0.0.1 (RFC1918).
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_forbidden_ip(&std::net::IpAddr::V4(v4));
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
@@ -749,6 +759,80 @@ mod tests {
         // Absolute URL passthrough
         let resolved = resolve_relative_url(base, "https://other.com/schema.json").unwrap();
         assert_eq!(resolved, "https://other.com/schema.json");
+    }
+
+    #[test]
+    fn test_is_forbidden_ip_ipv4_mapped_loopback() {
+        // Regression guard for C2 in audit-2026-05-14: an attacker URL like
+        // https://[::ffff:127.0.0.1]/schema.json must NOT bypass the SSRF
+        // gate. Ipv6Addr::is_loopback() only matches ::1, so without the
+        // to_ipv4_mapped() recursion the V6 arm returns false and the
+        // request reaches local loopback.
+        let mapped: std::net::IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(
+            is_forbidden_ip(&mapped),
+            "::ffff:127.0.0.1 must be forbidden via IPv4-mapped recursion"
+        );
+    }
+
+    #[test]
+    fn test_is_forbidden_ip_ipv4_mapped_cloud_metadata() {
+        // AWS / GCP metadata service over IPv4-mapped IPv6 -- bypasses the
+        // explicit [169, 254, 169, 254] octet check unless we recurse.
+        let mapped: std::net::IpAddr = "::ffff:169.254.169.254".parse().unwrap();
+        assert!(
+            is_forbidden_ip(&mapped),
+            "::ffff:169.254.169.254 (cloud metadata) must be forbidden"
+        );
+    }
+
+    #[test]
+    fn test_is_forbidden_ip_ipv4_mapped_rfc1918() {
+        let mapped: std::net::IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert!(
+            is_forbidden_ip(&mapped),
+            "::ffff:10.0.0.1 (RFC1918 via IPv4-mapped) must be forbidden"
+        );
+
+        let mapped: std::net::IpAddr = "::ffff:192.168.1.1".parse().unwrap();
+        assert!(is_forbidden_ip(&mapped));
+
+        let mapped: std::net::IpAddr = "::ffff:172.16.0.1".parse().unwrap();
+        assert!(is_forbidden_ip(&mapped));
+    }
+
+    #[test]
+    fn test_is_forbidden_ip_native_ipv6_still_blocked() {
+        // Regression guard: don't break the existing V6 rules while adding
+        // the IPv4-mapped fast path.
+        let loopback: std::net::IpAddr = "::1".parse().unwrap();
+        assert!(is_forbidden_ip(&loopback));
+
+        let unspecified: std::net::IpAddr = "::".parse().unwrap();
+        assert!(is_forbidden_ip(&unspecified));
+
+        let link_local: std::net::IpAddr = "fe80::1".parse().unwrap();
+        assert!(is_forbidden_ip(&link_local));
+
+        let unique_local: std::net::IpAddr = "fc00::1".parse().unwrap();
+        assert!(is_forbidden_ip(&unique_local));
+    }
+
+    #[test]
+    fn test_is_forbidden_ip_public_ipv6_allowed() {
+        // Documentation prefix 2001:db8::/32 and a generic public address
+        // must NOT be forbidden -- those are legitimate public destinations.
+        let doc: std::net::IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(!is_forbidden_ip(&doc));
+
+        // ::ffff:8.8.8.8 -- IPv4-mapped public address (Google DNS). After
+        // the recursion this must NOT be forbidden because 8.8.8.8 is
+        // public; the IPv4-mapped wrapping doesn't change that.
+        let mapped_public: std::net::IpAddr = "::ffff:8.8.8.8".parse().unwrap();
+        assert!(
+            !is_forbidden_ip(&mapped_public),
+            "::ffff:8.8.8.8 (public IPv4 mapped) must NOT be forbidden"
+        );
     }
 
     // Security feature tests
