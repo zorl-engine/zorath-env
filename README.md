@@ -672,6 +672,34 @@ if [ -f "env.schema.json" ]; then
 fi
 ```
 
+## AI agent integration
+
+For developers using Claude Code or any other AI coding agent: there is
+a ready-made skill in [`integrations/claude-code/`](integrations/claude-code/)
+that teaches the agent how to drive zenv against any `.env` file in any
+project. The skill covers every subcommand, the right flags for
+programmatic use, the structured exit codes, and the anti-patterns the
+agent must not commit (e.g. never run `zenv fix` without `--dry-run` first).
+
+Install (one-liner):
+
+```bash
+# Linux / macOS
+mkdir -p ~/.claude/skills/zenv && \
+  curl -fsSL https://raw.githubusercontent.com/zorl-engine/zorath-env/main/integrations/claude-code/SKILL.md \
+  -o ~/.claude/skills/zenv/SKILL.md
+```
+
+The skill is plain markdown, runs entirely on your machine, makes no
+network calls, and has no hosted dependency. See
+[`integrations/claude-code/README.md`](integrations/claude-code/README.md)
+for the Windows install, prompts that demonstrate the integration, and
+the privacy notes.
+
+A future release will add a `zenv mcp` stdio subcommand for clients that
+prefer the MCP protocol over the skill format -- still local, still no
+hosting.
+
 ## GitHub Action
 
 Validate `.env` files in your CI/CD pipeline:
