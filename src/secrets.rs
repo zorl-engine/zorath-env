@@ -16,6 +16,17 @@ pub struct SecretWarning {
 struct SecretPattern {
     name: &'static str,
     pattern: Regex,
+    /// Optional key-name context guard. When Some, this pattern only
+    /// reports a match if the env var key (case-insensitive) contains one
+    /// of the listed substrings. Used for patterns with no structural
+    /// marker that would otherwise false-positive on common hex blobs --
+    /// Datadog API keys are bare 32-char lowercase hex strings, which
+    /// collide with MD5 digests, UUID-without-hyphens, and 32-char build
+    /// IDs. Without a key-name gate, `BUILD_HASH=<md5>` triggers a
+    /// "Datadog API key" warning. None for patterns that have distinctive
+    /// prefixes/suffixes (AKIA, sk-, ghp_, glpat-, etc.) and so don't
+    /// need the extra context check.
+    key_context: Option<&'static [&'static str]>,
 }
 
 /// Check env values for potential secrets
@@ -58,7 +69,18 @@ pub fn detect_secrets(
 
         // Check against all patterns
         let mut pattern_matched = false;
+        let key_lower = key.to_lowercase();
         for pattern in patterns {
+            // Patterns with no structural marker (e.g. Datadog's bare 32-hex)
+            // declare a key_context allowlist so they only fire when the
+            // env-var name suggests the right vendor. Skip otherwise --
+            // prevents false positives on MD5 / UUID-without-hyphens / hash
+            // build IDs that share the same shape.
+            if let Some(contexts) = pattern.key_context {
+                if !contexts.iter().any(|ctx| key_lower.contains(ctx)) {
+                    continue;
+                }
+            }
             if pattern.pattern.is_match(value) {
                 let line = line_numbers.get(key).copied().unwrap_or(0);
                 warnings.push(SecretWarning {
@@ -101,6 +123,7 @@ fn get_secret_patterns() -> &'static [SecretPattern] {
             SecretPattern {
                 name: "AWS Access Key ID",
                 pattern: Regex::new(r"^AKIA[0-9A-Z]{16}$").unwrap(),
+                key_context: None,
             },
             // AWS Secret Access Key (40 char base64-ish). Tightened to
             // require base64 padding-style ending so we don't false-positive
@@ -110,21 +133,25 @@ fn get_secret_patterns() -> &'static [SecretPattern] {
                 name: "AWS Secret Access Key",
                 pattern: Regex::new(r"^(?:[A-Za-z0-9+/]{40}|[A-Za-z0-9+/]{38}==|[A-Za-z0-9+/]{39}=)$")
                     .unwrap(),
+                key_context: None,
             },
             // OpenAI API keys (sk-... and sk-proj-...)
             SecretPattern {
                 name: "OpenAI API key",
                 pattern: Regex::new(r"^sk-(proj-)?[A-Za-z0-9_\-]{20,}$").unwrap(),
+                key_context: None,
             },
             // Anthropic API keys (sk-ant-api... / sk-ant-admin...)
             SecretPattern {
                 name: "Anthropic API key",
                 pattern: Regex::new(r"^sk-ant-(api|admin)\d+-[A-Za-z0-9_\-]{20,}$").unwrap(),
+                key_context: None,
             },
             // Discord bot tokens (3-segment dot-separated)
             SecretPattern {
                 name: "Discord bot token",
                 pattern: Regex::new(r"^[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27}$").unwrap(),
+                key_context: None,
             },
             // Discord webhook URL (the URL itself IS the secret)
             SecretPattern {
@@ -133,59 +160,74 @@ fn get_secret_patterns() -> &'static [SecretPattern] {
                     r"^https?://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+$",
                 )
                 .unwrap(),
+                key_context: None,
             },
             // Slack webhook URL
             SecretPattern {
                 name: "Slack webhook URL",
                 pattern: Regex::new(r"^https?://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+$")
                     .unwrap(),
+                key_context: None,
             },
             // HuggingFace user access tokens
             SecretPattern {
                 name: "HuggingFace token",
                 pattern: Regex::new(r"^hf_[A-Za-z0-9]{34,}$").unwrap(),
+                key_context: None,
             },
-            // Datadog API keys (32 hex chars; pair with key-name context to reduce FP)
+            // Datadog API keys -- bare 32-char lowercase hex, no structural
+            // marker. Gated to env-var names that reference Datadog so we
+            // don't false-positive on every MD5 / UUID-without-hyphens /
+            // build hash in the wild. Common naming: DATADOG_API_KEY,
+            // DD_API_KEY, DD_APP_KEY, DATADOG_APP_KEY, DDAPI_*.
             SecretPattern {
                 name: "Datadog API key",
                 pattern: Regex::new(r"^[a-f0-9]{32}$").unwrap(),
+                key_context: Some(&["datadog", "dd_api", "dd_app", "ddapi", "ddapp"]),
             },
             // Stripe API keys
             SecretPattern {
                 name: "Stripe API key",
                 pattern: Regex::new(r"^(sk|pk)_(live|test)_[0-9a-zA-Z]{24,}$").unwrap(),
+                key_context: None,
             },
             // GitHub tokens
             SecretPattern {
                 name: "GitHub token",
                 pattern: Regex::new(r"^(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}$").unwrap(),
+                key_context: None,
             },
             // GitLab tokens
             SecretPattern {
                 name: "GitLab token",
                 pattern: Regex::new(r"^glpat-[A-Za-z0-9\-]{20,}$").unwrap(),
+                key_context: None,
             },
             // Slack tokens
             SecretPattern {
                 name: "Slack token",
                 pattern: Regex::new(r"^xox[baprs]-[0-9A-Za-z\-]+$").unwrap(),
+                key_context: None,
             },
             // Private key headers
             SecretPattern {
                 name: "Private key",
                 pattern: Regex::new(r"-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----")
                     .unwrap(),
+                key_context: None,
             },
             // JWT tokens
             SecretPattern {
                 name: "JWT token",
                 pattern: Regex::new(r"^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
                     .unwrap(),
+                key_context: None,
             },
             // Google API keys
             SecretPattern {
                 name: "Google API key",
                 pattern: Regex::new(r"^AIza[0-9A-Za-z\-_]{35}$").unwrap(),
+                key_context: None,
             },
             // Heroku API key
             SecretPattern {
@@ -194,32 +236,38 @@ fn get_secret_patterns() -> &'static [SecretPattern] {
                     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
                 )
                 .unwrap(),
+                key_context: None,
             },
             // Generic API key patterns (common prefixes)
             SecretPattern {
                 name: "API key (common prefix)",
                 pattern: Regex::new(r"^(api[_-]?key|apikey|api[_-]?secret)[_-]?[0-9a-zA-Z]{16,}$")
                     .unwrap(),
+                key_context: None,
             },
             // npm tokens
             SecretPattern {
                 name: "npm token",
                 pattern: Regex::new(r"^npm_[A-Za-z0-9]{36}$").unwrap(),
+                key_context: None,
             },
             // SendGrid API key
             SecretPattern {
                 name: "SendGrid API key",
                 pattern: Regex::new(r"^SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$").unwrap(),
+                key_context: None,
             },
             // Twilio credentials
             SecretPattern {
                 name: "Twilio credentials",
                 pattern: Regex::new(r"^(AC[a-z0-9]{32}|SK[a-z0-9]{32})$").unwrap(),
+                key_context: None,
             },
             // Mailchimp API key
             SecretPattern {
                 name: "Mailchimp API key",
                 pattern: Regex::new(r"^[a-z0-9]{32}-us[0-9]{1,2}$").unwrap(),
+                key_context: None,
             },
         ]
     })
@@ -469,6 +517,78 @@ mod tests {
         let warnings = detect_secrets(&env, &make_lines(content), None);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].reason.contains("AWS"));
+    }
+
+    #[test]
+    fn test_detects_datadog_key_when_key_name_matches() {
+        // 32 lowercase hex with a Datadog-shaped env var name -- must fire.
+        let env = make_env(vec![("DD_API_KEY", "a1b2c3d4e5f6789012345678901234ab")]);
+        let content = "DD_API_KEY=a1b2c3d4e5f6789012345678901234ab";
+        let warnings = detect_secrets(&env, &make_lines(content), None);
+        assert!(
+            warnings.iter().any(|w| w.reason.contains("Datadog")),
+            "expected Datadog warning for DD_API_KEY, got: {:?}",
+            warnings.iter().map(|w| &w.reason).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_detects_datadog_key_for_full_datadog_name() {
+        let value = "deadbeef".repeat(4);
+        let env = make_env(vec![("DATADOG_API_KEY", value.as_str())]);
+        let content_string = format!("DATADOG_API_KEY={}", value);
+        let warnings = detect_secrets(&env, &make_lines(&content_string), None);
+        assert!(warnings.iter().any(|w| w.reason.contains("Datadog")));
+    }
+
+    #[test]
+    fn test_does_not_false_positive_datadog_on_md5() {
+        // Regression guard for H2 in audit-2026-05-14: a 32-hex MD5 digest
+        // stored under an innocuous key name (BUILD_HASH, ASSET_HASH,
+        // GIT_TREE_HASH, etc.) used to fire as "Datadog API key" because
+        // the regex had no prefix and no context guard. Now must be silent.
+        let md5_like = "098f6bcd4621d373cade4e832627b4f6"; // md5("test")
+        for innocuous_key in ["BUILD_HASH", "ASSET_HASH", "GIT_TREE", "CONFIG_HASH"] {
+            let env = make_env(vec![(innocuous_key, md5_like)]);
+            let content = format!("{}={}", innocuous_key, md5_like);
+            let warnings = detect_secrets(&env, &make_lines(&content), None);
+            assert!(
+                !warnings.iter().any(|w| w.reason.contains("Datadog")),
+                "32-hex value under {} must NOT be flagged as Datadog (got: {:?})",
+                innocuous_key,
+                warnings.iter().map(|w| &w.reason).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn test_does_not_false_positive_datadog_on_uuid_without_hyphens() {
+        // UUIDs reformatted without hyphens (common in URLs, slugs) are
+        // 32-hex strings indistinguishable from Datadog keys by regex.
+        // Key-context gating is the only way to tell them apart.
+        let uuid_no_hyphens = "550e8400e29b41d4a716446655440000";
+        let env = make_env(vec![("USER_ID", uuid_no_hyphens)]);
+        let content = format!("USER_ID={}", uuid_no_hyphens);
+        let warnings = detect_secrets(&env, &make_lines(&content), None);
+        assert!(
+            !warnings.iter().any(|w| w.reason.contains("Datadog")),
+            "32-hex UUID under USER_ID must NOT fire Datadog pattern"
+        );
+    }
+
+    #[test]
+    fn test_datadog_context_is_case_insensitive() {
+        // dd_app_key, DD_APP_KEY, Dd_App_Key must all qualify.
+        for key_name in ["dd_app_key", "DD_APP_KEY", "Dd_App_Key", "Datadog_API"] {
+            let env = make_env(vec![(key_name, "0123456789abcdef0123456789abcdef")]);
+            let content = format!("{}=0123456789abcdef0123456789abcdef", key_name);
+            let warnings = detect_secrets(&env, &make_lines(&content), None);
+            assert!(
+                warnings.iter().any(|w| w.reason.contains("Datadog")),
+                "{} should trigger Datadog (case-insensitive context match)",
+                key_name
+            );
+        }
     }
 
     #[test]

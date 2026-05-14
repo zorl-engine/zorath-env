@@ -525,11 +525,14 @@ pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
 /// would leak the user's hand-tightened `.env` perms back to the umask
 /// default (typically 0644) after a fix run.
 ///
-/// Uses a PID-tagged temp filename (`.{name}.zenvtmp.{pid}`) staged in the
-/// same directory as the target so concurrent zenv invocations against the
-/// same path don't collide and `fs::rename` stays a single-FS atomic op.
-/// Tightens tmp perms BEFORE the rename so other local users never see the
-/// rewritten file at the umask default, even briefly.
+/// Uses a PID + subsecond-nanos tagged temp filename
+/// (`.{name}.zenvtmp.{pid}.{nanos}`) staged in the same directory as the
+/// target so concurrent zenv invocations against the same path cannot
+/// collide -- PID alone is insufficient under PID-reuse (container
+/// runtimes routinely recycle PID 1) and CI runners that fan out parallel
+/// jobs. `fs::rename` stays a single-FS atomic op. Tightens tmp perms
+/// BEFORE the rename so other local users never see the rewritten file at
+/// the umask default, even briefly.
 pub(crate) fn write_atomic_preserve_mode(
     path: &std::path::Path,
     bytes: &[u8],
@@ -541,7 +544,11 @@ pub(crate) fn write_atomic_preserve_mode(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "zenvtmp".to_string());
     let pid = std::process::id();
-    let tmp = parent.join(format!(".{}.zenvtmp.{}", file_name, pid));
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let tmp = parent.join(format!(".{}.zenvtmp.{}.{}", file_name, pid, nanos));
 
     #[cfg(unix)]
     let original_mode: Option<u32> = {
@@ -601,10 +608,66 @@ pub fn cache_filename(url: &str) -> String {
     format!("{}.json", &digest[..16])
 }
 
+/// Verdict from comparing cached content against its .meta sidecar.
+/// `Trust` means the .meta exists, parses, and the content hash matches;
+/// anything else returns `Refetch(reason)` so the caller can log + refetch.
+/// Pulled out of read_cache so the four refetch branches (missing /
+/// unreadable / corrupt / hash mismatch) are individually testable instead
+/// of buried in nested if-let-Ok blocks that silently fall through.
+enum CacheVerdict {
+    Trust,
+    Refetch(String),
+}
+
+/// Verify cached content against its .meta sidecar. Implements the strict
+/// interpretation of the comment in read_cache: any path that doesn't end
+/// with a positive integrity match is a refetch. Missing .meta is treated
+/// as refetch (TTL is 3600s so pre-.meta caches can't exist anymore; a
+/// missing sidecar today means either an interrupted write or deliberate
+/// tampering, both of which we want to recover from rather than trust).
+fn verify_cache_meta(meta_path: &std::path::Path, content: &str) -> CacheVerdict {
+    if !meta_path.exists() {
+        return CacheVerdict::Refetch(format!(
+            "metadata sidecar missing at {}",
+            meta_path.display()
+        ));
+    }
+    let meta_text = match fs::read_to_string(meta_path) {
+        Ok(t) => t,
+        Err(e) => {
+            return CacheVerdict::Refetch(format!(
+                "metadata sidecar unreadable at {}: {}",
+                meta_path.display(),
+                e
+            ))
+        }
+    };
+    let meta: CacheMetadata = match serde_json::from_str(&meta_text) {
+        Ok(m) => m,
+        Err(e) => {
+            return CacheVerdict::Refetch(format!(
+                "metadata sidecar corrupt at {}: {}",
+                meta_path.display(),
+                e
+            ))
+        }
+    };
+    let actual_hash = compute_content_hash(content);
+    if actual_hash != meta.content_hash {
+        return CacheVerdict::Refetch(format!(
+            "content hash mismatch (expected {}, got {})",
+            meta.content_hash, actual_hash
+        ));
+    }
+    CacheVerdict::Trust
+}
+
 /// Read cached schema if available, not expired, and content_hash in the
-/// .meta sidecar matches the on-disk content. A mismatch (cache poisoning,
-/// torn write, missing .meta) is treated as a cache miss so the caller
-/// will refetch from origin.
+/// .meta sidecar matches the on-disk content. Any other state (missing,
+/// unreadable, corrupt, or mismatched .meta) is treated as a cache miss so
+/// the caller will refetch from origin. The strict interpretation defends
+/// against an attacker deleting the .meta sidecar to slip a poisoned cache
+/// past hash verification.
 fn read_cache(url: &str) -> Result<Option<String>, RemoteError> {
     let cache_dir = match cache_dir() {
         Some(dir) => dir,
@@ -629,27 +692,18 @@ fn read_cache(url: &str) -> Result<Option<String>, RemoteError> {
 
     let content = fs::read_to_string(&cache_path).map_err(|e| RemoteError::Cache(e.to_string()))?;
 
-    // Verify content against .meta sidecar's content_hash. A mismatch can be
-    // caused by cache poisoning, torn writes, or a missing/corrupt .meta.
-    // Treat any of those as a cache miss -- safer to refetch than to trust.
-    if let Some(meta_path) = metadata_path_for_url(url) {
-        if meta_path.exists() {
-            if let Ok(meta_content) = fs::read_to_string(&meta_path) {
-                if let Ok(meta) = serde_json::from_str::<CacheMetadata>(&meta_content) {
-                    let actual_hash = compute_content_hash(&content);
-                    if actual_hash != meta.content_hash {
-                        eprintln!(
-                            "warning: cache content hash mismatch for {} -- refetching",
-                            url
-                        );
-                        return Ok(None);
-                    }
-                }
-            }
+    let meta_path = match metadata_path_for_url(url) {
+        Some(p) => p,
+        None => return Ok(None), // no cache_dir for .meta -- conservatively refetch
+    };
+
+    match verify_cache_meta(&meta_path, &content) {
+        CacheVerdict::Trust => Ok(Some(content)),
+        CacheVerdict::Refetch(reason) => {
+            eprintln!("warning: cache for {} {} -- refetching", url, reason);
+            Ok(None)
         }
     }
-
-    Ok(Some(content))
 }
 
 /// Write schema content to cache atomically (stage to .tmp + rename).
@@ -926,6 +980,90 @@ mod tests {
         let security = SecurityOptions::new();
         let result = fetch_remote_schema_secure("http://example.com/schema.json", true, &security);
         assert!(matches!(result, Err(RemoteError::HttpNotAllowed)));
+    }
+
+    // =========================================================================
+    // Cache metadata verification (H1 in audit-2026-05-14)
+    //
+    // Each branch of verify_cache_meta needs its own test because the bug
+    // was specifically that three of the four refetch paths silently fell
+    // through. Without these tests an over-eager refactor that tightens
+    // type signatures might re-introduce the silent-trust behavior.
+    // =========================================================================
+
+    fn write_meta(dir: &tempfile::TempDir, name: &str, body: &str) -> std::path::PathBuf {
+        let p = dir.path().join(name);
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn test_verify_cache_meta_trusts_matching_hash() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let content = "schema body";
+        let hash = compute_content_hash(content);
+        let meta = serde_json::to_string(&CacheMetadata {
+            url: "https://example.com/s.json".to_string(),
+            fetched_at: 1,
+            content_hash: hash,
+        })
+        .unwrap();
+        let meta_path = write_meta(&dir, "ok.meta", &meta);
+        assert!(matches!(
+            verify_cache_meta(&meta_path, content),
+            CacheVerdict::Trust
+        ));
+    }
+
+    #[test]
+    fn test_verify_cache_meta_refetch_on_missing_sidecar() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nonexistent = dir.path().join("nope.meta");
+        match verify_cache_meta(&nonexistent, "any content") {
+            CacheVerdict::Refetch(r) => assert!(r.contains("missing"), "reason was: {}", r),
+            CacheVerdict::Trust => panic!("missing .meta must refetch, not trust"),
+        }
+    }
+
+    #[test]
+    fn test_verify_cache_meta_refetch_on_corrupt_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let meta_path = write_meta(&dir, "bad.meta", "not valid json {{{");
+        match verify_cache_meta(&meta_path, "any content") {
+            CacheVerdict::Refetch(r) => assert!(r.contains("corrupt"), "reason was: {}", r),
+            CacheVerdict::Trust => panic!("corrupt .meta must refetch, not trust"),
+        }
+    }
+
+    #[test]
+    fn test_verify_cache_meta_refetch_on_truncated_json() {
+        // Real-world torn-write scenario: process killed mid-write leaves
+        // a .meta with valid-looking start but unterminated. serde_json
+        // should reject it; we should refetch.
+        let dir = tempfile::TempDir::new().unwrap();
+        let meta_path = write_meta(&dir, "torn.meta", r#"{"url":"x","fetched_at":1,"#);
+        match verify_cache_meta(&meta_path, "any content") {
+            CacheVerdict::Refetch(r) => assert!(r.contains("corrupt"), "reason was: {}", r),
+            CacheVerdict::Trust => panic!("torn .meta must refetch, not trust"),
+        }
+    }
+
+    #[test]
+    fn test_verify_cache_meta_refetch_on_hash_mismatch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let meta = serde_json::to_string(&CacheMetadata {
+            url: "https://example.com/s.json".to_string(),
+            fetched_at: 1,
+            content_hash: "deadbeef".repeat(8), // bogus expected hash
+        })
+        .unwrap();
+        let meta_path = write_meta(&dir, "mismatch.meta", &meta);
+        match verify_cache_meta(&meta_path, "real content") {
+            CacheVerdict::Refetch(r) => {
+                assert!(r.contains("hash mismatch"), "reason was: {}", r)
+            }
+            CacheVerdict::Trust => panic!("hash mismatch must refetch, not trust"),
+        }
     }
 
     #[test]
