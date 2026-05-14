@@ -40,6 +40,7 @@ mod tests {
         "template",
         "completions",
         "version",
+        "mcp",
     ];
 
     /// Create a mock command for testing that includes every Cli variant.

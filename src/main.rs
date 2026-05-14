@@ -142,6 +142,23 @@ Examples:
         check_update: bool,
     },
 
+    /// Run as a Model Context Protocol (MCP) server over stdio
+    #[command(after_help = "\
+Examples:
+  zenv mcp                              Speak JSON-RPC 2.0 on stdin/stdout
+
+Description:
+  Used by AI coding agents (Claude Code, Cline, Cursor, Windsurf, ...) to
+  drive zenv as a subprocess. Exposes 5 tools (check, scan, diff, doctor,
+  docs), 3 resources (schema, masked .env, generated docs), 3 prompts
+  (audit_env, new_var_workflow, diagnose_missing), plus the standard
+  protocol surface (initialize, ping, logging/setLevel, completion).
+  Stdio only -- no network, no hosting, no telemetry.
+
+  Client config (add to your MCP client's config file):
+    \"zenv\": { \"command\": \"zenv\", \"args\": [\"mcp\"] }")]
+    Mcp,
+
     /// Generate shell completions
     #[command(after_help = "\
 Examples:
@@ -571,6 +588,7 @@ fn main() {
             commands::init::run_with_options(&example, &schema, preset.as_deref(), list_presets)
         }
         Command::Version { check_update } => commands::version::run(check_update),
+        Command::Mcp => commands::mcp::run(),
         Command::Completions { shell } => commands::completions::run(shell, &mut Cli::command()),
         Command::Example {
             schema,

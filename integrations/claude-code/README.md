@@ -53,18 +53,36 @@ cargo install zorath-env
 #   https://github.com/zorl-engine/zorath-env/releases
 ```
 
-## Why a skill instead of a hosted MCP server
+## Two integration paths -- skill (this file) and stdio MCP
 
-zenv is open source and runs entirely on your machine. There is no
-remote service to host, no API key to manage, and no cost to operate.
-The skill approach gives the agent everything it needs to drive the
-local `zenv` binary directly, without any network round-trip or vendor
-dependency.
+zenv ships TWO complementary integrations for AI agents, both of which
+run entirely on your machine with no hosting cost:
 
-If you use multiple AI coding tools (Claude Code + Cursor + Cline +
-Windsurf), a future v0.4 release will add a `zenv mcp` stdio subcommand
-so any MCP-compatible client can drive zenv with the same UX. Stdio MCP
-is also local-only -- still no hosting, still no cost.
+1. **Claude Code skill (this file).** Plain markdown loaded by Claude
+   Code at session start. Easy to install (one curl). Works only with
+   Claude Code.
+
+2. **Stdio MCP server (`zenv mcp`).** Built into the binary you already
+   installed. Speaks JSON-RPC 2.0 on stdin/stdout. Works with any
+   MCP-compatible client (Claude Code, Cursor, Cline, Windsurf, etc.).
+   Exposes 5 tools, 3 resources (schema, masked .env, generated docs),
+   3 prompts (audit_env, new_var_workflow, diagnose_missing), and the
+   standard lifecycle surface (initialize, ping, logging/setLevel,
+   completion). Zero new dependencies, zero hosting, zero telemetry.
+
+   Add to your MCP client config:
+
+   ```json
+   {
+     "mcpServers": {
+       "zenv": { "command": "zenv", "args": ["mcp"] }
+     }
+   }
+   ```
+
+You can use either or both. The skill is easier to install if you only
+use Claude Code; the MCP server is portable across clients. They do not
+conflict.
 
 ## Verification
 

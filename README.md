@@ -696,9 +696,23 @@ network calls, and has no hosted dependency. See
 for the Windows install, prompts that demonstrate the integration, and
 the privacy notes.
 
-A future release will add a `zenv mcp` stdio subcommand for clients that
-prefer the MCP protocol over the skill format -- still local, still no
-hosting.
+For clients that prefer the standard MCP protocol (Cursor, Cline,
+Windsurf, or any future MCP-compatible client), the `zenv mcp` stdio
+subcommand is built into the binary. Add to your client config:
+
+```json
+{
+  "mcpServers": {
+    "zenv": { "command": "zenv", "args": ["mcp"] }
+  }
+}
+```
+
+Exposes 5 tools, 3 resources (schema, masked .env, generated docs),
+3 prompts (audit_env, new_var_workflow, diagnose_missing), and the
+standard lifecycle surface (initialize, ping, logging/setLevel,
+completion). Zero new dependencies in the binary, zero hosting, zero
+telemetry -- runs entirely as a subprocess of your AI client.
 
 ## GitHub Action
 
