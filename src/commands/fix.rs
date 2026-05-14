@@ -5,11 +5,13 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-// Import cached regex functions and utilities from check module
+// Cached regex helpers stay in check.rs (the validation hub); masking
+// helpers were consolidated into crate::secrets so check.rs / diff.rs / fix.rs
+// all share one source of truth for the sensitivity heuristic.
 use super::check::{
-    date_regex, email_regex, hostname_regex, ipv4_regex, ipv6_regex, is_sensitive_key,
-    mask_value_with_spec, semver_regex, uuid_regex,
+    date_regex, email_regex, hostname_regex, ipv4_regex, ipv6_regex, semver_regex, uuid_regex,
 };
+use crate::secrets::{is_sensitive_key, mask_value_with_spec};
 
 /// Actions that can be automatically fixed
 #[derive(Debug, Clone)]
@@ -293,24 +295,19 @@ fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
                     }
                 }
                 if let Some(ref pattern) = validate.pattern {
-                    if pattern.len() > 4096 {
-                        return Some(format!(
-                            "{}: pattern too long ({} chars, max 4096)",
-                            key,
-                            pattern.len()
-                        ));
-                    }
-                    let built = regex::RegexBuilder::new(pattern)
-                        .size_limit(1 << 20)
-                        .build();
-                    if let Ok(re) = built {
-                        if !re.is_match(value) {
-                            return Some(format!(
-                                "{}: value '{}' does not match pattern '{}'",
-                                key,
-                                masked(),
-                                pattern
-                            ));
+                    match super::check::get_cached_regex(pattern) {
+                        Ok(re) => {
+                            if !re.is_match(value) {
+                                return Some(format!(
+                                    "{}: value '{}' does not match pattern '{}'",
+                                    key,
+                                    masked(),
+                                    pattern
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            return Some(format!("{}: {}", key, e));
                         }
                     }
                 }

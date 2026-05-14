@@ -16,6 +16,9 @@ use crate::envfile;
 use crate::errors::CliError;
 use crate::schema::{self, LoadOptions, Schema, Severity, VarSpec, VarType};
 use crate::secrets;
+#[cfg(test)]
+use crate::secrets::mask_value;
+use crate::secrets::{is_sensitive_key, mask_value_with_spec, truncate_value};
 use crate::suggestions;
 
 /// JSON output structure for check command
@@ -164,7 +167,9 @@ const MAX_PATTERN_LEN: usize = 4096;
 const REGEX_SIZE_LIMIT: usize = 1 << 20;
 
 /// Get or compile a regex pattern with caching, with length and size guards.
-fn get_cached_regex(pattern: &str) -> Result<Regex, String> {
+/// pub(crate) so fix.rs can route schema `pattern` validation through the
+/// same MAX_PATTERN_LEN + REGEX_SIZE_LIMIT defenses used here.
+pub(crate) fn get_cached_regex(pattern: &str) -> Result<Regex, String> {
     if pattern.len() > MAX_PATTERN_LEN {
         return Err(format!(
             "pattern too long ({} chars, max {})",
@@ -206,83 +211,10 @@ fn is_valid_ipv4(value: &str) -> bool {
     }
 }
 
-/// Check if a key name suggests it contains sensitive data.
-///
-/// Audit-extended (May 2026 second pass) with names that frequently embed
-/// secrets in production: DATABASE_URL / REDIS_URL / MONGO_URL all
-/// commonly contain `user:password@host`; webhook URLs ARE the secret;
-/// MNEMONIC / SALT / SEED are cryptographic material; DSN often holds
-/// a Sentry/database connection key.
-pub fn is_sensitive_key(key: &str) -> bool {
-    let lower = key.to_lowercase();
-    let sensitive_patterns = [
-        "password",
-        "passwd",
-        "secret",
-        "token",
-        "api_key",
-        "apikey",
-        "private_key",
-        "privatekey",
-        // Audit-added patterns:
-        "database_url",
-        "database_uri",
-        "redis_url",
-        "mongo_url",
-        "mongodb_uri",
-        "connection_string",
-        "conn_string",
-        "dsn",
-        "webhook",
-        "mnemonic",
-        "salt",
-        "seed_phrase",
-        "auth",
-        "credential",
-        "jwt",
-        "bearer",
-        "access_key",
-        "accesskey",
-        "secret_key",
-        "secretkey",
-        "encryption_key",
-        "encryptionkey",
-        "signing_key",
-        "signingkey",
-    ];
-
-    for pattern in sensitive_patterns {
-        if lower.contains(pattern) {
-            return true;
-        }
-    }
-
-    // Also check for common suffixes
-    lower.ends_with("_key")
-        || lower.ends_with("_token")
-        || lower.ends_with("_secret")
-        || lower.ends_with("_url")  // URL values often embed credentials
-        || lower.ends_with("_uri")
-}
-
-/// Mask sensitive values for safe display (truncates non-sensitive values)
-pub fn mask_value(key: &str, value: &str) -> String {
-    mask_value_with_spec(key, value, None)
-}
-
-/// Mask a value if the key is sensitive, the schema explicitly marks it
-/// secret, OR the value itself contains an embedded URL password
-/// (e.g. `postgres://user:secret@host` regardless of key name).
-pub fn mask_value_with_spec(key: &str, value: &str, spec_secret: Option<bool>) -> String {
-    if spec_secret.unwrap_or(false)
-        || is_sensitive_key(key)
-        || crate::secrets::value_looks_secret(value)
-    {
-        "***MASKED***".to_string()
-    } else {
-        truncate_value(value)
-    }
-}
+// Sensitivity heuristics + masking helpers moved to crate::secrets so
+// is_sensitive_key, mask_value, mask_value_with_spec, and truncate_value
+// live alongside value_looks_secret and the detect_secrets pattern table.
+// Re-imported via the use statement at the top of this file.
 
 /// State tracked between watch iterations for delta detection
 struct WatchState {
@@ -1158,7 +1090,13 @@ fn print_delta_validation(
                 None => {
                     // Key not in schema
                     had_errors = true;
-                    Some("WARNING: not in schema".to_string())
+                    let mut msg = "WARNING: not in schema".to_string();
+                    if let Some(hint) =
+                        suggestions::suggest_variable_name(&change.key, schema.keys())
+                    {
+                        msg.push_str(&format!(" -- {}", hint));
+                    }
+                    Some(msg)
                 }
             }
         };
@@ -1299,7 +1237,11 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
                 if allowed.iter().any(|v| v == value) {
                     Ok(format!("enum: {}", value))
                 } else {
-                    Err(format!("expected one of {:?}", allowed))
+                    let mut msg = format!("expected one of {:?}", allowed);
+                    if let Some(hint) = suggestions::suggest_enum_value(value, allowed.iter()) {
+                        msg.push_str(&format!(" -- {}", hint));
+                    }
+                    Err(msg)
                 }
             }
             None => Err("enum type missing 'values' in schema".to_string()),
@@ -1385,15 +1327,6 @@ fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String,
     }
 }
 
-/// Truncate a value for display (max 30 chars)
-fn truncate_value(value: &str) -> String {
-    if value.len() <= 30 {
-        value.replace('\n', "\\n")
-    } else {
-        format!("{}...", &value[..27].replace('\n', "\\n"))
-    }
-}
-
 /// Compute a simple hash of a string for change detection
 fn compute_hash(content: &str) -> u64 {
     use std::collections::hash_map::DefaultHasher;
@@ -1470,21 +1403,44 @@ fn local_timestamp() -> String {
 
 #[cfg(not(windows))]
 fn local_timestamp() -> String {
-    use std::time::SystemTime;
+    use std::mem::MaybeUninit;
 
-    // On Unix, we could use libc::localtime_r for proper local time
-    // For simplicity, falling back to UTC with note
-    let now = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    // Minimal POSIX FFI: time(NULL) for current epoch seconds, then
+    // localtime_r to convert to broken-down LOCAL time honoring TZ. Avoids
+    // adding a libc/chrono/time crate dep -- mirrors the Windows GetLocalTime
+    // FFI block above.
+    type TimeT = i64;
 
-    let total_secs = now.as_secs();
-    let secs_in_day = total_secs % 86400;
-    let hours = (secs_in_day / 3600) % 24;
-    let minutes = (secs_in_day % 3600) / 60;
-    let seconds = secs_in_day % 60;
+    #[repr(C)]
+    struct Tm {
+        tm_sec: i32,
+        tm_min: i32,
+        tm_hour: i32,
+        tm_mday: i32,
+        tm_mon: i32,
+        tm_year: i32,
+        tm_wday: i32,
+        tm_yday: i32,
+        tm_isdst: i32,
+        // Trailing platform-specific fields (gmtoff, zone) are not read here;
+        // localtime_r writes them but we never access past tm_isdst.
+        _pad: [u8; 64],
+    }
 
-    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    extern "C" {
+        fn time(tloc: *mut TimeT) -> TimeT;
+        fn localtime_r(timep: *const TimeT, result: *mut Tm) -> *mut Tm;
+    }
+
+    let mut tm = MaybeUninit::<Tm>::uninit();
+    unsafe {
+        let now = time(std::ptr::null_mut());
+        if localtime_r(&now, tm.as_mut_ptr()).is_null() {
+            return String::from("--:--:--");
+        }
+        let tm = tm.assume_init();
+        format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+    }
 }
 
 /// Validate env_map against schema, returns list of error messages

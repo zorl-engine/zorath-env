@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::commands::check::is_sensitive_key;
 use crate::envfile;
 use crate::errors::CliError;
 use crate::schema::{self, LoadOptions};
+use crate::secrets::is_sensitive_key;
 use crate::suggestions::find_closest_match;
 use serde::Serialize;
 

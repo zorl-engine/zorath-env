@@ -326,7 +326,6 @@ fn contains_url_password(value: &str) -> bool {
     false
 }
 
-/// Public predicate exposed for the masking helpers in commands::check.
 /// Returns true if the value looks like it contains a secret regardless
 /// of the key name -- catches `DATABASE_URL=postgres://u:p@h` even when
 /// the key heuristic doesn't fire, and catches Slack/Discord webhook
@@ -344,6 +343,91 @@ pub fn value_looks_secret(value: &str) -> bool {
         .unwrap()
     });
     re.is_match(value)
+}
+
+/// Check if a key name suggests it contains sensitive data.
+///
+/// Audit-extended (May 2026 second pass) with names that frequently embed
+/// secrets in production: DATABASE_URL / REDIS_URL / MONGO_URL all
+/// commonly contain `user:password@host`; webhook URLs ARE the secret;
+/// MNEMONIC / SALT / SEED are cryptographic material; DSN often holds
+/// a Sentry/database connection key.
+pub fn is_sensitive_key(key: &str) -> bool {
+    let lower = key.to_lowercase();
+    let sensitive_patterns = [
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "private_key",
+        "privatekey",
+        // Audit-added patterns:
+        "database_url",
+        "database_uri",
+        "redis_url",
+        "mongo_url",
+        "mongodb_uri",
+        "connection_string",
+        "conn_string",
+        "dsn",
+        "webhook",
+        "mnemonic",
+        "salt",
+        "seed_phrase",
+        "auth",
+        "credential",
+        "jwt",
+        "bearer",
+        "access_key",
+        "accesskey",
+        "secret_key",
+        "secretkey",
+        "encryption_key",
+        "encryptionkey",
+        "signing_key",
+        "signingkey",
+    ];
+
+    for pattern in sensitive_patterns {
+        if lower.contains(pattern) {
+            return true;
+        }
+    }
+
+    // Also check for common suffixes
+    lower.ends_with("_key")
+        || lower.ends_with("_token")
+        || lower.ends_with("_secret")
+        || lower.ends_with("_url")  // URL values often embed credentials
+        || lower.ends_with("_uri")
+}
+
+/// Mask sensitive values for safe display (truncates non-sensitive values)
+pub fn mask_value(key: &str, value: &str) -> String {
+    mask_value_with_spec(key, value, None)
+}
+
+/// Mask a value if the key is sensitive, the schema explicitly marks it
+/// secret, OR the value itself contains an embedded URL password
+/// (e.g. `postgres://user:secret@host` regardless of key name).
+pub fn mask_value_with_spec(key: &str, value: &str, spec_secret: Option<bool>) -> String {
+    if spec_secret.unwrap_or(false) || is_sensitive_key(key) || value_looks_secret(value) {
+        "***MASKED***".to_string()
+    } else {
+        truncate_value(value)
+    }
+}
+
+/// Truncate a value for display (max 30 chars). pub(crate) so the watch-mode
+/// change feed in commands::check can format old/new values consistently.
+pub(crate) fn truncate_value(value: &str) -> String {
+    if value.len() <= 30 {
+        value.replace('\n', "\\n")
+    } else {
+        format!("{}...", &value[..27].replace('\n', "\\n"))
+    }
 }
 
 #[cfg(test)]
