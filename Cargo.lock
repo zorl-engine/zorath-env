@@ -1411,7 +1411,7 @@ checksum = "2fc5a66a20078bf1251bde995aa2fdcc4b800c70b5d92dd2c62abc5c60f679f8"
 
 [[package]]
 name = "zorath-env"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "clap",
  "clap_complete",

@@ -18,7 +18,7 @@ use crate::schema::{self, LoadOptions, Schema, Severity, VarSpec, VarType};
 use crate::secrets;
 #[cfg(test)]
 use crate::secrets::mask_value;
-use crate::secrets::{is_sensitive_key, mask_value_with_spec, truncate_value};
+use crate::secrets::{is_sensitive_key, mask_value_with_spec, truncate_value_for_display};
 use crate::suggestions;
 
 /// JSON output structure for check command
@@ -1049,15 +1049,25 @@ fn print_delta_validation(
         // Build change description
         let change_desc = match &change.change_type {
             ChangeType::Added => {
-                let val = truncate_value(change.new_value.as_deref().unwrap_or(""));
+                // Mask sensitive values: the watch feed must never print a raw
+                // secret (truncate_value_for_display masks on key + value).
+                let val = truncate_value_for_display(
+                    &change.key,
+                    change.new_value.as_deref().unwrap_or(""),
+                    30,
+                );
                 format!("{} {} = \"{}\"", symbol, change.key, val)
             }
             ChangeType::Removed => {
                 format!("{} {} (removed)", symbol, change.key)
             }
             ChangeType::Modified { old_value } => {
-                let old = truncate_value(old_value);
-                let new = truncate_value(change.new_value.as_deref().unwrap_or(""));
+                let old = truncate_value_for_display(&change.key, old_value, 30);
+                let new = truncate_value_for_display(
+                    &change.key,
+                    change.new_value.as_deref().unwrap_or(""),
+                    30,
+                );
                 format!("{} {}: \"{}\" -> \"{}\"", symbol, change.key, old, new)
             }
         };

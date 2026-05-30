@@ -390,7 +390,13 @@ pub fn value_looks_secret(value: &str) -> bool {
         )
         .unwrap()
     });
-    re.is_match(value)
+    if re.is_match(value) {
+        return true;
+    }
+    // High-entropy raw secret under an innocuous key (e.g. a 40-char base64
+    // token with no URL/webhook shape) -- reuse the detector's entropy
+    // heuristic so display masking does not leak it.
+    is_high_entropy(value)
 }
 
 /// Check if a key name suggests it contains sensitive data.
@@ -468,13 +474,24 @@ pub fn mask_value_with_spec(key: &str, value: &str, spec_secret: Option<bool>) -
     }
 }
 
+/// Byte offset where the `n`-th character starts (or the full byte length if
+/// the string has fewer than `n` characters). Lets truncation cut on a UTF-8
+/// char boundary so multibyte values never panic a byte slice.
+fn char_boundary(s: &str, n: usize) -> usize {
+    s.char_indices().nth(n).map_or(s.len(), |(i, _)| i)
+}
+
 /// Truncate a value for display (max 30 chars). pub(crate) so the watch-mode
 /// change feed in commands::check can format old/new values consistently.
+/// Char-boundary-safe: never panics on multibyte UTF-8 values.
 pub(crate) fn truncate_value(value: &str) -> String {
-    if value.len() <= 30 {
+    if value.chars().count() <= 30 {
         value.replace('\n', "\\n")
     } else {
-        format!("{}...", &value[..27].replace('\n', "\\n"))
+        format!(
+            "{}...",
+            value[..char_boundary(value, 27)].replace('\n', "\\n")
+        )
     }
 }
 
@@ -488,10 +505,10 @@ pub(crate) fn truncate_value_for_display(key: &str, value: &str, max_len: usize)
         return "***MASKED***".to_string();
     }
     let display = value.replace('\n', "\\n").replace('\r', "\\r");
-    if display.len() <= max_len {
+    if display.chars().count() <= max_len {
         display
     } else {
-        format!("{}...", &display[..max_len])
+        format!("{}...", &display[..char_boundary(&display, max_len)])
     }
 }
 
@@ -829,5 +846,41 @@ mod tests {
     #[test]
     fn test_truncate_value_for_display_empty() {
         assert_eq!(truncate_value_for_display("FOO", "", 10), "");
+    }
+
+    // Regression: a multibyte UTF-8 char straddling the byte cut-point used to
+    // panic the old `&value[..27]` / `&display[..max_len]` byte slices.
+    #[test]
+    fn test_truncate_value_multibyte_no_panic() {
+        let value = format!("{}\u{20AC}{}", "a".repeat(26), "b".repeat(10)); // 37 chars, euro at byte 26
+        let out = truncate_value(&value);
+        assert!(out.ends_with("..."));
+        assert!(out.starts_with("aaaaaa"));
+    }
+
+    #[test]
+    fn test_truncate_value_for_display_multibyte_no_panic() {
+        let value = format!("{}\u{20AC}{}", "a".repeat(38), "b".repeat(10)); // 49 chars
+        let out = truncate_value_for_display("DESC", &value, 40);
+        assert!(out.ends_with("..."));
+    }
+
+    // Regression: a high-entropy raw secret under an innocuous key (no URL or
+    // webhook shape) must read as secret so display masking never leaks it.
+    #[test]
+    fn test_value_looks_secret_high_entropy() {
+        let token = "Xb7Kp9qWmZ2rT4yU8nC1vF6sD3hJ5gL0aQ7eR9wTpBn";
+        assert!(value_looks_secret(token));
+        assert_eq!(
+            truncate_value_for_display("BLOB", token, 50),
+            "***MASKED***"
+        );
+    }
+
+    #[test]
+    fn test_value_looks_secret_ignores_low_entropy() {
+        assert!(!value_looks_secret("this is a normal config value"));
+        assert!(!value_looks_secret("development"));
+        assert!(!value_looks_secret("8080"));
     }
 }

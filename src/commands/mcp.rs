@@ -570,11 +570,7 @@ fn handle_resources_read(id: Option<Value>, params: Option<&Value>) -> Value {
         URI_ENV_MASKED => match read_env_masked_at(std::path::Path::new(".env")) {
             Ok(t) => (t, "text/plain"),
             Err(e) => {
-                return jsonrpc_error(
-                    id_owned,
-                    ERR_INTERNAL,
-                    &format!("cannot read .env: {}", e),
-                )
+                return jsonrpc_error(id_owned, ERR_INTERNAL, &format!("cannot read .env: {}", e))
             }
         },
         URI_DOCS => match run_zenv_subprocess(&[

@@ -1,6 +1,6 @@
 [package]
 name = "zorath-env"
-version = "0.3.10"
+version = "0.3.11"
 edition = "2021"
 # MSRV: 1.74 is required by clap 4.5.x. zenv also uses Ipv6Addr::to_ipv4_mapped
 # (stable since 1.63) and std::sync::OnceLock (stable since 1.70), both well

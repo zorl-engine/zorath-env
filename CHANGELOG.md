@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.11] - 2026-05-30
+
+### Fixed
+- **Secret leak in watch mode (HIGH)**: `zenv check --watch` printed added/modified variable *values* verbatim in its change feed via an unmasked `truncate_value`. The feed now routes through `truncate_value_for_display`, which masks on key sensitivity and value heuristics -- secrets are shown as `***MASKED***`, never the raw value.
+- **UTF-8 panic on multibyte values**: three display-truncation sites byte-sliced strings (`&s[..n]`) and panicked when the cut fell mid-character (`truncate_value`, `truncate_value_for_display`, and `cache list`'s `truncate_str`). Truncation is now char-boundary-safe and counts characters, not bytes -- a long `.env` value containing a multibyte character no longer crashes `check --watch`, `diff`, or `cache list`.
+- **Entropy-masking gap**: the display-masking helpers masked only on key name + URL/webhook shape, so a high-entropy raw secret under an innocuous key (e.g. a 40-char base64 token) leaked through `diff`, the `zenv://env` MCP resource, and the `zenv_diff` MCP tool. `value_looks_secret` now also consults the same entropy heuristic the detector uses, closing the gap on every display-masking path.
+
+### Internal
+- Fixed a `cargo fmt` regression introduced in v0.3.10 (the shortened `ERR_INTERNAL` one-liner). Added regression tests for the multibyte truncation and entropy-masking fixes.
+
 ## [0.3.10] - 2026-05-30
 
 ### Fixed

@@ -253,14 +253,20 @@ fn format_duration(secs: u64) -> String {
     }
 }
 
-/// Truncate string with ellipsis if too long
+/// Truncate string with ellipsis if too long. Char-boundary-safe: cuts on a
+/// UTF-8 boundary so a non-ASCII cache filename never panics a byte slice.
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else if max_len > 3 {
-        format!("{}...", &s[..max_len - 3])
+        let end = s
+            .char_indices()
+            .nth(max_len - 3)
+            .map_or(s.len(), |(i, _)| i);
+        format!("{}...", &s[..end])
     } else {
-        s[..max_len].to_string()
+        let end = s.char_indices().nth(max_len).map_or(s.len(), |(i, _)| i);
+        s[..end].to_string()
     }
 }
 
