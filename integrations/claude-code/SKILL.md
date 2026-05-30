@@ -40,7 +40,7 @@ After install confirmation, proceed with the task.
 
 ## Core commands -- when to use each
 
-zenv has 13 commands. The five you reach for most as an agent are `check`, `scan`, `init`, `docs`, `doctor`. The rest matter in narrower situations.
+zenv has 14 commands. The five you reach for most as an agent are `check`, `scan`, `init`, `docs`, `doctor`. The rest matter in narrower situations.
 
 ### `zenv check` -- validate .env against a schema
 
@@ -50,7 +50,7 @@ Default invocation:
 zenv check --format json
 ```
 
-The `--format json` flag is critical for agent use -- it returns parseable structured output with `valid`, `errors`, `warnings`, `missing_required`, `unknown_keys`, and `secrets` arrays. Reading the text output is fine for echoing back to a human but never parse it.
+The `--format json` flag is critical for agent use -- it returns parseable structured output: a `valid` boolean, `errors`, `warnings`, `duplicate_warnings`, and `secret_warnings` arrays, and a `stats` object with the per-category counts. Reading the text output is fine for echoing back to a human but never parse it.
 
 Use the `--detect-secrets` flag whenever the user asks about secrets or you're about to commit code that touches .env:
 

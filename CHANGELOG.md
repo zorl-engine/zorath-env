@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.10] - 2026-05-30
+
+### Fixed
+- **Claude Code skill doc drift**: `integrations/claude-code/SKILL.md` said "zenv has 13 commands" (it is 14) and documented `check --format json` output fields (`missing_required`, `unknown_keys`, `secrets`) that do not exist. Corrected to the real `CheckResult` shape: `valid`, `errors`, `warnings`, `duplicate_warnings`, `secret_warnings`, and `stats`. An agent parsing by the documented names would have failed.
+- **MCP internal error codes**: `zenv mcp` `resources/read` now returns JSON-RPC `-32603` (Internal error) for server-side read/subprocess failures (schema read, .env read, docs subprocess), instead of mis-reporting them as `-32602` (Invalid params). A malformed client request stays `-32602`; a failure to service a valid request is `-32603`. Removed the now-unused `#[allow(dead_code)]` on `ERR_INTERNAL`.
+
+### Changed
+- **MCP preset completion derives from the registry**: `completion/complete` for the `preset` argument now reads `presets::AVAILABLE_PRESETS` instead of a hardcoded list, so adding a preset no longer needs a second edit in `mcp.rs`. New regression test pins the two in lockstep (785 tests total).
+
 ## [0.3.9] - 2026-04-13
 
 ### Fixed

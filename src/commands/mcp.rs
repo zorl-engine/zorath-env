@@ -48,10 +48,12 @@ const PROTOCOL_VERSION: &str = "2025-11-25";
 const SERVER_NAME: &str = "zenv";
 
 /// JSON-RPC error codes used by the tools/* surface. -32601 is the
-/// JSON-RPC 2.0 mandated "Method not found"; -32602 is "Invalid params".
+/// JSON-RPC 2.0 mandated "Method not found"; -32602 is "Invalid params";
+/// -32603 is "Internal error" -- used for server-side read/subprocess
+/// failures (a bad client request is -32602; a failure to service a valid
+/// request is -32603).
 const ERR_METHOD_NOT_FOUND: i64 = -32601;
 const ERR_INVALID_PARAMS: i64 = -32602;
-#[allow(dead_code)]
 const ERR_INTERNAL: i64 = -32603;
 
 /// MCP logging levels mapped to a numeric scale (lower = more verbose).
@@ -560,7 +562,7 @@ fn handle_resources_read(id: Option<Value>, params: Option<&Value>) -> Value {
             Err(e) => {
                 return jsonrpc_error(
                     id_owned,
-                    ERR_INVALID_PARAMS,
+                    ERR_INTERNAL,
                     &format!("cannot read schema: {}", e),
                 )
             }
@@ -570,7 +572,7 @@ fn handle_resources_read(id: Option<Value>, params: Option<&Value>) -> Value {
             Err(e) => {
                 return jsonrpc_error(
                     id_owned,
-                    ERR_INVALID_PARAMS,
+                    ERR_INTERNAL,
                     &format!("cannot read .env: {}", e),
                 )
             }
@@ -584,7 +586,7 @@ fn handle_resources_read(id: Option<Value>, params: Option<&Value>) -> Value {
             Err(e) => {
                 return jsonrpc_error(
                     id_owned,
-                    ERR_INVALID_PARAMS,
+                    ERR_INTERNAL,
                     &format!("docs subprocess failed: {}", e),
                 )
             }
@@ -840,14 +842,12 @@ fn handle_completion_complete(id: Option<Value>, params: Option<&Value>) -> Valu
     let candidates: Vec<String> = match arg_name {
         "schema" => list_local_files_matching(&["schema"], &[".json", ".yaml", ".yml"]),
         "env" | "env_a" | "env_b" | "env_file" => list_local_files_matching(&[".env"], &[]),
-        "preset" => vec![
-            "nextjs".to_string(),
-            "rails".to_string(),
-            "django".to_string(),
-            "fastapi".to_string(),
-            "express".to_string(),
-            "laravel".to_string(),
-        ],
+        // Derived from the single source of truth so a new preset flows
+        // through to MCP completion without a second edit here.
+        "preset" => crate::presets::AVAILABLE_PRESETS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         _ => Vec::new(),
     };
 
@@ -1246,6 +1246,26 @@ mod tests {
         let names: Vec<&str> = values.iter().filter_map(|v| v.as_str()).collect();
         assert!(names.contains(&"rails"));
         assert!(!names.contains(&"nextjs"));
+    }
+
+    #[test]
+    fn test_completion_preset_list_matches_registry() {
+        // The MCP preset completion is derived from presets::AVAILABLE_PRESETS;
+        // this pins them in lockstep so a new preset needs no second edit here.
+        let resp = handle_completion_complete(
+            Some(json!(43)),
+            Some(&json!({ "argument": { "name": "preset", "value": "" } })),
+        );
+        let values = resp["result"]["completion"]["values"].as_array().unwrap();
+        let names: Vec<String> = values
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        let expected: Vec<String> = crate::presets::AVAILABLE_PRESETS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(names, expected);
     }
 
     #[test]
