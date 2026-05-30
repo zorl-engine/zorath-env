@@ -16,10 +16,20 @@ env.schema.json
 !examples/env.schema.json
 
 distribution/
-.claude/
+# Ignore everything in .claude/ EXCEPT the re-included mcp server below. Note:
+# .claude/* (not .claude/) so git still descends into the re-included subdir --
+# a bare .claude/ would make re-inclusion of any child impossible.
+.claude/*
 TODO.md
 nul
 
 # Local developer tooling -- not part of the public project.
 .mcp.json
 .mcp.json.example
+
+# zenv-memory MCP server (local dev tooling): re-include the whole server dir.
+# Within it, .claude/mcp/.gitignore excludes deps + churny runtime artifacts
+# (node_modules, backups, audit ledger, archive, tmp, corrupt quarantine) while
+# KEEPING the curated graph.json -- the recovery story + a reviewable diff of
+# what Claude knows about this repo. The server source must not be lost either.
+!.claude/mcp/
