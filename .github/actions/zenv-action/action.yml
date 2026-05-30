@@ -69,7 +69,7 @@ runs:
             # alignment, but the fallback hits exact-match download paths
             # so a stale value installs an outdated binary on crates.io
             # outages.
-            VERSION="0.3.9"
+            VERSION="0.3.11"
           fi
         else
           VERSION="${{ inputs.version }}"
