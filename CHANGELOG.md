@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [0.3.11] - 2026-05-30
 
+### Security
+- **rustls-webpki 0.103.11 -> 0.103.13** (transitive via `ureq` -> `rustls`): clears RUSTSEC-2026-0104 (reachable panic in CRL parsing -- the high-severity one) and RUSTSEC-2026-0098 / -0099 (name-constraint handling for URI / wildcard names). Cargo.lock-only patch update.
+
 ### Fixed
 - **Secret leak in watch mode (HIGH)**: `zenv check --watch` printed added/modified variable *values* verbatim in its change feed via an unmasked `truncate_value`. The feed now routes through `truncate_value_for_display`, which masks on key sensitivity and value heuristics -- secrets are shown as `***MASKED***`, never the raw value.
 - **UTF-8 panic on multibyte values**: three display-truncation sites byte-sliced strings (`&s[..n]`) and panicked when the cut fell mid-character (`truncate_value`, `truncate_value_for_display`, and `cache list`'s `truncate_str`). Truncation is now char-boundary-safe and counts characters, not bytes -- a long `.env` value containing a multibyte character no longer crashes `check --watch`, `diff`, or `cache list`.

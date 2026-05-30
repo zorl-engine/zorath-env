@@ -60,8 +60,10 @@ runs:
       shell: bash
       run: |
         if [ "${{ inputs.version }}" = "latest" ]; then
-          # Get latest version from crates.io using jq for reliable parsing
-          VERSION=$(curl -s https://crates.io/api/v1/crates/zorath-env | jq -r '.crate.newest_version // empty')
+          # Get latest version from crates.io. A User-Agent is REQUIRED --
+          # crates.io returns 403 to UA-less requests, which would silently
+          # force the fallback path below on every run.
+          VERSION=$(curl -s -H "User-Agent: zorath-env-action (github.com/zorl-engine/zorath-env)" https://crates.io/api/v1/crates/zorath-env | jq -r '.crate.newest_version // empty')
           if [ -z "$VERSION" ]; then
             echo "Warning: Could not fetch version from crates.io, using fallback"
             # Fallback version. MUST track Cargo.toml [package].version on

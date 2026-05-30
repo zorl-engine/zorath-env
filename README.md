@@ -7,6 +7,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zorath-env.svg)](https://crates.io/crates/zorath-env)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docs](https://img.shields.io/badge/docs-zorl.cloud-blue)](https://zorl.cloud/zenv)
+[![GitHub stars](https://img.shields.io/github/stars/zorl-engine/zorath-env?logo=github&label=stars)](https://github.com/zorl-engine/zorath-env)
 
 **Package:** `zorath-env` | **Binary:** `zenv`
 
@@ -14,7 +15,7 @@
 
 **AI-native `.env` validation in any language.** A fast, single-binary CLI that validates `.env` files against typed schemas, detects secrets, scans your code, generates docs, exports to 7 deployment formats, and auto-fixes issues -- with a Claude Code skill AND a stdio MCP server built into the binary so AI coding agents can drive it directly. No runtime, no hosting, no telemetry.
 
-`14 types` -- `7 export formats` -- `9 language scan` -- `22 secret patterns` -- `6 framework presets` -- `784 tests` -- `stdio MCP` -- `Claude Code skill`
+`14 types` -- `7 export formats` -- `9 language scan` -- `22 secret patterns` -- `6 framework presets` -- `789 tests` -- `stdio MCP` -- `Claude Code skill`
 
 > zenv is the only single-binary `.env` validator that ships a local stdio MCP server, a typed schema language with cryptographically-pinned remote inheritance, and a built-in 22-pattern secret-detection engine.
 

@@ -63,10 +63,11 @@ jobs:
           cargo run -- diff .env "$OUT/.env.copy"
           cargo run -- fix --env "$OUT/.env.copy" --dry-run
 
-          # Scanning + diagnostics. Scan emits warnings to stderr for
-          # missing-from-schema vars but still exits 0 unless the binary
-          # itself crashes -- the strict exit is for CI catching panics.
-          cargo run -- scan --path src
+          # Scanning + diagnostics. scan exits 1 when code references env vars
+          # not in the schema -- expected here, since scanning src/ matches
+          # pattern literals like API_KEY inside scan.rs itself. Tolerate
+          # exit 1; still fail on a real crash (panic = 101, etc.).
+          cargo run -- scan --path src || test $? -eq 1
           cargo run -- doctor
 
           # Cache subcommands (the only nested-action variant)
