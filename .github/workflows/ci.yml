@@ -5,6 +5,10 @@ on:
     branches: ["main"]
   pull_request:
 
+# Least privilege: CI only builds + tests, never writes to the repo.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     name: ${{ matrix.os }}

@@ -12,6 +12,10 @@ on:
       - '.github/workflows/test-action.yml'
   workflow_dispatch:
 
+# Least privilege: only checks out + runs the action; no repo writes.
+permissions:
+  contents: read
+
 jobs:
   test-action-valid:
     name: Test with valid .env
