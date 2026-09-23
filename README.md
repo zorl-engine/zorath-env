@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/logo.png" alt="Zorath" width="200">
-</p>
-
 # zorath-env
 
 [![Crates.io](https://img.shields.io/crates/v/zorath-env.svg)](https://crates.io/crates/zorath-env)
