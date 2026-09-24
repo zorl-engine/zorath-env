@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout zenv
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -30,7 +30,7 @@ jobs:
           node-version: '22'
 
       - name: Checkout zorl.cloud
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: zorl-engine/zorl.cloud
           path: zorl.cloud
