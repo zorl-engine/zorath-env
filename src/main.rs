@@ -44,7 +44,7 @@ Examples:
   zenv check --allow-missing-env        Schema-only validation (no .env required)
 
 Security options for remote schemas:
-  zenv check --schema https://... --verify-hash abc123...
+  zenv check --schema https://... --verify-hash <trusted-sha256-64-hex>
   zenv check --schema https://... --ca-cert /path/to/ca.pem
 
 Config file:
@@ -57,7 +57,7 @@ Config file:
         /// Path to schema file (default: env.schema.json, or from .zenvrc)
         #[arg(long)]
         schema: Option<String>,
-        /// If set, missing .env is allowed (schema still validated against defaults/required rules)
+        /// Allow missing .env with schema-only validation (does not verify required env values)
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         allow_missing_env: Option<bool>,
         /// Detect potential secrets in .env file (API keys, passwords, tokens)
@@ -72,7 +72,7 @@ Config file:
         /// Output format: text or json (default: text, or from .zenvrc)
         #[arg(long)]
         format: Option<String>,
-        /// Verify remote schema integrity with SHA-256 hash
+        /// Verify schema SHA-256 (64 hex characters, or a prefix of at least 32)
         #[arg(long)]
         verify_hash: Option<String>,
         /// Custom CA certificate for enterprise TLS (PEM format)
@@ -86,7 +86,7 @@ Examples:
   zenv docs                             Generate markdown docs
   zenv docs --format json               Generate JSON output
   zenv docs --schema https://...        Use remote schema
-  zenv docs --schema https://... --verify-hash abc123...")]
+  zenv docs --schema https://... --verify-hash <trusted-sha256-64-hex>")]
     Docs {
         /// Path to schema file (default: env.schema.json, or from .zenvrc)
         #[arg(long)]
@@ -97,7 +97,7 @@ Examples:
         /// Skip cache when fetching remote schemas
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
-        /// Verify remote schema integrity with SHA-256 hash
+        /// Verify schema SHA-256 (64 hex characters, or a prefix of at least 32)
         #[arg(long)]
         verify_hash: Option<String>,
         /// Custom CA certificate for enterprise TLS (PEM format)
@@ -153,7 +153,7 @@ Description:
   docs), 3 resources (schema, masked .env, generated docs), 3 prompts
   (audit_env, new_var_workflow, diagnose_missing), plus the standard
   protocol surface (initialize, ping, logging/setLevel, completion).
-  Stdio only -- no network, no hosting, no telemetry.
+  Stdio transport; no hosting or telemetry. Explicit remote schemas use HTTPS.
 
   Client config (add to your MCP client's config file):
     \"zenv\": { \"command\": \"zenv\", \"args\": [\"mcp\"] }")]
@@ -172,7 +172,7 @@ Installation:
   zsh:   zenv completions zsh >> ~/.zshrc
   fish:  zenv completions fish > ~/.config/fish/completions/zenv.fish")]
     Completions {
-        /// Shell to generate completions for (bash, zsh, fish, powershell)
+        /// Shell to generate completions for (bash, elvish, fish, powershell, zsh)
         #[arg(value_enum)]
         shell: Shell,
     },
@@ -183,7 +183,7 @@ Examples:
   zenv example                          Print to stdout
   zenv example --output .env.example    Write to file
   zenv example --include-defaults       Include schema defaults
-  zenv example --schema https://... --verify-hash abc123...")]
+  zenv example --schema https://... --verify-hash <trusted-sha256-64-hex>")]
     Example {
         /// Path to schema file (default: env.schema.json, or from .zenvrc)
         #[arg(long)]
@@ -197,7 +197,7 @@ Examples:
         /// Skip cache when fetching remote schemas
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
-        /// Verify remote schema integrity with SHA-256 hash
+        /// Verify schema SHA-256 (64 hex characters, or a prefix of at least 32)
         #[arg(long)]
         verify_hash: Option<String>,
         /// Custom CA certificate for enterprise TLS (PEM format)
@@ -213,7 +213,7 @@ Examples:
   zenv diff .env.a .env.b --format json     JSON output for CI
 
 Remote schema with integrity verification:
-  zenv diff .env.a .env.b --schema https://... --verify-hash abc123...")]
+  zenv diff .env.a .env.b --schema https://... --verify-hash <trusted-sha256-64-hex>")]
     Diff {
         /// First .env file
         env_a: String,
@@ -228,7 +228,7 @@ Remote schema with integrity verification:
         /// Skip cache when fetching remote schemas
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
-        /// Verify remote schema integrity with SHA-256 hash
+        /// Verify schema SHA-256 (64 hex characters, or a prefix of at least 32)
         #[arg(long)]
         verify_hash: Option<String>,
         /// Custom CA certificate for enterprise TLS (PEM format)
@@ -244,7 +244,7 @@ Examples:
   zenv fix --remove-unknown             Also remove keys not in schema
 
 Remote schema with integrity verification:
-  zenv fix --schema https://... --verify-hash abc123...
+  zenv fix --schema https://... --verify-hash <trusted-sha256-64-hex>
 
 What it fixes:
   - Adds missing required variables (with schema defaults)
@@ -269,7 +269,7 @@ What it reports but doesn't fix:
         /// Skip cache when fetching remote schemas
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
-        /// Verify remote schema integrity with SHA-256 hash
+        /// Verify schema SHA-256 (64 hex characters, or a prefix of at least 32)
         #[arg(long)]
         verify_hash: Option<String>,
         /// Custom CA certificate for enterprise TLS (PEM format)
@@ -307,7 +307,7 @@ Supported languages:
         /// Skip cache when fetching remote schemas
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
-        /// Verify remote schema integrity with SHA-256 hash
+        /// Verify schema SHA-256 (64 hex characters, or a prefix of at least 32)
         #[arg(long)]
         verify_hash: Option<String>,
         /// Custom CA certificate for enterprise TLS (PEM format)
@@ -366,7 +366,7 @@ Aliases:
         /// Skip cache when fetching remote schemas
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
-        /// Verify remote schema integrity with SHA-256 hash
+        /// Verify schema SHA-256 (64 hex characters, or a prefix of at least 32)
         #[arg(long)]
         verify_hash: Option<String>,
         /// Custom CA certificate for enterprise TLS (PEM format)
@@ -380,7 +380,7 @@ Examples:
   zenv doctor                           Run full health check
   zenv doctor --schema custom.json      Use custom schema path
   zenv doctor --env .env.local          Use specific env file
-  zenv doctor --schema https://... --verify-hash abc123...
+  zenv doctor --schema https://... --verify-hash <trusted-sha256-64-hex>
   zenv doctor --schema https://... --ca-cert /path/to/ca.pem
 
 Checks:
@@ -404,7 +404,7 @@ Each check shows:
         /// Skip cache when fetching remote schemas
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
-        /// Verify remote schema integrity with SHA-256 hash
+        /// Verify schema SHA-256 (64 hex characters, or a prefix of at least 32)
         #[arg(long)]
         verify_hash: Option<String>,
         /// Custom CA certificate for enterprise TLS (PEM format)

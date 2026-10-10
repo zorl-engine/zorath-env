@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-10-10
+
+### Documentation
+- Reconciled repository guides and all seven wiki pages with published v0.3.12 behavior, including export syntax, secret-warning policy, schema defaults and parent pins, MCP outputs, and supported binary targets.
+- Corrected Action examples to pin code and executable versions and pass dynamic output through quoted environment variables. Updated CLI/MCP help descriptions without changing runtime validation behavior.
+- Documented Rust 1.99.0 stable for current development while retaining the tested Rust 1.85 minimum, and separated completed publication from remaining verification and website sync access work.
+
 ## [0.3.12] - 2026-10-10
 
 ### Security

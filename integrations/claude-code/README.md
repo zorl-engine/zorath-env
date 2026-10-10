@@ -1,7 +1,7 @@
 # Claude Code integration for zenv
 
-Turn Claude Code (and any other MCP-compatible AI coding agent) into a
-zenv expert in any of your projects. This integration ships as a single
+Teach Claude Code to use zenv in your projects. Other compatible clients
+can use the separate stdio MCP integration described below. This integration ships as a single
 markdown skill file -- no daemon, no hosted service, no telemetry, no
 account.
 
@@ -46,7 +46,7 @@ The skill assumes the `zenv` binary is on PATH. Install via one of:
 
 ```bash
 # Rust toolchain
-cargo install zorath-env
+cargo install zorath-env --version 0.3.13 --locked  # Rust 1.85+
 
 # Prebuilt binaries (Linux / macOS Intel + ARM / Windows)
 # Pick the right asset from:
@@ -63,8 +63,9 @@ run entirely on your machine with no hosting cost:
    Claude Code.
 
 2. **Stdio MCP server (`zenv mcp`).** Built into the binary you already
-   installed. Speaks JSON-RPC 2.0 on stdin/stdout. Works with any
-   MCP-compatible client (Claude Code, Cursor, Cline, Windsurf, etc.).
+   installed. Speaks JSON-RPC 2.0 on stdin/stdout. Targets compatible
+   stdio MCP clients (such as Claude Code, Cursor, Cline, and Windsurf);
+   verify the current client configuration and supported behavior.
    Exposes 5 tools, 3 resources (schema, masked .env, generated docs),
    3 prompts (audit_env, new_var_workflow, diagnose_missing), and the
    standard lifecycle surface (initialize, ping, logging/setLevel,
@@ -79,6 +80,8 @@ run entirely on your machine with no hosting cost:
      }
    }
    ```
+
+Set the client working directory to your project or launch with `zenv --config /absolute/path/.zenvrc mcp` so tools and resources use the intended files. Four tools return JSON serialized in MCP text content; `zenv_doctor` returns plain text. Real-client lifecycle/cancellation coverage remains a verification priority; see [TESTED.md](../../TESTED.md).
 
 You can use either or both. The skill is easier to install if you only
 use Claude Code; the MCP server is portable across clients. They do not
@@ -110,11 +113,12 @@ repository.
 
 - The skill is plain markdown. It contains no executable code and makes
   no network calls itself.
-- `zenv` runs locally and does not phone home. It does NOT report
-  telemetry, validation results, or schema contents anywhere.
-- `--format json` output that the agent parses stays in the local
-  agent <-> LLM channel. Treat that channel according to your LLM
-  vendor's data handling policy.
+- `zenv` does not upload env values or send telemetry. Explicit remote
+  schemas (including inherited schemas) and update checks make HTTPS
+  requests. The stdio transport itself has no network listener.
+- Your AI client can send tool output to its model provider. Masking is
+  heuristic, and schema/docs resources can contain defaults. Review
+  sensitive content and your provider's data policy before sharing.
 - For maximum isolation in CI, the same binary can run without network
-  access at all -- pass a local schema path and skip the remote-fetch
-  pipeline entirely.
+  access at all -- use local schemas with only local parents and skip update
+  checks. Review generated exports and defaults before committing them.

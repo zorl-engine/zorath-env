@@ -37,7 +37,7 @@ Feature requests are welcome! Please:
 
 ### Prerequisites
 
-- Rust 1.85+ (install via [rustup](https://rustup.rs/))
+- Latest stable Rust ([1.99.0](https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/) as of October 10, 2026); update with `rustup update stable`. CI also checks the supported minimum, Rust 1.85. Install via [rustup](https://rustup.rs/).
 - Git
 
 ### Clone and Build
@@ -189,6 +189,7 @@ src/
     export.rs      # zenv export command
     fix.rs         # zenv fix command
     init.rs        # zenv init command
+    mcp.rs         # stdio MCP tools, resources, and prompts
     scan.rs        # zenv scan command
     template.rs    # zenv template command
     version.rs     # zenv version command
@@ -202,12 +203,26 @@ Use Python 3.11 or newer for release tooling:
 python scripts/release.py --check
 python scripts/test_release.py
 node --test scripts/test_sync_website.js
-python scripts/release.py 0.3.12
+# Example next patch version; choose the intended unpublished version.
+python scripts/release.py 0.3.14
 ```
 
 The final command prepares a version bump in Cargo.toml, Cargo.lock, and the Action fallback. It does not publish, tag, commit, or change dependency versions. Update CHANGELOG.md and review the diff before creating a release tag. Tag builds must pass the reusable cross-platform CI workflow, tag/version agreement, and a locked package dry run before release artifacts or the crate are published. `cargo release` runs the locked release-profile tests.
 
 After crate publication, the release workflow explicitly calls the website sync workflow. GitHub releases created with `GITHUB_TOKEN` do not trigger a separate release-event workflow ([GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)). The website lives in the separate private repository `Rex0Lux/zorl` on `master`; the existing `ZORL_WEBSITE_TOKEN` secret must grant access to it. Sync updates version metadata only; feature descriptions, counts, examples, and privacy statements require a separate content review. The sync script checks both files before editing and targets the zenv section of `public/llms.txt`.
+
+## Maintaining repository docs and the wiki
+
+The CLI repository is `zorl-engine/zorath-env` on `main`. The wiki is a separate Git repository on `master`; updating the README does not update the wiki:
+
+```bash
+git clone https://github.com/zorl-engine/zorath-env.wiki.git
+cd zorath-env.wiki
+```
+
+For each release, review all seven pages: Home, Installation, Quick-Start, Schema-Format, Commands, CI-Integration, and FAQ. Keep `_Sidebar.md` links in sync. Check examples and flags against the published binary, execute the quick start in a temporary directory, and validate schema/config examples against current source. Keep historical test records clearly labeled in `TESTED.md`; never reuse old results as a fresh test pass. Review and commit the wiki changes, then push its `master` branch with an account authorized for the CLI repository.
+
+For v0.3.12, publication succeeded but the automatic website sync job could not access `Rex0Lux/zorl` with the existing token. Website content was pushed separately using the website account and the live deployment was verified. Future releases need working repository access for that sync or a separately verified manual website update. Do not treat a published crate as proof that the website or wiki was updated.
 
 ## Questions and documentation
 

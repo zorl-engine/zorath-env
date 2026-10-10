@@ -1,8 +1,33 @@
 # zenv - Tested and Verified
 
-## Local hardening verification - October 10, 2026
+## v0.3.13 verification - October 10, 2026
 
-The following audit was recorded locally before release preparation, from a working tree based on v0.3.11. The fixes are prepared for v0.3.12. Publication and hosted verification must be checked against the release revision in [GitHub Actions](https://github.com/zorl-engine/zorath-env/actions) and the [release page](https://github.com/zorl-engine/zorath-env/releases/tag/v0.3.12). Local verification on Windows x86-64:
+This patch updates documentation, CLI/MCP descriptions, and release metadata; it does not change validation semantics. Verification used stable Rust **1.99.0** (`b940084d7`, September 28 build), Cargo 1.99.0, and Windows x86-64. Rust 1.85 remains the supported minimum.
+
+- `cargo fmt --all -- --check`, strict all-target Clippy, and `cargo test --locked --quiet` passed: **841 tests**, 0 failures, 2 existing ignored doc examples. The v0.3.13 release-profile binary built successfully with locked dependencies.
+- Documentation verification against that binary passed **66 CLI invocations** covering all 14 commands, the quick start, valid/invalid checks, default/required semantics, secret warnings, schema-aware masking, seven exports, repair backups, scan JSON, six CI template modes, five completion shells, and MCP initialization/tools/resources/prompts.
+- Parsed **19 JSON** and **11 YAML** examples, loaded **13 schema examples**, and checked **9 GitHub workflow examples** with actionlint. One remote-parent schema is an illustrative URL template and was syntax-checked rather than fetched. **57 internal documentation links** resolved.
+- Release metadata/helper checks, Action argument/output checks, and all three website sync helper tests passed. A locked `cargo publish --dry-run --allow-dirty` packaged and verified v0.3.13 without uploading. Repository and wiki diffs passed whitespace checks. The seven wiki pages and navigation were reviewed against source and executable behavior.
+
+Publication must be checked against the [v0.3.13 release](https://github.com/zorl-engine/zorath-env/releases/tag/v0.3.13), [crate](https://crates.io/crates/zorath-env/0.3.13), and exact-revision hosted workflows. The recorded v0.3.12 publication below is historical evidence, not a substitute for those checks.
+
+## Published v0.3.12 - October 10, 2026
+
+The [v0.3.12 release](https://github.com/zorl-engine/zorath-env/releases/tag/v0.3.12) points to `f6bef257f8d4edaadb9235e54daf0467203faf75` on `zorl-engine/zorath-env` (`main`). The [crate](https://crates.io/crates/zorath-env/0.3.12) was published through trusted publishing. These publication results supersede the preparation-only status in the historical local audit below.
+
+| Check | Evidence and scope |
+|---|---|
+| Hosted CI | [Exact-revision CI](https://github.com/zorl-engine/zorath-env/actions/runs/38026037702) succeeded on Linux, macOS, Windows, and the Rust 1.85 minimum-version job. Current stable CI uses Rust 1.99.0. |
+| Release gates and publishing | [Release run](https://github.com/zorl-engine/zorath-env/actions/runs/38026216437) passed package/metadata checks, security audit, all three Action scenarios, cross-platform CI, all four binary builds, GitHub release creation, and crates.io publication. Its final website sync job failed; the overall run is therefore not green. |
+| Artifact provenance | GitHub attestations verified for all four published assets: Linux x86-64, macOS Intel/ARM, and Windows x86-64. Consumer-side verification is still not automatic in the composite Action. |
+| Released Windows install | Downloaded `zenv.exe` reported v0.3.12 and validated the example fixture. SHA-256: `d375c431a519f92eaa07f015aed2223196fc2f80e1cf00ec60f39229f5885549`. A separate fresh `cargo install zorath-env --version 0.3.12 --locked` also passed version/check smoke. These are Windows install checks, not proof that every downloaded Unix asset was run locally. |
+| Website publication | `Rex0Lux/zorl` on `master` received commit `ad8da141700fbfd203151ca4f5bbacbd6c556bde` using the website account. Vercel deployment completed, and `/zenv`, `/zenv/docs`, and `/llms.txt` returned HTTP 200 with v0.3.12 and corrected content. Scoped lint and TypeScript checks passed. |
+
+The existing website sync credential cannot access the separate website repository. The website was updated manually; future unattended releases still need working sync access or a verified manual update. No credential was changed during this work.
+
+## Historical local hardening verification - October 10, 2026
+
+This audit was recorded before release preparation from a working tree based on v0.3.11. It is historical local evidence; publication is recorded above. Local verification on Windows x86-64:
 
 | Check | Result |
 |---|---|
@@ -24,19 +49,18 @@ The surgical follow-up also fixed orphan cache metadata, inaccurate cache counts
 
 Repository verification: The user confirmed the CLI repository as `zorl-engine/zorath-env`; GitHub confirmed its default branch as `main`. The local origin, Cargo metadata, Action downloads, and generated CI asset URLs use that repository, whose v0.3.11 release and four assets were accessible. The separate website repository is `Rex0Lux/zorl`; GitHub confirmed its default branch as `master` and the expected `src/data/zenv.json` and `public/llms.txt` files. The website sync workflow targets that repository and branch. No CLI relocation is required, and neither repository nor the live website was modified remotely during this audit.
 
-## Completion and release readiness
+## Completion and remaining verification
 
 The tested build is usable as zenv's existing build-time configuration validator: define a schema, create or inspect an env file, validate it in development/CI, diagnose or repair supported issues, generate docs/examples, export values, and call local tools through MCP. Generated secret values remain placeholders, and arbitrary regex placeholders can require manual completion. This audit does not establish the absence of every defect.
 
 | Priority | Remaining work | Acceptance evidence |
 |---|---|---|
-| Before public release | Run the changed hosted CI/Action workflows on Linux, macOS, and Windows; exercise native Unix permission/symlink/device regressions and the downloadable artifacts. | Passing jobs for the exact release revision; install-and-check smoke results on each supported target. Only Windows ran locally. |
-| Before public release | Prepare a new version, review the full diff/changelog, verify crates.io trusted publishing and the existing website-token configuration, then publish and verify installs. | Matching crate, tag, Action fallback, and binaries; successful release jobs. The helper and gates are wired, but no release ran here. |
-| Before public release | Reconcile the product website, docs, and `llms.txt` with the shipped behavior. | Correct command/pattern/test counts and examples; accurate descriptions of network access, doctor, and fix. Version sync alone does not update feature text. |
+| Release automation | Restore the existing website sync's access to `Rex0Lux/zorl`, or retain a verified manual website publication step. | A successful sync job for the intended website repository/branch. v0.3.12's CLI/crate publication and manual website deployment are complete. |
+| Distribution verification | Add installed/downloaded artifact execution checks on every supported target, beyond successful source CI and release builds. | Recorded version/check smoke for each asset on its native OS/architecture. Windows install smoke and all four provenance checks are recorded above. |
 | Before a broad 1.0 reliability claim | Test MCP with supported real clients and its lifecycle/cancellation/large-input behavior; add parser/inheritance fuzzing and target-runtime export tests. | Recorded compatibility matrix and bounded-input/negative-case results. Current stdio/process tests do not establish complete MCP conformance or Docker/systemd execution compatibility. |
 | Distribution hardening | Verify downloaded Action artifacts against provenance/checksums before execution; document supported architectures and consider Linux ARM/musl assets. | Rejected tampered downloads and a tested install matrix. Releases emit provenance, but the Action consumer does not yet verify it. |
 
-The [live product page](https://zorl.cloud/zenv) reviewed on October 10 still mixes 22 and 15 secret patterns, 14 and 13 commands, and a 686-test badge. It describes sorting in `fix`, installation/completion checks in `doctor`, and no external requests more broadly than the implementation supports. The [live llms.txt](https://zorl.cloud/llms.txt) also includes outdated counts and positional `export .env` examples; the CLI requires `--env .env`. These are content corrections for the separate website repository; it was not edited or deployed here.
+The [product page](https://zorl.cloud/zenv), [website documentation](https://zorl.cloud/zenv/docs), and [llms.txt](https://zorl.cloud/llms.txt) were corrected and deployed after the historical audit. The previous inconsistent command/pattern/test counts, positional export examples, and overstated doctor/fix/network descriptions are resolved in the recorded website commit. Repository docs and the seven wiki pages are maintained separately; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Product R&D priorities are detailed in [docs/comparison.md](docs/comparison.md), with primary-source references. The next useful additions are a specified strict dotenv mode with literal quoting semantics, an explicit fail-on-secret CI policy, and a versioned machine-readable schema for editors. Conditional rules can follow. Runtime injection, encryption/vaults, overlays, and type generation are separate extensions, not prerequisites for the current build-time CLI. Current secret findings are warnings; defaults are not injected into an application's process environment.
 
@@ -409,12 +433,12 @@ Returns structured JSON with `valid`, `errors`, `warnings`, `secret_warnings`, a
 Export `.env` to various deployment formats:
 
 ```bash
-zenv export .env --format shell    # export FOO="bar"
-zenv export .env --format docker   # ENV FOO=bar
-zenv export .env --format k8s      # Kubernetes ConfigMap YAML
-zenv export .env --format json     # JSON object
-zenv export .env --format systemd  # Environment=FOO=bar
-zenv export .env --format dotenv   # Standard .env format
+zenv export --env .env --format shell    # export FOO="bar"
+zenv export --env .env --format docker   # ENV FOO=bar
+zenv export --env .env --format k8s      # Kubernetes ConfigMap YAML
+zenv export --env .env --format json     # JSON object
+zenv export --env .env --format systemd  # Environment=FOO=bar
+zenv export --env .env --format dotenv   # Standard .env format
 ```
 
 ### Doctor Command

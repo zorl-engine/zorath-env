@@ -1,6 +1,6 @@
 [package]
 name = "zorath-env"
-version = "0.3.12"
+version = "0.3.13"
 edition = "2021"
 # The locked ignore dependency uses edition 2024, requiring Rust 1.85.
 # CI checks this floor against Cargo.lock; revisit it when updating dependencies.

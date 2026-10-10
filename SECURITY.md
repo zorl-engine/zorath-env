@@ -49,22 +49,31 @@ Instead, please report security issues via:
 
 ### Secret Masking (v0.3.8+)
 
-zenv automatically masks sensitive values in output to prevent accidental exposure:
+zenv masks recognized sensitive values in validation diagnostics, diff output, fix previews, and the masked MCP env resource:
 
 - **Error messages**: Sensitive values shown as `***MASKED***`
 - **fix --dry-run**: Previewed fixes mask sensitive values
 - **Auto-detection**: Keys containing `password`, `secret`, `token`, `key`, `api_key` are masked
 
-This prevents secrets from appearing in terminal output, logs, or screenshots.
+Masking is a defense against accidental exposure, not a guarantee that every secret is recognized. Set `"secret": true` in the schema for known sensitive variables and pass that schema to `diff`. Review output before sharing it. Exports contain actual values; generated documentation and `example --include-defaults` can include schema defaults. Never put real credentials in defaults intended for publication.
+
+`"secret": false` opts a variable out of secret detection; it does not disable all output masking.
 
 ### Secret Detection Patterns (--detect-secrets)
 
-When `--detect-secrets` is enabled, zenv scans for 15+ known secret patterns plus high-entropy strings:
+When `--detect-secrets` is enabled, zenv scans for 22 regex patterns plus URL-password and high-entropy checks:
 
 | Pattern | Detects | Example Match |
 |---------|---------|---------------|
 | AWS Access Key ID | AWS access keys | `AKIAIOSFODNN7EXAMPLE` |
 | AWS Secret Key | 40-char AWS secrets | Base64-encoded 40-char strings |
+| OpenAI API Key | OpenAI keys | `sk-...`, `sk-proj-...` |
+| Anthropic API Key | Anthropic keys | `sk-ant-api...`, `sk-ant-admin...` |
+| Discord Bot Token | Discord bot credentials | Three-segment token format |
+| Discord Webhook | Webhook URL credentials | Discord webhook URLs |
+| Slack Webhook | Webhook URL credentials | Slack incoming webhook URLs |
+| HuggingFace Token | User access tokens | `hf_...` |
+| Datadog API Key | 32-character hex keys under Datadog-related names | `DATADOG_API_KEY`, `DD_API_KEY` |
 | Stripe API Key | Stripe keys | `sk_live_...`, `pk_test_...` |
 | GitHub Token | GitHub PATs | `ghp_...`, `gho_...`, `ghs_...` |
 | GitLab Token | GitLab PATs | `glpat-...` |
@@ -86,6 +95,8 @@ zenv check --detect-secrets
 zenv check --detect-secrets true   # explicit
 ```
 
+Secret findings are warnings: `check` can exit 0 with nonempty `secret_warnings`. A CI policy that rejects findings must inspect the JSON report, as shown in [CI Integration](https://github.com/zorl-engine/zorath-env/wiki/CI-Integration#fail-ci-on-secret-findings). A clean report is not proof that a file is safe to publish.
+
 **Configure in .zenvrc:**
 ```json
 {
@@ -105,7 +116,7 @@ Verify schema integrity with SHA-256:
 zenv check --schema https://example.com/schema.json --verify-hash "$SCHEMA_SHA256"
 ```
 
-- Prevents man-in-the-middle attacks
+- Detects changed content when the expected digest comes from a separately trusted source
 - Verifies both cached and fresh content
 - Supports full SHA-256 hashes or prefixes of at least 32 hexadecimal characters
 
@@ -131,7 +142,9 @@ Remote schema fetches are rate-limited by default:
 - 60 seconds between fetches per URL
 - Prevents abuse and excessive requests
 - Configurable in `.zenvrc`: `"rate_limit_seconds": 120`
-- Disabled with `--no-cache` flag
+- A fresh, valid cached schema is usable during the rate-limit window
+- `--no-cache` bypasses both the cache and rate limit
+- `zenv cache clear <URL>` removes that URL's cached content and rate-limit metadata
 
 ### Security Best Practices
 

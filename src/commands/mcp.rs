@@ -612,7 +612,7 @@ fn resource_registry() -> Vec<Value> {
         json!({
             "uri": URI_ENV_MASKED,
             "name": "zenv .env (masked)",
-            "description": "The active .env file with sensitive values masked. Sensitive detection uses both key-name heuristics and value-aware checks (URL passwords, webhook URLs). Safe to display in chat.",
+            "description": "The active .env file with recognized sensitive values masked using schema declarations, key-name heuristics, and value-aware checks. Review before sharing; masking cannot identify every secret.",
             "mimeType": "text/plain"
         }),
         json!({

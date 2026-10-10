@@ -1,5 +1,5 @@
 name: 'zenv - Environment Validator'
-description: 'Validate .env files against JSON schemas using zenv'
+description: 'Validate .env files against JSON or YAML schemas using zenv'
 author: 'Zorath LLC'
 
 branding:
@@ -12,7 +12,7 @@ inputs:
     required: false
     default: 'false'
   schema:
-    description: 'Path to the JSON schema file'
+    description: 'Local JSON/YAML schema path or HTTPS URL'
     required: false
     default: 'env.schema.json'
   env-file:
@@ -20,7 +20,7 @@ inputs:
     required: false
     default: '.env'
   allow-missing-env:
-    description: 'Allow missing .env file (validates schema defaults only)'
+    description: 'Allow missing .env file with schema-only validation; required env values are not checked'
     required: false
     default: 'false'
   version:
@@ -78,7 +78,7 @@ runs:
             # The fallback hits exact-match download paths
             # so a stale value installs an outdated binary on crates.io
             # outages.
-            VERSION="0.3.12"
+            VERSION="0.3.13"
           fi
         else
           VERSION="$ZENV_VERSION"

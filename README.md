@@ -2,14 +2,16 @@
 
 [![Crates.io](https://img.shields.io/crates/v/zorath-env.svg)](https://crates.io/crates/zorath-env)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Docs](https://img.shields.io/badge/docs-zorl.cloud-blue)](https://zorl.cloud/zenv)
+[![Docs](https://img.shields.io/badge/docs-zorl.cloud-blue)](https://zorl.cloud/zenv/docs)
 [![GitHub stars](https://img.shields.io/github/stars/zorl-engine/zorath-env?logo=github&label=stars)](https://github.com/zorl-engine/zorath-env)
 
 **Package:** `zorath-env` | **Binary:** `zenv`
 
+**Current release: [v0.3.13](https://github.com/zorl-engine/zorath-env/releases/tag/v0.3.13)** (October 10, 2026). This patch corrects CLI/MCP guidance, Action examples, and installation documentation, and is verified with Rust 1.99.0. It includes the config, schema, watch, masking, and release hardening shipped in v0.3.12. See the [changelog](CHANGELOG.md), [verification record](TESTED.md), and [complete wiki](https://github.com/zorl-engine/zorath-env/wiki).
+
 **Built by Zorath -- infrastructure for builders.**
 
-**AI-native `.env` validation in any language.** A fast, single-binary CLI that validates `.env` files against typed schemas, detects secrets, scans your code, generates docs, exports to 7 deployment formats, and auto-fixes issues -- with a Claude Code skill AND a stdio MCP server built into the binary so AI coding agents can drive it directly. No runtime, no hosting, no telemetry.
+**AI-native `.env` validation in any language.** A fast, single-binary CLI that validates `.env` files against typed schemas, detects secrets, scans your code, generates docs, exports to 7 deployment formats, and auto-fixes issues -- with a Claude Code skill AND a stdio MCP server built into the binary so AI coding agents can drive it directly. No language runtime, no hosting, no telemetry.
 
 `14 types` -- `7 export formats` -- `9 language scan` -- `22 secret patterns` -- `6 framework presets` -- `regression tests` -- `stdio MCP` -- `Claude Code skill`
 
@@ -19,18 +21,18 @@
 
 `.env` files drift. Teams copy/paste secrets. CI fails at 3am. Docs go stale. Nobody catches the typo until production. AI coding agents need a tool they can drive without a Node runtime.
 
-`zenv` catches config bugs at build time, not runtime. Your schema is the single source of truth -- docs, examples, and validation are all generated from it. And every AI coding agent in your workflow can drive it through MCP without any hosted infrastructure.
+`zenv` catches config bugs at build time, not runtime. Your schema is the single source of truth -- docs, examples, and validation are all generated from it. Compatible AI clients can drive it through a local stdio MCP subprocess.
 
 **What makes zenv different:**
 
-- **AI-native** -- ships a Claude Code skill AND an `mcp` subcommand that speaks JSON-RPC 2.0 over stdio per [MCP spec 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25). 5 tools, 3 resources, 3 prompts. No hosting, no telemetry, no vendor URL -- the agent drives the local binary as a subprocess
+- **AI-native** -- ships a Claude Code skill AND an `mcp` subcommand that speaks JSON-RPC 2.0 over stdio targeting [MCP spec 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25). 5 tools, 3 resources, 3 prompts. No hosting, no telemetry, no vendor URL -- the agent drives the local binary as a subprocess
 - **Validate with real types** -- 14 validators (url, email, port, semver, uuid, ipv4, ipv6, date, hostname, and more), not just "is it a string?"
 - **Detect secrets in the validation pass** -- 22 patterns (AWS, OpenAI, Anthropic, Stripe, GitHub, GitLab, Discord/Slack webhooks, JWT, private keys, more) PLUS value-aware URL-password detection that catches `postgres://user:pass@host` even under innocuous keys like `FOO`
 - **Cryptographically-pinned remote schemas** -- fetch over HTTPS with `--verify-hash <sha256>`, custom CA, and connection-time address checks that reject internal destinations, including mapped IPv4. Share schemas across repos without trusting the host
 - **Scan your code** -- find env vars used in source code across 9 languages that aren't in your schema yet
 - **Export anywhere** -- shell, Docker, Kubernetes, systemd, GitHub Secrets, JSON, dotenv
 - **Auto-fix** -- add missing vars, remove unknown keys, preview changes safely with `--dry-run`. Atomic write with Unix mode preservation
-- **One binary, any stack** -- Rust binary with no runtime deps. Node, Python, Go, Ruby, Java, PHP, Kotlin -- doesn't matter
+- **One binary, any stack** -- Rust binary with no language runtime to install. Node, Python, Go, Ruby, Java, PHP, Kotlin -- doesn't matter
 - **Verified supply chain** -- SLSA build provenance attestations + OIDC trusted publishing to crates.io
 
 > See how zenv compares to dotenv-linter, envalid, dotenvx, and others: [docs/comparison.md](docs/comparison.md)
@@ -42,21 +44,37 @@ Local validation runs offline and never uploads your `.env` values. Remote schem
 ## Install
 
 ### Via cargo (recommended)
-Requires Rust 1.85 or newer with the locked dependencies.
+Use the latest stable toolchain, [Rust 1.99.0](https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/) as of October 10, 2026. The supported minimum with locked dependencies remains Rust 1.85.
 
 ```bash
-cargo install --locked zorath-env
+rustup update stable
+cargo +stable install --locked zorath-env
 ```
+
+For a reproducible install, use `cargo install zorath-env --version 0.3.13 --locked`.
+
+### Prebuilt binaries
+
+Download from [v0.3.13](https://github.com/zorl-engine/zorath-env/releases/tag/v0.3.13). No Rust toolchain is needed:
+
+| Platform | Asset |
+|---|---|
+| Linux x86-64, glibc (built on Ubuntu 24.04) | `zenv-linux` |
+| macOS Intel | `zenv-macos-intel` |
+| macOS Apple Silicon | `zenv-macos-arm` |
+| Windows x86-64 | `zenv.exe` |
+
+These are native OS binaries; the Linux asset is not a musl/Alpine build. See [Installation](https://github.com/zorl-engine/zorath-env/wiki/Installation) for PATH setup and `gh attestation verify` instructions.
 
 ### From source
 ```bash
-cargo install --path .
+cargo install --path . --locked
 ```
 
 ### Run locally
 
 ```bash
-cargo run -- check
+cargo run --locked -- check
 ```
 
 ## Library usage
@@ -524,7 +542,7 @@ A local schema can also extend an HTTPS URL. Pin each parent with `extends_hash`
 
 When `--verify-hash` pins the root, every inherited schema must have its own parent pin. A single digest cannot verify different files. Missing parent pins and hash mismatches fail before the untrusted dependency is used.
 
-Schemas are validated when loaded: unknown variable/rule fields, inapplicable or contradictory constraints, missing enum choices, invalid patterns, and invalid defaults are errors even when no `.env` values exist. Defaults describe accepted fallback values and are used by `fix` and `example --include-defaults`; `check` does not inject them into your application or rewrite your `.env`.
+Schemas are validated when loaded: unknown variable/rule fields, inapplicable or contradictory constraints, missing enum choices, invalid patterns, and invalid defaults are errors even when no `.env` values exist. Defaults describe accepted fallback values and are used by `fix` and `example --include-defaults`; `check` allows an absent required key when it has a valid default, but does not inject the value into your application or rewrite your `.env`. Your application must implement that fallback.
 
 ### Remote schemas
 
@@ -722,14 +740,15 @@ mkdir -p ~/.claude/skills/zenv && \
   -o ~/.claude/skills/zenv/SKILL.md
 ```
 
-The skill is plain markdown, runs entirely on your machine, makes no
-network calls, and has no hosted dependency. See
+The skill is plain Markdown. The CLI makes no telemetry requests; explicit
+remote schemas (including inherited schemas) and update checks use HTTPS.
+Your AI client controls which results are sent to its model provider. See
 [`integrations/claude-code/README.md`](integrations/claude-code/README.md)
 for the Windows install, prompts that demonstrate the integration, and
 the privacy notes.
 
 For clients that prefer the standard MCP protocol (Cursor, Cline,
-Windsurf, or any future MCP-compatible client), the `zenv mcp` stdio
+Windsurf, or another compatible stdio client), the `zenv mcp` stdio
 subcommand is built into the binary. Add to your client config:
 
 ```json
@@ -744,7 +763,11 @@ Exposes 5 tools, 3 resources (schema, masked .env, generated docs),
 3 prompts (audit_env, new_var_workflow, diagnose_missing), and the
 standard lifecycle surface (initialize, ping, logging/setLevel,
 completion). Zero new dependencies in the binary, zero hosting, zero
-telemetry -- runs entirely as a subprocess of your AI client.
+telemetry -- runs as a subprocess of your AI client. Client compatibility
+and lifecycle/cancellation coverage remain areas for further verification;
+this is not a claim of complete MCP conformance.
+
+Four tools return JSON serialized in MCP text content; `zenv_doctor` returns human-readable text. Schema and docs resources can contain schema defaults, so review them before sharing.
 
 `zenv --config path/to/config.json mcp` applies that configuration to both tool calls and resources. The masked env resource respects schema `secret: true` declarations and masks complete multiline assignments, including duplicates. Tool arguments are checked against their advertised input schemas before execution.
 
@@ -754,8 +777,9 @@ Validate `.env` files in your CI/CD pipeline:
 
 ```yaml
 - name: Validate .env
-  uses: zorl-engine/zorath-env/.github/actions/zenv-action@main
+  uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.3.13
   with:
+    version: '0.3.13'
     schema: env.schema.json
     env-file: .env.example
 ```
@@ -765,6 +789,8 @@ Validate `.env` files in your CI/CD pipeline:
 - `env-file` - Path to .env file (default: `.env`)
 - `allow-missing-env` - Allow missing .env (default: `false`)
 - `version` - zenv version to use (default: `latest`)
+
+See the [Action reference](.github/actions/zenv-action/README.md) for all inputs, runner requirements, and safe output handling. Secret findings are warnings and do not fail validation by themselves.
 
 **Outputs:**
 - `valid` - `true` if validation passed

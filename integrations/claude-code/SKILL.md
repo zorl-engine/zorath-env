@@ -1,6 +1,6 @@
 ---
 name: zenv
-description: Validate, scan, and fix .env files using zenv -- the single-binary, language-agnostic .env validator. Use whenever the user works with .env files, environment variable schemas, secrets in env files, or wants to add/audit env vars in any project (Node, Python, Rust, Go, Ruby, PHP, anywhere). zenv runs locally; no network calls, no telemetry, no vendor lock-in. The binary's structured exit codes + JSON output formats make it the right tool to drive from an AI agent.
+description: Validate, scan, and fix .env files using zenv -- the single-binary, language-agnostic .env validator. Use whenever the user works with .env files, environment variable schemas, secrets in env files, or wants to add/audit env vars in any project (Node, Python, Rust, Go, Ruby, PHP, anywhere). zenv runs locally with no telemetry; explicit remote schemas and update checks use HTTPS. The binary's structured exit codes + JSON output formats make it the right tool to drive from an AI agent.
 ---
 
 # zenv -- .env validator for AI agents
@@ -31,8 +31,7 @@ If absent, tell the user how to install (do NOT install it yourself unless they 
 
 ```
 zenv is not installed. Install with one of:
-  cargo install zorath-env
-  brew install zorath-env       # (if Homebrew tap is published in their env)
+  cargo install zorath-env --version 0.3.13 --locked  # Rust 1.85+
   Download from https://github.com/zorl-engine/zorath-env/releases
 ```
 
@@ -59,7 +58,7 @@ zenv check --detect-secrets --format json
 ```
 
 Exit codes are structured -- read them, don't rely on the text:
-- `0` = OK (env valid; no secret warnings)
+- `0` = No blocking validation errors (warnings, including secret findings, may still be present)
 - `1` = Validation failed (env doesn't satisfy schema)
 - `2` = Usage / input error (bad flag, missing file)
 - `3` = Schema error (schema file malformed or fetch failed)
@@ -80,7 +79,7 @@ Tells you which env vars the codebase actually reads, vs which are declared in t
 zenv scan --path src --format json
 ```
 
-The JSON output has `found`, `matched`, `missing_from_schema` (used in code but not declared), and `unused_in_code` (declared but never read) arrays. Both directions of drift are signals worth surfacing.
+JSON includes `scanned_path`, `files_scanned`, `total_vars_found`, `matched_in_schema`, `missing_from_schema_count`, `missing_from_schema` (objects with `var_name` and `usages`), and `success`. Add `--show-paths` for `found_vars`; add `--show-unused` for `unused_in_code` and its count. Scan exits 1 when code uses variables absent from the schema. Scanning is pattern-based and cannot resolve every dynamic lookup.
 
 When the user adds a new env var in code, scan to confirm it shows up:
 
@@ -122,7 +121,7 @@ When a project doesn't have an `ENVIRONMENT.md`, suggest generating one. The sch
 zenv doctor
 ```
 
-Surfaces problems the other commands don't: missing `.env` files, mis-gitignored secrets, schema/code drift summary, .zenvrc presence, etc. Good first step when the user says "something is wrong with my env setup but I don't know what."
+Checks the selected schema, env file, configuration, remote cache, interpolation, and validation. It returns human-readable text; use `scan` separately for code/schema drift and check Git ignore rules separately. Good first step when the user says "something is wrong with my env setup but I don't know what."
 
 ### `zenv fix` -- auto-fix common .env issues
 
@@ -134,7 +133,7 @@ zenv fix --dry-run               # preview only
 zenv fix                         # apply
 ```
 
-`fix` can add missing required vars (using schema defaults) and remove unknown keys (with `--remove-unknown`). It writes atomically with mode preservation, but it modifies the user's .env -- never apply without confirmation. Even with confirmation, prefer making a backup commit first.
+`fix` can add missing required vars (using schema defaults) and remove unknown keys (with `--remove-unknown`). It writes atomically with mode preservation, but it modifies the user's .env -- never apply without confirmation. The command creates a local backup without overwriting an existing backup. Keep real `.env` values and backups out of Git.
 
 ### `zenv diff` -- compare two .env files
 
@@ -142,9 +141,9 @@ zenv fix                         # apply
 zenv diff .env.local .env.production --format json
 ```
 
-Useful when the user asks "what's different between staging and prod" or "why does my deploy fail when local works." JSON output includes `only_in_a`, `only_in_b`, `different_values`, and `schema_compliance` (per-file).
+Useful when the user asks "what's different between staging and prod" or "why does my deploy fail when local works." JSON output includes `file_a`, `file_b`, `only_in_a`, `only_in_b`, `different_values`, and `identical`; `schema_compliance` is included when a schema is supplied.
 
-The diff command masks sensitive values automatically -- you can show the user the output safely. It detects sensitivity both by key name (e.g. `API_KEY`) AND by value shape (e.g. `postgres://user:pass@host` even under an innocuous key). Don't second-guess the masking -- if zenv didn't mask a value, it's not a leak.
+Diff masks recognized sensitive keys and values. Pass `--schema env.schema.json` to honor `secret: true` declarations; an invalid supplied schema fails rather than silently removing that protection. Masking is heuristic: review output before sharing, and never treat an unmasked value as proof that it is public.
 
 ### `zenv export` -- convert .env to deployment formats
 
@@ -159,6 +158,8 @@ zenv export --format systemd         # systemd Environment= directives
 zenv export --format dotenv          # standard .env format (round-trip)
 zenv export --format github-secrets  # `gh secret set` command list
 ```
+
+Exports contain actual, unmasked values. `--schema` filters keys but does not make values public or run validation. Docker output is Dockerfile `ENV` syntax, not a Docker `--env-file`. GitHub Secrets output is a shell script that changes secrets only when executed; generating it does not upload anything.
 
 Use `export` when the user asks "how do I deploy this to Kubernetes" / "how do I get these vars into my Dockerfile" / "how do I sync these to GitHub Actions secrets."
 
@@ -180,11 +181,11 @@ zenv example > .env.example
 zenv example --include-defaults > .env.example
 ```
 
-Inverse of `init`: takes a schema and produces an example .env (with placeholder values, no secrets). Use after `init` to bootstrap a public .env.example for the repo.
+Inverse of `init`: takes a schema and produces an example .env with typed placeholders. `--include-defaults` copies schema defaults, which may contain sensitive values. Review before publication. Arbitrary regex constraints can require manual edits to placeholders.
 
 ### `zenv cache` -- manage the remote schema cache
 
-When the user uses a remote schema (`https://...`), zenv caches it locally with SHA-256 integrity verification. Subcommands:
+When the user uses a remote schema (`https://...`), zenv caches it locally. Use `--verify-hash` with a trusted digest to pin both cached and fresh content. Subcommands:
 
 ```bash
 zenv cache list           # show cached schemas + age
@@ -231,31 +232,31 @@ Schemas declare what env vars exist, their types, and validation rules. Minimal 
 
 Available types: `string`, `int`, `float`, `bool`, `url`, `enum`, `uuid`, `email`, `ipv4`, `ipv6`, `semver`, `port`, `date`, `hostname`.
 
-Per-var validation rules include `min`, `max`, `min_length`, `max_length`, `pattern` (regex), `starts_with`, `ends_with`. Severity is per-variable (`error`/`warning`/`info`).
+Per-var validation rules include `min`, `max`, `min_length`, `max_length`, `pattern` (regex), `min_value`, `max_value`. Severity is per-variable (`error` or `warning`). Unknown fields, incompatible rules, and invalid defaults are rejected.
 
-Schemas can `extends` other schemas (local relative path or HTTPS URL). Inheritance is depth-capped at 10. Remote `extends` resolves via the same SSRF + hash-pinning pipeline as direct remote schemas.
+Schemas can `extends` other schemas (local relative path or HTTPS URL). Inheritance is depth-capped at 10. Local parents must remain within the child schema directory after path resolution. Remote parents use the same HTTPS protections. Each parent needs its own `extends_hash` when pinning the root; a root hash alone does not pin parent content. A valid default allows a required key to be absent during `check`; it is also used by generation/repair. It is not injected into the application, which must implement its own fallback.
 
 ## Remote schemas + security
 
 If the user fetches a schema from HTTPS, recommend pinning:
 
 ```bash
-zenv check --schema https://example.com/env.schema.json --verify-hash <sha256-prefix>
+zenv check --schema https://example.com/env.schema.json --verify-hash "$SCHEMA_SHA256"
 ```
 
 `--verify-hash` takes the full 64-char SHA-256 OR a prefix of at least 32 hex chars (128 bits). Shorter prefixes are rejected.
 
-For enterprise TLS interception:
+For custom trust roots on public HTTPS endpoints (private/internal destinations remain blocked):
 
 ```bash
-zenv check --schema https://internal/schema.json --ca-cert /etc/ssl/corp-ca.pem
+zenv check --schema https://schemas.example.com/schema.json --ca-cert /etc/ssl/corp-ca.pem
 ```
 
 Rate limiting is built in (default 60s between fetches per URL); bypass with `--no-cache` if the user knows they need a fresh fetch.
 
 ## Output handling for agents
 
-- For programmatic consumption: always use `--format json`. Parse with `jq` or your JSON library.
+- Use `--format json` for check, scan, diff, docs, and export when consuming structured output. Other commands, including doctor, do not provide a JSON format flag. Four MCP tools serialize JSON in text content; `zenv_doctor` returns plain text. Inspect the returned error status too.
 - For log capture (CI), use `--no-color` so ANSI codes don't pollute logs.
 - For quiet operation in scripts, use `--quiet` (or set `ZENV_QUIET=1`).
 - For verbose debugging, use `--verbose` (or `ZENV_VERBOSE=1`).
@@ -265,7 +266,7 @@ Rate limiting is built in (default 60s between fetches per URL); bypass with `--
 
 - **Never run `zenv fix` without `--dry-run` first.** Modifying the user's .env without preview is the #1 way to lose their work. Even after dry-run, get explicit confirmation before applying.
 - **Never include actual secret values in commits, PRs, or chat messages.** When the user shares a `.env` excerpt with you, mask values yourself before echoing them back. zenv masks values in its own output; preserve that masking when summarizing.
-- **Never run `zenv check --schema https://...` without `--verify-hash`** in a CI or production context. Pinning is the only defense against an attacker who compromises the schema host.
+- **Never run `zenv check --schema https://...` without `--verify-hash`** in a CI or production context. Obtain the expected digest from a separately trusted source and review each inherited parent pin.
 - **Never trust the text output of `zenv` commands to be stable across versions.** Use `--format json` and parse it. Text output is for humans.
 - **Never auto-install zenv for the user.** Suggest the install command and let them choose their package manager.
 - **Never commit `.env` files** themselves, even after validation. `.env` files almost always contain secrets. Confirm `.env` is in `.gitignore`; if not, fix that before doing anything else with env vars.
@@ -320,11 +321,11 @@ zenv diff .env.local .env.production --format json   # what's different?
 
 ## Edge cases worth knowing
 
-- zenv is ASCII-only in its output. If the user's terminal renders it without Unicode, that's by design, not a bug.
+- Prefer structured output where supported; terminal presentation can vary by platform.
 - The default schema search order is: explicit `--schema` flag, then `.zenvrc` config, then `env.schema.json`, then `env.schema.yaml`, then `env.schema.yml`.
-- The default .env search order is similar: `--env` flag, then `.zenvrc`, then `.env`.
-- `.zenvrc` is a JSON config file at the repo root that pins defaults (schema path, env path, output format, rate limit, etc.). When present, fewer flags are needed -- always check for it before suggesting verbose command lines.
-- Watch mode (`--watch`) uses notify-style file system events; if the user runs in a weird filesystem (NFS, Docker bind mounts), file events may not fire and they should know.
+- Env selection uses `--env`, then `.zenvrc`, then `.env`. When the selected name is the default `.env` and it is absent, fallback discovery tries `.env.local`, `.env.development`, then `.env.development.local`. A different explicit missing path is an error.
+- `.zenvrc` is a JSON config file at the repo root that pins defaults (schema path, env path, output format, rate limit, etc.). Discovery stops at project markers such as `.git` or `Cargo.toml`; relative config paths are resolved from the config directory. Invalid config fails visibly. Check the selected file before suggesting command lines.
+- Watch mode (`--watch`) uses filesystem events and polling; local inherited schemas and repeated atomic saves are covered by regression tests. Verify behavior on the actual mount used by the project.
 - On Windows, paths in command output use `\`. The CLI accepts both `/` and `\` in path arguments.
 
 ## When the user asks "should I use zenv or X?"
@@ -333,7 +334,7 @@ zenv is a **CI / agent-time validator** that runs locally. It does NOT inject en
 
 If the user needs runtime injection of secrets into their app, that's a different category of tool. If they need encrypted-at-rest .env files committed to git, that's also different. If they need hosted org-wide secret rotation with audit logs, that's a SaaS category. zenv is the validator layer that sits in front of any of those.
 
-For polyglot codebases (multiple languages in one repo), zenv has no peer at the CI validation layer -- the alternatives are language-bound libraries that only work in one runtime. Lean into the language-agnostic angle.
+For polyglot codebases, zenv provides one schema and CLI across languages. Compare requirements and current alternatives using `docs/comparison.md`; avoid unsupported exclusivity claims.
 
 ## Updating this skill
 
