@@ -9,7 +9,20 @@ This patch updates documentation, CLI/MCP descriptions, and release metadata; it
 - Parsed **19 JSON** and **11 YAML** examples, loaded **13 schema examples**, and checked **9 GitHub workflow examples** with actionlint. One remote-parent schema is an illustrative URL template and was syntax-checked rather than fetched. **57 internal documentation links** resolved.
 - Release metadata/helper checks, Action argument/output checks, and all three website sync helper tests passed. A locked `cargo publish --dry-run --allow-dirty` packaged and verified v0.3.13 without uploading. Repository and wiki diffs passed whitespace checks. The seven wiki pages and navigation were reviewed against source and executable behavior.
 
-Publication must be checked against the [v0.3.13 release](https://github.com/zorl-engine/zorath-env/releases/tag/v0.3.13), [crate](https://crates.io/crates/zorath-env/0.3.13), and exact-revision hosted workflows. The recorded v0.3.12 publication below is historical evidence, not a substitute for those checks.
+### Published artifacts and live documentation
+
+The [v0.3.13 release](https://github.com/zorl-engine/zorath-env/releases/tag/v0.3.13) and [crate](https://crates.io/crates/zorath-env/0.3.13) are published from `91563260a27f0ea205b8a92dd91321ebdc22bc2f`. The registry archive checksum and embedded Git revision were verified; its README contains v0.3.13, Rust 1.99.0 guidance, and the correct repository/wiki/website links. The MIT license and all four badge URLs were checked; the crates.io badge reports v0.3.13.
+
+| Published check | Result |
+|---|---|
+| Exact-revision main CI | [CI run](https://github.com/zorl-engine/zorath-env/actions/runs/38028212555) passed Windows, Linux, macOS, and Rust 1.85. |
+| Release gates | [Release run](https://github.com/zorl-engine/zorath-env/actions/runs/38028400079) passed metadata/package checks, security auditing, all Action scenarios, cross-platform CI, four artifact builds, GitHub release creation, and trusted crates.io publication. |
+| Binary provenance | All four downloaded assets verified against attestations for tag v0.3.13 and release commit `9156326`. Windows asset SHA-256: `f3f18a4708d119fff06746f4e229b3d894cfeda339b3a11be62092c59ac46799`. |
+| Installation smoke | The downloaded Windows executable and an independent `cargo +stable install zorath-env --version 0.3.13 --locked` both reported v0.3.13 and validated the repository example. The registry install used Rust 1.99.0 and a fresh target directory. |
+| Wiki | All seven pages plus navigation pushed to wiki `master`, commit `ee16ab5c61d2b83e0dd7313e60c8f5dd1013035f`; every public page returned HTTP 200 and v0.3.13 content. The website repository has its wiki disabled. |
+| Website | `Rex0Lux/zorl` `master` commit `e99ed2195c57d43b5eaaa887d9170c5f7279381a` deployed successfully on Vercel. `/zenv`, `/zenv/docs`, and `/llms.txt` returned HTTP 200 with v0.3.13. Website lint, TypeScript, 21 schema examples, 14 command references, and 10 Action input references passed checks. |
+
+The release run's final website sync failed with `Repository not found` for `Rex0Lux/zorl` using its existing credential. The separate website push/deployment using `Rex0Lux` succeeded and was verified; the automated sync access problem remains. CLI and wiki pushes used `zorl-engine`. No secrets were changed. Unix artifacts were built and provenance-verified; native installed-artifact execution remains future verification work.
 
 ## Published v0.3.12 - October 10, 2026
 
