@@ -131,14 +131,8 @@ jobs:
       - run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-
-  sync-website:
-    name: Sync published version to website
-    needs: publish
-    uses: ./.github/workflows/sync-website.yml
-    permissions:
-      contents: read
-    with:
-      version: ${{ github.ref_name }}
-    secrets:
-      ZORL_WEBSITE_TOKEN: ${{ secrets.ZORL_WEBSITE_TOKEN }}
+      - name: Website publication handoff
+        run: |
+          echo 'The website repository pulls published stable releases hourly using its own GitHub token.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'For an immediate sync, run [Sync zenv release](https://github.com/Rex0Lux/zorl/actions/workflows/sync-zenv.yml) on master using the website account.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'After deployment, run [Verify Website](https://github.com/zorl-engine/zorath-env/actions/workflows/verify-website.yml). Review documentation and the wiki separately.' >> "$GITHUB_STEP_SUMMARY"

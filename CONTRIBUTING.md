@@ -209,7 +209,15 @@ python scripts/release.py 0.3.14
 
 The final command prepares a version bump in Cargo.toml, Cargo.lock, and the Action fallback. It does not publish, tag, commit, or change dependency versions. Update CHANGELOG.md and review the diff before creating a release tag. Tag builds must pass the reusable cross-platform CI workflow, tag/version agreement, and a locked package dry run before release artifacts or the crate are published. `cargo release` runs the locked release-profile tests.
 
-After crate publication, the release workflow explicitly calls the website sync workflow. GitHub releases created with `GITHUB_TOKEN` do not trigger a separate release-event workflow ([GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)). The website lives in the separate private repository `Rex0Lux/zorl` on `master`; the existing `ZORL_WEBSITE_TOKEN` secret must grant access to it. Sync updates version metadata only; feature descriptions, counts, examples, and privacy statements require a separate content review. The sync script checks both files before editing and targets the zenv section of `public/llms.txt`.
+The website lives in the separate private repository `Rex0Lux/zorl` on `master`. Its **Sync zenv release** workflow reads the public CLI release and verifies matching, non-yanked crates.io publication before updating metadata. It runs hourly at minute 17 with the website repository's own `GITHUB_TOKEN`; no cross-repository secret is required. GitHub can delay scheduled runs. For immediate synchronization after publishing, use the website account:
+
+```bash
+gh workflow run sync-zenv.yml --repo Rex0Lux/zorl --ref master
+```
+
+The workflow validates both destination files, refuses downgrades, commits only zenv metadata, and verifies the live version after Vercel deployment. Repeated runs without changes do not create commits. Feature descriptions, counts, examples, and privacy statements still require a separate content review. GitHub releases created with `GITHUB_TOKEN` do not trigger another release-event workflow ([GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)), so do not rely on that event to update the separate website.
+
+After website synchronization, use the CLI repository's read-only **Verify Website** workflow, or run `node scripts/verify-website.js` locally. It checks `/zenv`, `/zenv/docs`, and the zenv section of `/llms.txt` against the version in Cargo.toml. Set `EXPECTED_VERSION` to verify another published stable version. The older `scripts/sync-website.js` helper remains available for an explicitly reviewed local website checkout.
 
 ## Maintaining repository docs and the wiki
 
@@ -222,7 +230,7 @@ cd zorath-env.wiki
 
 For each release, review all seven pages: Home, Installation, Quick-Start, Schema-Format, Commands, CI-Integration, and FAQ. Keep `_Sidebar.md` links in sync. Check examples and flags against the published binary, execute the quick start in a temporary directory, and validate schema/config examples against current source. Keep historical test records clearly labeled in `TESTED.md`; never reuse old results as a fresh test pass. Review and commit the wiki changes, then push its `master` branch with an account authorized for the CLI repository.
 
-For v0.3.12, publication succeeded but the automatic website sync job could not access `Rex0Lux/zorl` with the existing token. Website content was pushed separately using the website account and the live deployment was verified. Future releases need working repository access for that sync or a separately verified manual website update. Do not treat a published crate as proof that the website or wiki was updated.
+The v0.3.12 and v0.3.13 release runs published successfully but failed during the old cross-repository website checkout. Those historical runs retain their original workflows. The website-owned synchronization above replaces that credential dependency; no secrets were changed. Do not treat a published crate as proof that the website or wiki was updated.
 
 ## Questions and documentation
 

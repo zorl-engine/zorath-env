@@ -1,5 +1,39 @@
 # zenv - Tested and Verified
 
+## Security review and website automation follow-up - October 10, 2026
+
+This follow-up changes tests, documentation, and automation; the published CLI and
+crate remain **v0.3.13**. Current local verification used Rust **1.99.0**:
+`cargo fmt --check`, strict all-target Clippy, and the full locked Rust suite passed
+with **843 tests**, 0 failures, and 2 existing ignored doc examples. The six CLI
+website-helper/verification tests and six website-owned synchronization tests
+passed. Actionlint accepted the changed workflows, and the read-only website
+verifier confirmed `/zenv`, `/zenv/docs`, and `/llms.txt` serve v0.3.13.
+
+All ten open CodeQL findings were traced through the current SARIF and source.
+They concern diagnostic metadata, counts, or synthetic test fixtures, rather than
+secret values. The [individual review](docs/security/codeql-review-2026-10-10.md)
+records the evidence and regression coverage. CodeQL remains enabled.
+
+The old cross-repository sync credential dependency has been replaced with
+website-owned synchronization. [Its first run](https://github.com/Rex0Lux/zorl/actions/runs/38029400232)
+passed and pushed metadata commit `8444e2b0ea0957914024c3590c3ff4d65635cef5`
+using the website repository's own `GITHUB_TOKEN`. The exact bot commit received a
+successful [Vercel production deployment](https://vercel.com/luis-projects-95009b48/zorl-cloud/CxsQFpryyXg6TPtvfBSLbCi48KXj).
+The workflow runs hourly at minute 17, with a manual trigger for immediate releases;
+scheduled runs may be delayed by GitHub. It rejects unpublished/yanked versions,
+missing binaries, and downgrades, preserves unrelated metadata, and checks the live
+version. No secrets were changed. See [the release procedure](CONTRIBUTING.md#preparing-a-release).
+
+The GitHub Camo badge was separately verified to be stale at v0.3.12 while Shields
+and crates.io already reported v0.3.13. A single cache purge succeeded, and the same
+Camo URL now reports v0.3.13. Rust 1.85 on the crates.io sidebar denotes the minimum
+supported compiler; it does not contradict the Rust 1.99.0 build/test toolchain.
+
+Historical release runs retain their old workflow and failed website job. The
+automation results above supersede the outstanding website-access issue recorded
+below; the release tags and existing crates have not been rewritten.
+
 ## v0.3.13 verification - October 10, 2026
 
 This patch updates documentation, CLI/MCP descriptions, and release metadata; it does not change validation semantics. Verification used stable Rust **1.99.0** (`b940084d7`, September 28 build), Cargo 1.99.0, and Windows x86-64. Rust 1.85 remains the supported minimum.

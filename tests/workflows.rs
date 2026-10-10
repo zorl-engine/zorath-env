@@ -276,6 +276,10 @@ impl Watching {
     }
 
     fn until(&self, needle: &str) -> String {
+        self.until_all(&[needle])
+    }
+
+    fn until_all(&self, needles: &[&str]) -> String {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         let mut output = String::new();
         while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
@@ -283,14 +287,14 @@ impl Watching {
                 Ok(line) => {
                     output.push_str(&line);
                     output.push('\n');
-                    if line.contains(needle) {
+                    if needles.iter().all(|needle| output.contains(needle)) {
                         return output;
                     }
                 }
                 Err(_) => break,
             }
         }
-        panic!("watch never printed {needle:?}: {output}");
+        panic!("watch never printed {needles:?}: {output}");
     }
 }
 
@@ -313,6 +317,70 @@ fn watch_honors_warning_severity_at_startup() {
     std::fs::write(dir.path().join(".env"), "VALUE=bad\n").unwrap();
     let watch = Watching::start(&dir);
     assert!(watch.until("Initial:").contains("Initial: OK"));
+}
+
+#[test]
+fn secret_detection_diagnostics_never_echo_values_in_text_or_json() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".zenvrc"), "{}").unwrap();
+    std::fs::write(
+        dir.path().join("env.schema.json"),
+        r#"{"API_KEY":{"type":"string"},"DATABASE_URL":{"type":"url"}}"#,
+    )
+    .unwrap();
+    // Synthetic fixtures exercise token-pattern and embedded-password detection.
+    let token = format!("ghp_{}", "A1b2C3d4".repeat(5));
+    let password = "fixture-private-6284";
+    std::fs::write(
+        dir.path().join(".env"),
+        format!("API_KEY={token}\nDATABASE_URL=postgres://user:{password}@db.invalid/app\n"),
+    )
+    .unwrap();
+    for args in [
+        vec!["check", "--detect-secrets"],
+        vec!["check", "--detect-secrets", "--format", "json"],
+    ] {
+        let output = run(&dir, &args);
+        assert!(output.status.success());
+        let display = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(display.contains("GitHub token"));
+        assert!(display.contains("URL contains embedded password"));
+        assert!(!display.contains(&token), "token fixture leaked");
+        assert!(!display.contains(password), "URL password fixture leaked");
+    }
+}
+
+#[test]
+fn watch_secret_diagnostics_mask_initial_and_changed_values() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".zenvrc"), r#"{"detect_secrets":true}"#).unwrap();
+    std::fs::write(
+        dir.path().join("env.schema.json"),
+        r#"{"DATABASE_URL":{"type":"url","secret":true}}"#,
+    )
+    .unwrap();
+    let original = "fixture-private-6284";
+    let replacement = "fixture-private-9753";
+    std::fs::write(
+        dir.path().join(".env"),
+        format!("DATABASE_URL=postgres://user:{original}@db.invalid/app\n"),
+    )
+    .unwrap();
+    let watch = Watching::start(&dir);
+    let mut display = watch.until_all(&["URL contains embedded password", "Press Ctrl+C"]);
+    std::fs::write(
+        dir.path().join(".env"),
+        format!("DATABASE_URL=postgres://user:{replacement}@db.invalid/app\n"),
+    )
+    .unwrap();
+    display.push_str(&watch.until_all(&["MASKED", "URL contains embedded password"]));
+    assert!(display.contains("MASKED"));
+    assert!(!display.contains(original), "initial fixture leaked");
+    assert!(!display.contains(replacement), "changed fixture leaked");
 }
 
 #[test]

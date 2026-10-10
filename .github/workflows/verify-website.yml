@@ -1,0 +1,27 @@
+name: Verify Website
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published stable version (empty uses Cargo.toml)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify live zenv metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Verify website metadata
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: node scripts/verify-website.js

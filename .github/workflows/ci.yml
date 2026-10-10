@@ -52,7 +52,7 @@ jobs:
           python scripts/release.py --check
 
       - name: Check website sync tooling
-        run: node --test scripts/test_sync_website.js
+        run: node --test scripts/test_sync_website.js scripts/test_verify_website.js
 
       - name: Smoke test (all 13 commands)
         shell: bash
