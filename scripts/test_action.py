@@ -11,9 +11,22 @@ import subprocess
 import tempfile
 
 
+def default_bash():
+    # Windows may resolve "bash" to the WSL launcher, which cannot use this
+    # Windows process's temporary paths or PATH. Prefer the Git Bash binary.
+    if os.name == "nt":
+        git = shutil.which("git")
+        if git:
+            for parent in Path(git).parents:
+                candidate = parent / "bin" / "bash.exe"
+                if candidate.is_file():
+                    return str(candidate)
+    return "bash"
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--bash", default="bash")
+    parser.add_argument("--bash", default=default_bash())
     parser.add_argument("--jq-dir")
     args = parser.parse_args()
     if args.jq_dir:
@@ -51,7 +64,7 @@ def main():
             return result, outputs
 
         result, outputs = run('printf "%s\\n" "$@" > "$ZENV_CAPTURE"\nprintf \'{"valid":true,"errors":[]}\\n\'')
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
         assert outputs == {"valid": "true", "errors": "[]"}, outputs
         argv = captured.read_text().splitlines()
         for flag, key in [("schema", "SCHEMA"), ("env", "ENV_FILE"),
