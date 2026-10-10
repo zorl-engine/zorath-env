@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn test_preset_has_descriptions() {
         let schema = get_preset("nextjs").unwrap();
-        for (_, spec) in schema.iter() {
+        for spec in schema.values() {
             assert!(
                 spec.description.is_some(),
                 "All preset vars should have descriptions"

@@ -594,7 +594,7 @@ pub fn interpolate_env(
         let mut changed = false;
         let snapshot = result.clone();
 
-        for (_key, value) in result.iter_mut() {
+        for value in result.values_mut() {
             if has_var_refs(value) {
                 let new_value = interpolate_value(value, &snapshot);
                 if new_value != *value {
