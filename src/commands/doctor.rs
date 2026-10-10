@@ -41,6 +41,27 @@ pub fn run(
     ca_cert: Option<&str>,
     rate_limit_seconds: Option<u64>,
 ) -> Result<(), CliError> {
+    run_with_config(
+        env_path,
+        schema_path,
+        no_cache,
+        verify_hash,
+        ca_cert,
+        rate_limit_seconds,
+        None,
+    )
+}
+
+#[doc(hidden)]
+pub fn run_with_config(
+    env_path: &str,
+    schema_path: &str,
+    no_cache: bool,
+    verify_hash: Option<&str>,
+    ca_cert: Option<&str>,
+    rate_limit_seconds: Option<u64>,
+    config_path: Option<&str>,
+) -> Result<(), CliError> {
     println!("zenv doctor - Health Check\n");
 
     let load_options = LoadOptions {
@@ -50,20 +71,23 @@ pub fn run(
         rate_limit_seconds,
     };
 
+    let (schema_item, loaded_schema) = inspect_schema(schema_path, &load_options);
     let mut items = vec![
         // 1. Check schema file
-        check_schema_path(schema_path, &load_options),
+        schema_item,
         // 2. Check .env file
         check_env_path(env_path),
         // 3. Check config file
-        check_config_file(),
+        check_config_file(config_path),
         // 4. Check remote schema cache
         check_cache(),
     ];
 
     // 5. Validation test (if both schema and env exist)
-    if let Some(validation_result) = check_validation_paths(env_path, schema_path, &load_options) {
-        items.push(validation_result);
+    if let Some(schema) = loaded_schema {
+        if let Some(validation_result) = check_validation(env_path, &schema) {
+            items.push(validation_result);
+        }
     }
 
     // Print results
@@ -99,7 +123,10 @@ pub fn run(
     }
 }
 
-fn check_schema_path(schema_path: &str, load_options: &LoadOptions) -> HealthItem {
+fn inspect_schema(
+    schema_path: &str,
+    load_options: &LoadOptions,
+) -> (HealthItem, Option<schema::Schema>) {
     // Check for common schema file locations
     let possible_paths = [
         schema_path,
@@ -110,41 +137,62 @@ fn check_schema_path(schema_path: &str, load_options: &LoadOptions) -> HealthIte
     ];
 
     for path in &possible_paths {
-        if Path::new(path).exists() {
+        if *path != schema_path && schema_path != "env.schema.json" {
+            continue;
+        }
+        if Path::new(path).exists() || remote::is_remote_url(path) {
             // Try to parse it
             match schema::load_schema_with_options(path, load_options) {
                 Ok(schema) => {
                     let format = SchemaFormat::from_path(path);
-                    return HealthItem {
-                        name: "Schema".to_string(),
-                        status: HealthStatus::Ok,
-                        message: format!(
-                            "Found {} ({} format, {} variables)",
-                            path,
-                            format.name(),
-                            schema.len()
-                        ),
-                        suggestion: None,
-                    };
+                    return (
+                        HealthItem {
+                            name: "Schema".to_string(),
+                            status: HealthStatus::Ok,
+                            message: format!(
+                                "Found {} ({} format, {} variables)",
+                                path,
+                                format.name(),
+                                schema.len()
+                            ),
+                            suggestion: None,
+                        },
+                        Some(schema),
+                    );
                 }
                 Err(e) => {
-                    return HealthItem {
-                        name: "Schema".to_string(),
-                        status: HealthStatus::Error,
-                        message: format!("Found {} but failed to parse", path),
-                        suggestion: Some(format!("Fix schema error: {}", e)),
-                    };
+                    return (
+                        HealthItem {
+                            name: "Schema".to_string(),
+                            status: HealthStatus::Error,
+                            message: format!("Found {} but failed to parse", path),
+                            suggestion: Some(format!("Fix schema error: {}", e)),
+                        },
+                        None,
+                    );
                 }
             }
         }
     }
 
-    HealthItem {
-        name: "Schema".to_string(),
-        status: HealthStatus::Warning,
-        message: "No schema file found".to_string(),
-        suggestion: Some("Run 'zenv init' to create one from .env.example".to_string()),
-    }
+    (
+        HealthItem {
+            name: "Schema".to_string(),
+            status: if schema_path == "env.schema.json" {
+                HealthStatus::Warning
+            } else {
+                HealthStatus::Error
+            },
+            message: "No schema file found".to_string(),
+            suggestion: Some("Run 'zenv init' to create one from .env.example".to_string()),
+        },
+        None,
+    )
+}
+
+#[cfg(test)]
+fn check_schema_path(schema_path: &str, options: &LoadOptions) -> HealthItem {
+    inspect_schema(schema_path, options).0
 }
 
 fn check_env_path(env_path: &str) -> HealthItem {
@@ -158,6 +206,9 @@ fn check_env_path(env_path: &str) -> HealthItem {
     ];
 
     for path in &possible_paths {
+        if *path != env_path && env_path != ".env" {
+            continue;
+        }
         if Path::new(path).exists() {
             // Try to parse it
             match envfile::parse_env_file(path) {
@@ -183,47 +234,51 @@ fn check_env_path(env_path: &str) -> HealthItem {
 
     HealthItem {
         name: "Env file".to_string(),
-        status: HealthStatus::Warning,
+        status: if env_path == ".env" {
+            HealthStatus::Warning
+        } else {
+            HealthStatus::Error
+        },
         message: "No .env file found".to_string(),
         suggestion: Some("Create .env or use 'zenv example' to generate a template".to_string()),
     }
 }
 
-fn check_config_file() -> HealthItem {
-    let config_paths = [".zenvrc"];
+fn check_config_file(explicit: Option<&str>) -> HealthItem {
+    let config_path = explicit
+        .map(std::path::PathBuf::from)
+        .or_else(crate::config::find_config_file);
 
-    for path in &config_paths {
-        if Path::new(path).exists() {
-            // Try to parse it
-            let content = match fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(e) => {
-                    return HealthItem {
-                        name: "Config".to_string(),
-                        status: HealthStatus::Error,
-                        message: format!("Found {} but couldn't read it", path),
-                        suggestion: Some(format!("Fix read error: {}", e)),
-                    };
-                }
-            };
+    if let Some(path) = config_path {
+        // Try to parse it
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                return HealthItem {
+                    name: "Config".to_string(),
+                    status: HealthStatus::Error,
+                    message: format!("Couldn't read config {}", path.display()),
+                    suggestion: Some(format!("Fix read error: {}", e)),
+                };
+            }
+        };
 
-            match serde_json::from_str::<Config>(&content) {
-                Ok(_) => {
-                    return HealthItem {
-                        name: "Config".to_string(),
-                        status: HealthStatus::Ok,
-                        message: format!("Found {} (valid)", path),
-                        suggestion: None,
-                    };
-                }
-                Err(e) => {
-                    return HealthItem {
-                        name: "Config".to_string(),
-                        status: HealthStatus::Error,
-                        message: format!("Found {} but it's invalid JSON", path),
-                        suggestion: Some(format!("Fix JSON error: {}", e)),
-                    };
-                }
+        match serde_json::from_str::<Config>(&content) {
+            Ok(_) => {
+                return HealthItem {
+                    name: "Config".to_string(),
+                    status: HealthStatus::Ok,
+                    message: format!("Found {} (valid)", path.display()),
+                    suggestion: None,
+                };
+            }
+            Err(e) => {
+                return HealthItem {
+                    name: "Config".to_string(),
+                    status: HealthStatus::Error,
+                    message: format!("Found {} but it's invalid JSON", path.display()),
+                    suggestion: Some(format!("Fix JSON error: {}", e)),
+                };
             }
         }
     }
@@ -249,6 +304,10 @@ fn check_cache() -> HealthItem {
         }
     };
 
+    check_cache_at(&cache_dir)
+}
+
+fn check_cache_at(cache_dir: &Path) -> HealthItem {
     if !cache_dir.exists() {
         return HealthItem {
             name: "Cache".to_string(),
@@ -259,9 +318,12 @@ fn check_cache() -> HealthItem {
     }
 
     // Count cached schemas
-    match fs::read_dir(&cache_dir) {
+    match fs::read_dir(cache_dir) {
         Ok(entries) => {
-            let count = entries.filter_map(|e| e.ok()).count();
+            let count = entries
+                .filter_map(|e| e.ok())
+                .filter(super::cache::is_schema_entry)
+                .count();
             if count > 0 {
                 HealthItem {
                     name: "Cache".to_string(),
@@ -277,10 +339,7 @@ fn check_cache() -> HealthItem {
                 HealthItem {
                     name: "Cache".to_string(),
                     status: HealthStatus::Ok,
-                    message: format!(
-                        "Cache directory exists but is empty: {}",
-                        cache_dir.display()
-                    ),
+                    message: format!("No cached schemas at {}", cache_dir.display()),
                     suggestion: None,
                 }
             }
@@ -294,26 +353,18 @@ fn check_cache() -> HealthItem {
     }
 }
 
+#[cfg(test)]
 fn check_validation_paths(
     env_path: &str,
     schema_path: &str,
     load_options: &LoadOptions,
 ) -> Option<HealthItem> {
-    // Both must exist for validation
-    let schema_exists = Path::new(schema_path).exists();
-    let env_exists = find_env_file(env_path).is_some();
+    let (_, schema) = inspect_schema(schema_path, load_options);
+    check_validation(env_path, &schema?)
+}
 
-    if !schema_exists || !env_exists {
-        return None;
-    }
-
+fn check_validation(env_path: &str, schema: &schema::Schema) -> Option<HealthItem> {
     let resolved_env = find_env_file(env_path)?;
-
-    // Load schema
-    let schema = match schema::load_schema_with_options(schema_path, load_options) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
 
     // Load env
     let env_map = match envfile::parse_env_file(&resolved_env) {
@@ -324,13 +375,28 @@ fn check_validation_paths(
     // Interpolate
     let env_map = match envfile::interpolate_env(env_map) {
         Ok(m) => m,
-        Err(_) => return None,
+        Err(error) => {
+            return Some(HealthItem {
+                name: "Validation".into(),
+                status: HealthStatus::Error,
+                message: error.to_string(),
+                suggestion: Some("Fix variable references and run 'zenv check'".into()),
+            })
+        }
     };
 
     // Validate
-    let errors = crate::commands::check::validate(&schema, &env_map);
+    let issues = crate::commands::check::errors_to_issues(
+        crate::commands::check::validate(schema, &env_map),
+        schema,
+    );
+    let error_count = issues
+        .iter()
+        .filter(|i| i.severity == schema::Severity::Error)
+        .count();
+    let warning_count = issues.len() - error_count;
 
-    if errors.is_empty() {
+    if issues.is_empty() {
         Some(HealthItem {
             name: "Validation".to_string(),
             status: HealthStatus::Ok,
@@ -338,11 +404,17 @@ fn check_validation_paths(
             suggestion: None,
         })
     } else {
-        let error_count = errors.len();
         Some(HealthItem {
             name: "Validation".to_string(),
-            status: HealthStatus::Error,
-            message: format!("{} validation error(s) found", error_count),
+            status: if error_count > 0 {
+                HealthStatus::Error
+            } else {
+                HealthStatus::Warning
+            },
+            message: format!(
+                "{} validation error(s), {} warning(s) found",
+                error_count, warning_count
+            ),
             suggestion: Some("Run 'zenv check' for details".to_string()),
         })
     }
@@ -358,6 +430,9 @@ fn find_env_file(primary: &str) -> Option<String> {
     ];
 
     for path in &paths {
+        if *path != primary && primary != ".env" {
+            continue;
+        }
         if Path::new(path).exists() {
             return Some(path.to_string());
         }
@@ -368,6 +443,22 @@ fn find_env_file(primary: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_health_counts_schemas_without_metadata_or_temporary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("0123456789abcdef.json"), "{}").unwrap();
+        fs::write(dir.path().join("0123456789abcdef.meta"), "{}").unwrap();
+        fs::write(dir.path().join(".temporary"), "").unwrap();
+        fs::create_dir(dir.path().join("1111111111111111.json")).unwrap();
+        let health = check_cache_at(dir.path());
+        assert_eq!(health.status, HealthStatus::Ok);
+        assert!(
+            health.message.starts_with("1 cached remote schema(s)"),
+            "{}",
+            health.message
+        );
+    }
 
     fn default_load_options() -> LoadOptions {
         LoadOptions {
@@ -459,7 +550,7 @@ mod tests {
     fn test_check_config_file_not_found() {
         // This test assumes no .zenvrc exists in the current directory
         // Since we're testing, this should be safe
-        let result = check_config_file();
+        let result = check_config_file(None);
         // Either Ok (not found, using defaults) or found if one exists
         assert!(result.status == HealthStatus::Ok || result.status == HealthStatus::Error);
     }

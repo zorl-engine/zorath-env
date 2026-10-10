@@ -8,14 +8,18 @@ pub const TEMPLATES: &[&str] = &["github", "gitlab", "circleci"];
 /// Public GitHub release URL for the prebuilt zenv linux-x64 binary.
 /// Hoisted here so the three template generators stay in sync if the
 /// download URL ever changes.
-const RELEASE_BINARY_URL: &str =
-    "https://github.com/zorl-engine/zorath-env/releases/latest/download/zenv-linux-x64.tar.gz";
+const RELEASE_BINARY_URL: &str = concat!(
+    env!("CARGO_PKG_REPOSITORY"),
+    "/releases/download/v",
+    env!("CARGO_PKG_VERSION"),
+    "/zenv-linux"
+);
 
 /// Default Rust image for `cargo install`-style CI templates (CircleCI).
-const RUST_CIRCLE_IMAGE: &str = "cimg/rust:1.75";
+const RUST_CIRCLE_IMAGE: &str = concat!("cimg/rust:", env!("CARGO_PKG_RUST_VERSION"));
 
-/// Default Alpine image for binary-install CI templates (GitLab/CircleCI).
-const ALPINE_IMAGE: &str = "alpine:latest";
+/// Match the glibc baseline of the Linux release build; Alpine uses musl.
+const BINARY_IMAGE: &str = "ubuntu:24.04";
 
 /// Default Rust image for source-install CI templates (GitLab).
 const RUST_LATEST_IMAGE: &str = "rust:latest";
@@ -69,13 +73,14 @@ fn github_actions_template(use_binary: bool) -> String {
         format!(
             r#"      - name: Install zenv
         run: |
-          curl -fsSL {} | tar xz
+          curl -fsSL {} -o zenv
+          chmod +x zenv
           sudo mv zenv /usr/local/bin/"#,
             RELEASE_BINARY_URL
         )
     } else {
         r#"      - name: Install zenv
-        run: cargo install zorath-env"#
+        run: cargo install zorath-env --locked"#
             .to_string()
     };
 
@@ -98,7 +103,7 @@ on:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -124,24 +129,33 @@ jobs:
 fn gitlab_ci_template(use_binary: bool) -> String {
     let install_script = if use_binary {
         format!(
-            r#"    - curl -fsSL {} | tar xz
+            r#"    - curl -fsSL {} -o zenv
+    - chmod +x zenv
     - mv zenv /usr/local/bin/"#,
             RELEASE_BINARY_URL
         )
     } else {
-        "    - cargo install zorath-env".to_string()
+        "    - cargo install zorath-env --locked".to_string()
     };
 
     let image = if use_binary {
-        ALPINE_IMAGE
+        BINARY_IMAGE
     } else {
         RUST_LATEST_IMAGE
     };
     let extra_deps = if use_binary {
-        "\n    - apk add --no-cache curl"
+        "\n    - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl"
     } else {
         ""
     };
+
+    let docs_example = format!(
+        "Optional: Generate documentation as artifact\ngenerate-docs:\n  stage: validate\n  image: {image}\n  before_script:{extra_deps}\n{install_script}\n  script:\n    - zenv docs > ENVIRONMENT.md\n  artifacts:\n    paths:\n      - ENVIRONMENT.md"
+    )
+    .lines()
+    .map(|line| format!("# {line}"))
+    .collect::<Vec<_>>()
+    .join("\n");
 
     format!(
         r#"# .gitlab-ci.yml
@@ -162,25 +176,13 @@ validate-env:
         - env.schema.json
         - env.schema.yaml
 
-# Optional: Generate documentation as artifact
-# generate-docs:
-#   stage: validate
-#   image: {}
-#   before_script:{}
-#{}
-#   script:
-#     - zenv docs > ENVIRONMENT.md
-#   artifacts:
-#     paths:
-#       - ENVIRONMENT.md
+{}
 "#,
         if use_binary { " --use-binary" } else { "" },
         image,
         extra_deps,
         install_script,
-        image,
-        extra_deps,
-        install_script
+        docs_example
     )
 }
 
@@ -193,22 +195,23 @@ fn circleci_template(use_binary: bool) -> String {
 version: 2.1
 
 executors:
-  alpine:
+  linux:
     docker:
       - image: {}
 
 jobs:
   validate-env:
-    executor: alpine
+    executor: linux
     steps:
-      - checkout
       - run:
           name: Install dependencies
-          command: apk add --no-cache curl
+          command: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client
+      - checkout
       - run:
           name: Install zenv
           command: |
-            curl -fsSL {} | tar xz
+            curl -fsSL {} -o zenv
+            chmod +x zenv
             mv zenv /usr/local/bin/
       - run:
           name: Validate .env
@@ -225,7 +228,7 @@ workflows:
                 - main
                 - develop
 "#,
-            ALPINE_IMAGE, RELEASE_BINARY_URL
+            BINARY_IMAGE, RELEASE_BINARY_URL
         )
     } else {
         format!(
@@ -245,7 +248,7 @@ jobs:
       - checkout
       - run:
           name: Install zenv
-          command: cargo install zorath-env
+          command: cargo install zorath-env --locked
       - run:
           name: Validate .env
           command: zenv check --allow-missing-env
@@ -269,6 +272,43 @@ workflows:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_templates_use_the_published_asset_and_compatible_runtime() {
+        for template in [
+            github_actions_template(true),
+            gitlab_ci_template(true),
+            circleci_template(true),
+        ] {
+            assert!(template.contains(RELEASE_BINARY_URL));
+            assert!(template.contains("-o zenv"));
+            assert!(template.contains("chmod +x zenv"));
+            assert!(!template.contains("tar xz") && !template.contains("alpine"));
+            let parsed: serde_yaml::Value = serde_yaml::from_str(&template).unwrap();
+            assert!(parsed.is_mapping());
+        }
+        let release = include_str!("../../.github/workflows/release.yml");
+        assert!(release.contains("name: zenv-linux"));
+        assert!(release.contains("os: ubuntu-24.04"));
+        assert!(RELEASE_BINARY_URL.ends_with("/zenv-linux"));
+    }
+
+    #[test]
+    fn source_templates_use_locked_dependencies_and_supported_rust() {
+        for template in [
+            github_actions_template(false),
+            gitlab_ci_template(false),
+            circleci_template(false),
+        ] {
+            assert!(template.contains("cargo install zorath-env --locked"));
+            let parsed: serde_yaml::Value = serde_yaml::from_str(&template).unwrap();
+            assert!(parsed.is_mapping());
+        }
+        assert_eq!(
+            RUST_CIRCLE_IMAGE,
+            format!("cimg/rust:{}", env!("CARGO_PKG_RUST_VERSION"))
+        );
+    }
 
     #[test]
     fn test_github_template_contains_workflow() {
@@ -301,7 +341,12 @@ mod tests {
         assert!(template.contains("stages:"));
         assert!(template.contains("validate-env:"));
         assert!(template.contains("curl -fsSL"));
-        assert!(template.contains("alpine:latest"));
+        assert!(template.contains(BINARY_IMAGE));
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&template).unwrap();
+        assert_eq!(
+            parsed["validate-env"]["rules"].as_sequence().unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -318,7 +363,7 @@ mod tests {
         assert!(template.contains("version: 2.1"));
         assert!(template.contains("validate-env:"));
         assert!(template.contains("curl -fsSL"));
-        assert!(template.contains("alpine:latest"));
+        assert!(template.contains(BINARY_IMAGE));
     }
 
     #[test]

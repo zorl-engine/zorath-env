@@ -46,6 +46,11 @@ impl SchemaFormat {
     /// no extension at all or carries an unknown extension (e.g.
     /// `schema.jsno`, `schema.txt`).
     fn detect(path: &str) -> Option<Self> {
+        if let Ok(url) = url::Url::parse(path) {
+            if matches!(url.scheme(), "https" | "http") {
+                return Self::detect(url.path());
+            }
+        }
         let lower = path.to_lowercase();
         if lower.ends_with(".yaml") || lower.ends_with(".yml") {
             Some(SchemaFormat::Yaml)
@@ -112,6 +117,7 @@ pub enum VarType {
 
 /// Custom validation rules for environment variables
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ValidationRule {
     /// Minimum value for int type
     #[serde(default)]
@@ -158,6 +164,7 @@ fn is_default_severity(severity: &Severity) -> bool {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VarSpec {
     #[serde(rename = "type", default)]
     pub var_type: VarType,
@@ -197,6 +204,10 @@ pub struct SchemaFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
 
+    /// SHA-256 of the immediate parent. Required when this schema is pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extends_hash: Option<String>,
+
     /// Variable specifications
     #[serde(flatten)]
     pub vars: Schema,
@@ -230,7 +241,86 @@ impl LoadOptions {
 
 /// Load schema with options (e.g., no_cache for remote schemas)
 pub fn load_schema_with_options(path: &str, options: &LoadOptions) -> Result<Schema, SchemaError> {
-    load_schema_with_chain(path, &mut Vec::new(), options)
+    let schema = load_schema_with_chain(
+        path,
+        &mut Vec::new(),
+        options,
+        &remote::fetch_remote_schema_secure,
+    )?;
+    validate_schema(&schema)?;
+    Ok(schema)
+}
+
+/// Check schema rules and defaults independently of which env values exist.
+pub fn validate_schema(schema: &Schema) -> Result<(), SchemaError> {
+    let mut keys: Vec<_> = schema.keys().collect();
+    keys.sort();
+    for key in keys {
+        let spec = &schema[key];
+        let invalid = |message: &str| {
+            SchemaError::Parse("definition".into(), format!("{}: {}", key, message))
+        };
+        if matches!(spec.var_type, VarType::Enum) {
+            if spec.values.as_ref().is_none_or(|values| values.is_empty()) {
+                return Err(invalid("enum requires a nonempty values list"));
+            }
+        } else if spec.values.is_some() {
+            return Err(invalid("values is supported only for enum variables"));
+        }
+        if let Some(rules) = &spec.validate {
+            let int_rules = rules.min.is_some() || rules.max.is_some();
+            let float_rules = rules.min_value.is_some() || rules.max_value.is_some();
+            let string_rules =
+                rules.min_length.is_some() || rules.max_length.is_some() || rules.pattern.is_some();
+            if (int_rules && !matches!(spec.var_type, VarType::Int))
+                || (float_rules && !matches!(spec.var_type, VarType::Float))
+                || (string_rules && !matches!(spec.var_type, VarType::String))
+            {
+                return Err(invalid(
+                    "validation rules do not apply to this variable type",
+                ));
+            }
+            if rules.min.zip(rules.max).is_some_and(|(min, max)| min > max)
+                || rules
+                    .min_value
+                    .zip(rules.max_value)
+                    .is_some_and(|(min, max)| min > max)
+                || rules
+                    .min_length
+                    .zip(rules.max_length)
+                    .is_some_and(|(min, max)| min > max)
+            {
+                return Err(invalid("minimum cannot exceed maximum"));
+            }
+            if [rules.min_value, rules.max_value]
+                .into_iter()
+                .flatten()
+                .any(|n| !n.is_finite())
+            {
+                return Err(invalid("float bounds must be finite"));
+            }
+            if let Some(pattern) = &rules.pattern {
+                crate::commands::check::get_cached_regex(pattern)
+                    .map_err(|e| invalid(&format!("invalid validation pattern: {}", e)))?;
+            }
+        }
+        if let Some(default) = &spec.default {
+            let value = match default {
+                serde_json::Value::String(value) => value.clone(),
+                serde_json::Value::Number(_) | serde_json::Value::Bool(_) => default.to_string(),
+                _ => return Err(invalid("default must be a string, number, or boolean")),
+            };
+            // A schema error should never echo a possibly sensitive default.
+            let mut private_spec = spec.clone();
+            private_spec.secret = Some(true);
+            if let Some(error) =
+                crate::commands::check::validate_value(key, &value, &private_spec).first()
+            {
+                return Err(invalid(&format!("invalid default: {}", error)));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Parse schema content based on format (JSON or YAML)
@@ -244,11 +334,15 @@ fn parse_schema_content(content: &str, format: SchemaFormat) -> Result<SchemaFil
 }
 
 /// Internal: Load schema with circular reference detection
-fn load_schema_with_chain(
+fn load_schema_with_chain<F>(
     path: &str,
     chain: &mut Vec<String>,
     options: &LoadOptions,
-) -> Result<Schema, SchemaError> {
+    fetch: &F,
+) -> Result<Schema, SchemaError>
+where
+    F: Fn(&str, bool, &SecurityOptions) -> Result<String, RemoteError>,
+{
     // Check max depth
     if chain.len() > 10 {
         return Err(SchemaError::InheritanceDepthExceeded);
@@ -272,9 +366,13 @@ fn load_schema_with_chain(
 
     // Read schema content (from file or URL)
     let content = if remote::is_remote_url(path) {
-        remote::fetch_remote_schema_secure(path, options.no_cache, &options.to_security_options())?
+        fetch(path, options.no_cache, &options.to_security_options())?
     } else {
-        fs::read_to_string(path).map_err(|e| SchemaError::Read(e.to_string()))?
+        let content = fs::read_to_string(path).map_err(|e| SchemaError::Read(e.to_string()))?;
+        if let Some(hash) = &options.verify_hash {
+            remote::verify_content_hash(&content, hash)?;
+        }
+        content
     };
 
     // Detect format. Remote URLs keep the permissive default-to-JSON path
@@ -289,8 +387,21 @@ fn load_schema_with_chain(
     };
     let schema_file: SchemaFile = parse_schema_content(&content, format)?;
 
+    if schema_file.extends_hash.is_some() && schema_file.extends.is_none() {
+        return Err(SchemaError::Parse(
+            format.name().into(),
+            "extends_hash requires extends".into(),
+        ));
+    }
+
     // Start with parent schema if extends is specified
     let mut result = if let Some(ref parent_path) = schema_file.extends {
+        if options.verify_hash.is_some() && schema_file.extends_hash.is_none() {
+            return Err(SchemaError::Parse(
+                format.name().into(),
+                "pinned schema inheritance requires extends_hash for each parent".into(),
+            ));
+        }
         // Resolve parent path relative to current schema
         let parent_full_path = if remote::is_remote_url(path) {
             // For remote schemas, resolve relative URLs.
@@ -300,7 +411,7 @@ fn load_schema_with_chain(
             if let (Ok(base_u), Ok(resolved_u)) =
                 (url::Url::parse(path), url::Url::parse(&resolved))
             {
-                if base_u.host_str() != resolved_u.host_str() {
+                if base_u.origin() != resolved_u.origin() {
                     eprintln!(
                         "warning: schema extends crosses origins ({} -> {}); verify trust",
                         base_u.host_str().unwrap_or("?"),
@@ -309,10 +420,16 @@ fn load_schema_with_chain(
                 }
             }
             resolved
+        } else if remote::is_remote_url(parent_path) {
+            parent_path.clone()
         } else {
             resolve_relative_path(path, parent_path)?
         };
-        load_schema_with_chain(&parent_full_path, chain, options)?
+        let parent_options = LoadOptions {
+            verify_hash: schema_file.extends_hash,
+            ..options.clone()
+        };
+        load_schema_with_chain(&parent_full_path, chain, &parent_options, fetch)?
     } else {
         Schema::new()
     };
@@ -331,13 +448,17 @@ fn load_schema_with_chain(
 /// style traversals out of the schema's directory.
 ///
 /// Absolute `relative_path` values are rejected outright (must use a remote
-/// URL for cross-tree references). If canonicalization fails (e.g. the
-/// extends target doesn't exist yet), we fall back to the raw join -- the
-/// downstream `fs::read_to_string` will surface a sensible error.
+/// URL for cross-tree references). Both the directory and target must be
+/// resolvable so containment checks cannot fail open.
 fn resolve_relative_path(base_path: &str, relative_path: &str) -> Result<String, SchemaError> {
     // Reject absolute paths in extends -- forces relative-only navigation.
     let rel = Path::new(relative_path);
-    if rel.is_absolute() {
+    if rel.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::RootDir | std::path::Component::Prefix(_)
+        )
+    }) {
         return Err(SchemaError::Read(format!(
             "extends path must be relative, got absolute: {}",
             relative_path
@@ -345,51 +466,29 @@ fn resolve_relative_path(base_path: &str, relative_path: &str) -> Result<String,
     }
 
     let base = Path::new(base_path);
-    let parent_dir = base.parent().unwrap_or_else(|| Path::new("."));
+    let parent_dir = base
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let joined = parent_dir.join(relative_path);
 
-    // Canonicalize parent_dir for the containment check. If we can't
-    // canonicalize the parent itself, the schema chain is too broken
-    // for a containment claim to be meaningful -- fall back permissively.
+    // A missing or unreadable parent cannot establish containment.
     let parent_canon = match fs::canonicalize(parent_dir) {
         Ok(p) => p,
-        Err(_) => return Ok(joined.to_string_lossy().to_string()),
-    };
-
-    // Canonicalize the resolved target. If the target doesn't exist yet,
-    // we can still verify the joined path stays within parent_canon
-    // structurally by canonicalizing the closest existing ancestor.
-    let target_canon = match fs::canonicalize(&joined) {
-        Ok(p) => p,
-        Err(_) => {
-            // Walk up to the first existing ancestor, canonicalize that,
-            // and append the remaining suffix.
-            let mut existing = joined.as_path();
-            let mut suffix: Vec<&std::ffi::OsStr> = Vec::new();
-            loop {
-                if existing.exists() {
-                    break;
-                }
-                match existing.file_name() {
-                    Some(n) => suffix.push(n),
-                    None => break,
-                }
-                match existing.parent() {
-                    Some(p) => existing = p,
-                    None => break,
-                }
-            }
-            match fs::canonicalize(existing) {
-                Ok(mut p) => {
-                    for s in suffix.iter().rev() {
-                        p.push(s);
-                    }
-                    p
-                }
-                Err(_) => return Ok(joined.to_string_lossy().to_string()),
-            }
+        Err(e) => {
+            return Err(SchemaError::Read(format!(
+                "cannot resolve schema directory: {}",
+                e
+            )))
         }
     };
+
+    let target_canon = fs::canonicalize(&joined).map_err(|e| {
+        SchemaError::Read(format!(
+            "cannot resolve extends path '{}': {}",
+            relative_path, e
+        ))
+    })?;
 
     if !target_canon.starts_with(&parent_canon) {
         return Err(SchemaError::Read(format!(
@@ -421,6 +520,102 @@ pub fn save_schema(path: &str, schema: &Schema) -> Result<(), SchemaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_remote_inheritance_uses_distinct_parent_hashes() {
+        let parent = r#"{"BASE":{"type":"int"}}"#;
+        let child = serde_json::json!({"extends":"base.json", "extends_hash":remote::compute_content_hash(parent), "CHILD":{"type":"bool"}}).to_string();
+        let options = LoadOptions {
+            verify_hash: Some(remote::compute_content_hash(&child)),
+            ..Default::default()
+        };
+        let fetch = |url: &str, _: bool, security: &SecurityOptions| {
+            let content = if url.ends_with("base.json") {
+                parent
+            } else {
+                &child
+            };
+            remote::verify_content_hash(content, security.verify_hash.as_deref().unwrap())?;
+            Ok(content.to_string())
+        };
+        let schema = load_schema_with_chain(
+            "https://example.com/child.json",
+            &mut Vec::new(),
+            &options,
+            &fetch,
+        )
+        .unwrap();
+        assert!(schema.contains_key("BASE") && schema.contains_key("CHILD"));
+        let tampered = |url: &str, _: bool, security: &SecurityOptions| {
+            let content = if url.ends_with("base.json") {
+                "{}"
+            } else {
+                &child
+            };
+            remote::verify_content_hash(content, security.verify_hash.as_deref().unwrap())?;
+            Ok(content.to_string())
+        };
+        assert!(matches!(
+            load_schema_with_chain(
+                "https://example.com/child.json",
+                &mut Vec::new(),
+                &options,
+                &tampered
+            ),
+            Err(SchemaError::Remote(RemoteError::HashMismatch { .. }))
+        ));
+    }
+
+    #[test]
+    fn pinned_inheritance_rejects_unpinned_parent_before_fetch() {
+        let child = r#"{"extends":"base.json"}"#;
+        let options = LoadOptions {
+            verify_hash: Some(remote::compute_content_hash(child)),
+            ..Default::default()
+        };
+        let fetch = |url: &str, _: bool, _: &SecurityOptions| {
+            assert!(
+                url.ends_with("child.json"),
+                "must not fetch an unpinned parent"
+            );
+            Ok(child.to_string())
+        };
+        let error = load_schema_with_chain(
+            "https://example.com/child.json",
+            &mut Vec::new(),
+            &options,
+            &fetch,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("requires extends_hash"));
+    }
+
+    #[test]
+    fn local_schema_can_extend_a_pinned_remote_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let child_path = dir.path().join("child.json");
+        let parent = r#"{"BASE":{"type":"int"}}"#;
+        let hash = remote::compute_content_hash(parent);
+        fs::write(
+            &child_path,
+            serde_json::json!({"extends":"https://example.com/base.json", "extends_hash":hash})
+                .to_string(),
+        )
+        .unwrap();
+        let fetch = |url: &str, _: bool, security: &SecurityOptions| {
+            assert_eq!(url, "https://example.com/base.json");
+            assert_eq!(security.verify_hash.as_deref(), Some(hash.as_str()));
+            Ok(parent.to_string())
+        };
+        assert!(load_schema_with_chain(
+            child_path.to_str().unwrap(),
+            &mut Vec::new(),
+            &LoadOptions::default(),
+            &fetch
+        )
+        .unwrap()
+        .contains_key("BASE"));
+    }
 
     /// Test helper: load schema with default options
     fn load_schema(path: &str) -> Result<Schema, SchemaError> {
@@ -556,15 +751,14 @@ mod tests {
 
     #[test]
     fn test_resolve_relative_path() {
-        // Sibling file (parent dir doesn't exist on disk so containment check
-        // falls back permissively -- this is the documented behavior).
-        let result = resolve_relative_path("dir/child.json", "base.json").unwrap();
-        assert!(result.ends_with("dir/base.json") || result.ends_with("dir\\base.json"));
-
-        // Parent directory traversal -- still "within" the joined path
-        // when canonicalization can't fully resolve.
-        let result = resolve_relative_path("nested/dir/child.json", "../base.json").unwrap();
-        assert!(result.contains("base.json"));
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("child.json");
+        let sibling = dir.path().join("base.json");
+        fs::write(&sibling, "{}").unwrap();
+        let result = resolve_relative_path(base.to_str().unwrap(), "base.json").unwrap();
+        assert_eq!(Path::new(&result), fs::canonicalize(sibling).unwrap());
+        assert!(resolve_relative_path(base.to_str().unwrap(), "missing.json").is_err());
+        assert!(resolve_relative_path("missing-directory/child.json", "base.json").is_err());
     }
 
     #[test]
@@ -596,17 +790,7 @@ mod tests {
         // tempdir root, which fails containment.)
         let escape = "../../../../../../../../../tmp";
         let result = resolve_relative_path(base.to_str().unwrap(), escape);
-        // On Windows the path may not canonicalize; on Unix it canonicalizes
-        // to / or /tmp which fails containment. Either Err or fall-through
-        // is acceptable here -- assert it does NOT silently succeed with
-        // a path under /etc/passwd or similar.
-        if let Ok(p) = result {
-            assert!(
-                !p.contains("/etc/passwd"),
-                "traversal must not yield /etc/passwd: {}",
-                p
-            );
-        }
+        assert!(result.is_err(), "traversal must fail closed");
     }
 
     // Integration tests with actual files

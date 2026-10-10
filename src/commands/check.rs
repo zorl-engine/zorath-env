@@ -64,14 +64,14 @@ struct CheckStats {
 }
 
 /// A validation issue with its severity
-struct ValidationIssue {
+pub(crate) struct ValidationIssue {
     key: String,
     message: String,
-    severity: Severity,
+    pub(crate) severity: Severity,
 }
 
 /// Convert validation errors to issues with severity from schema
-fn errors_to_issues(errors: Vec<String>, schema: &Schema) -> Vec<ValidationIssue> {
+pub(crate) fn errors_to_issues(errors: Vec<String>, schema: &Schema) -> Vec<ValidationIssue> {
     errors
         .into_iter()
         .map(|e| {
@@ -94,7 +94,7 @@ fn errors_to_issues(errors: Vec<String>, schema: &Schema) -> Vec<ValidationIssue
 }
 
 // Pre-compiled regex patterns for built-in types (cached with OnceLock)
-// Made public for reuse in fix.rs
+// Public helpers retained for library compatibility; commands share validate_value.
 pub fn uuid_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
@@ -121,12 +121,14 @@ pub fn semver_regex() -> &'static Regex {
     REGEX.get_or_init(|| {
         // Matches: 1.0.0, 2.1.3-beta.1, 1.0.0+build.123, 1.0.0-alpha+001
         Regex::new(
-            r"^\d+\.\d+\.\d+(-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?(\+[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?$",
+            r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(\+[0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*)?$",
         )
         .unwrap()
     })
 }
 
+/// Legacy format helper retained for compatibility. For complete IPv6
+/// validation, parse with `std::net::Ipv6Addr`, as the commands do.
 pub fn ipv6_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
@@ -140,8 +142,31 @@ pub fn date_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         // ISO 8601 date format: YYYY-MM-DD
-        Regex::new(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$").unwrap()
+        Regex::new(r"^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$").unwrap()
     })
+}
+
+pub(crate) fn is_valid_date(value: &str) -> bool {
+    if !date_regex().is_match(value) {
+        return false;
+    }
+    // The ASCII-only format check above makes these byte slices safe.
+    let year: u32 = value[..4].parse().unwrap();
+    let month: u32 = value[5..7].parse().unwrap();
+    let day: u32 = value[8..].parse().unwrap();
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        2 => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    day <= days
 }
 
 pub fn hostname_regex() -> &'static Regex {
@@ -295,6 +320,12 @@ pub fn run(
     ca_cert: Option<&str>,
     rate_limit_seconds: Option<u64>,
 ) -> Result<(), CliError> {
+    if !matches!(format, "text" | "json") {
+        return Err(CliError::Input(format!(
+            "unsupported check format: {} (use text or json)",
+            format
+        )));
+    }
     if watch {
         if format == "json" {
             return Err(CliError::Input(
@@ -702,190 +733,208 @@ fn run_watch_mode(
         schema_path,
     )?;
 
-    // Set up file watcher
+    // Watch directories so editor rename/replacement saves do not detach the
+    // watcher from the original inode. Polling also recovers missed events.
     let (tx, rx) = mpsc::channel();
-
     let mut watcher = RecommendedWatcher::new(
-        move |res| {
-            if let Ok(event) = res {
-                let _ = tx.send(event);
-            }
+        move |result| {
+            let _ = tx.send(result);
         },
         Config::default(),
     )
     .map_err(|e| CliError::Input(format!("Failed to create file watcher: {}", e)))?;
-
-    // Watch each path
+    let mut watched = HashSet::new();
     for path in &watch_paths {
-        let p = Path::new(path);
-        let watch_target = if p.exists() {
-            p.to_path_buf()
-        } else if let Some(parent) = p.parent() {
-            if parent.as_os_str().is_empty() {
-                Path::new(".").to_path_buf()
-            } else {
-                parent.to_path_buf()
-            }
-        } else {
-            Path::new(".").to_path_buf()
-        };
-
-        if watch_target.exists() {
-            let _ = watcher.watch(&watch_target, RecursiveMode::NonRecursive);
+        let parent = Path::new(path)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let target = parent
+            .ancestors()
+            .find(|p| p.is_dir())
+            .unwrap_or_else(|| Path::new("."));
+        let target = fs::canonicalize(target).map_err(|e| CliError::Input(e.to_string()))?;
+        if watched.insert(target.clone()) {
+            watcher
+                .watch(&target, RecursiveMode::NonRecursive)
+                .map_err(|e| {
+                    CliError::Input(format!("Cannot watch {}: {}", target.display(), e))
+                })?;
         }
     }
-
-    // Debounce settings
-    let debounce_duration = Duration::from_millis(150);
-    let mut last_event_time = Instant::now() - debounce_duration;
-
     println!("\nPress Ctrl+C to stop watching.\n");
-
-    // Event loop with delta detection
+    let mut active_schema = schema;
+    let mut last_error: Option<String> = None;
     loop {
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(_event) => {
-                let now = Instant::now();
-                if now.duration_since(last_event_time) >= debounce_duration {
-                    last_event_time = now;
-
-                    // Check for schema changes first (if local)
-                    if !is_remote_schema {
-                        if let Ok(schema_content) = fs::read_to_string(schema_path) {
-                            let new_schema_hash = compute_hash(&schema_content);
-                            if new_schema_hash != state.schema_hash {
-                                // Schema changed - reload and revalidate everything
-                                let timestamp = local_timestamp();
-                                println!("[{}] ~ schema changed", timestamp);
-
-                                match schema::load_schema_with_options(schema_path, &options) {
-                                    Ok(new_schema) => {
-                                        state.schema_hash = new_schema_hash;
-                                        // Full revalidation with new schema
-                                        state = match run_initial_validation(
-                                            env_path,
-                                            &new_schema,
-                                            allow_missing_env,
-                                            detect_secrets,
-                                            schema_path,
-                                        ) {
-                                            Ok(s) => s,
-                                            Err(e) => {
-                                                eprintln!("           {}", e);
-                                                print_bell();
-                                                continue;
-                                            }
-                                        };
-                                    }
-                                    Err(e) => {
-                                        print_schema_error(&e);
-                                        print_bell();
-                                    }
-                                }
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Check for env file changes with delta detection.
-                    // Read errors here are usually editor mid-write or file
-                    // briefly unreadable -- log a debounced warning instead
-                    // of swallowing silently, so users see what's happening.
-                    let resolved_path = resolve_env_file(env_path);
-                    if let Some(ref resolved) = resolved_path {
-                        let read_result = fs::read_to_string(resolved);
-                        let content = match read_result {
-                            Ok(c) => c,
-                            Err(e) => {
-                                eprintln!(
-                                    "[{}] read of {} failed: {} -- waiting for next event",
-                                    local_timestamp(),
-                                    resolved,
-                                    e
-                                );
-                                continue;
-                            }
-                        };
-                        {
-                            let new_hash = compute_hash(&content);
-
-                            // Skip if content unchanged (editor touch without changes)
-                            if new_hash == state.content_hash {
-                                continue;
-                            }
-
-                            // Parse new env file
-                            match envfile::parse_env_file_detailed(resolved) {
-                                Ok(parse_result) => {
-                                    match envfile::interpolate_env(parse_result.values) {
-                                        Ok(new_env) => {
-                                            // Reload schema for validation
-                                            let schema = match schema::load_schema_with_options(
-                                                schema_path,
-                                                &options,
-                                            ) {
-                                                Ok(s) => s,
-                                                Err(e) => {
-                                                    print_schema_error(&e);
-                                                    print_bell();
-                                                    continue;
-                                                }
-                                            };
-
-                                            // Detect changes
-                                            let changes = detect_changes(&state.env_map, &new_env);
-
-                                            if changes.is_empty() {
-                                                // No logical changes (whitespace only?)
-                                                state.content_hash = new_hash;
-                                                continue;
-                                            }
-
-                                            // Validate changed variables and print results
-                                            let had_errors = print_delta_validation(
-                                                &changes,
-                                                &new_env,
-                                                &schema,
-                                                detect_secrets,
-                                                &parse_result.line_numbers,
-                                            );
-
-                                            if had_errors {
-                                                print_bell();
-                                            }
-
-                                            // Update state
-                                            state.content_hash = new_hash;
-                                            state.env_map = new_env;
-                                        }
-                                        Err(e) => {
-                                            let timestamp = local_timestamp();
-                                            eprintln!("[{}] Interpolation error: {}", timestamp, e);
-                                            print_bell();
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    let timestamp = local_timestamp();
-                                    eprintln!("[{}] Parse error: {}", timestamp, e);
-                                    print_bell();
-                                }
-                            }
-                        }
-                    } else if !allow_missing_env {
-                        let timestamp = local_timestamp();
-                        eprintln!("[{}] Env file not found: {}", timestamp, env_path);
-                        print_bell();
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(event) => {
+                if let Err(error) = event {
+                    eprintln!("Watcher warning: {} (polling continues)", error);
+                }
+                // Wait for the end of a save burst, but do not starve under a
+                // continuous stream of unrelated filesystem changes.
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while Instant::now() < deadline {
+                    if rx.recv_timeout(Duration::from_millis(150)).is_err() {
+                        break;
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // No event, continue waiting
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(CliError::Input("File watcher disconnected".into()));
+                return Err(CliError::Input("File watcher disconnected".into()))
             }
         }
+        let refresh =
+            || -> Result<(Schema, u64, envfile::ParseResult, HashMap<String, String>), CliError> {
+                let resolved = resolve_env_file(env_path);
+                let content = match &resolved {
+                    Some(path) => {
+                        fs::read_to_string(path).map_err(|e| CliError::Input(e.to_string()))?
+                    }
+                    None if allow_missing_env => String::new(),
+                    None => return Err(CliError::Input(missing_env_error(env_path))),
+                };
+                let hash = compute_hash(&content);
+                // Local inheritance is reloaded on polling too. Remote schemas
+                // are refreshed on env changes only, avoiding background requests.
+                let current_schema = if !is_remote_schema || hash != state.content_hash {
+                    schema::load_schema_with_options(schema_path, &options)
+                        .map_err(|e| CliError::Schema(e.to_string()))?
+                } else {
+                    active_schema.clone()
+                };
+                let parsed = envfile::parse_env_str_detailed(&content);
+                let values = envfile::interpolate_env(parsed.values.clone())
+                    .map_err(|e| CliError::Input(e.to_string()))?;
+                Ok((current_schema, hash, parsed, values))
+            };
+        let (current_schema, hash, parsed, values) = match refresh() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let message = error.to_string();
+                if last_error.as_ref() != Some(&message) {
+                    eprintln!(
+                        "[{}] {} -- waiting for recovery",
+                        local_timestamp(),
+                        message
+                    );
+                    print_bell();
+                }
+                last_error = Some(message);
+                continue;
+            }
+        };
+        let recovered = last_error.take().is_some();
+        let schema_hash = schema_fingerprint(&current_schema);
+        if schema_hash != state.schema_hash || recovered {
+            println!(
+                "[{}] ~ {}",
+                local_timestamp(),
+                if recovered {
+                    "files recovered"
+                } else {
+                    "schema changed"
+                }
+            );
+            print_watch_summary(
+                "Initial",
+                &current_schema,
+                &values,
+                &parsed,
+                detect_secrets,
+                allow_missing_env && resolve_env_file(env_path).is_none(),
+            );
+            state = WatchState {
+                content_hash: hash,
+                env_map: values,
+                schema_hash,
+            };
+        } else if hash != state.content_hash {
+            let changes = detect_changes(&state.env_map, &values);
+            print_delta_validation(
+                &changes,
+                &values,
+                &current_schema,
+                detect_secrets,
+                &parsed.line_numbers,
+            );
+            print_watch_summary(
+                "Validation",
+                &current_schema,
+                &values,
+                &parsed,
+                detect_secrets,
+                allow_missing_env && resolve_env_file(env_path).is_none(),
+            );
+            state.content_hash = hash;
+            state.env_map = values;
+        }
+        active_schema = current_schema;
+    }
+}
+
+fn schema_fingerprint(schema: &Schema) -> u64 {
+    // Sort keys: HashMap iteration order changes every time schemas reload.
+    let sorted: std::collections::BTreeMap<_, _> = schema.iter().collect();
+    compute_hash(&serde_json::to_string(&sorted).expect("schema is serializable"))
+}
+
+fn print_watch_summary(
+    label: &str,
+    schema: &Schema,
+    env_map: &HashMap<String, String>,
+    parsed: &envfile::ParseResult,
+    detect_secrets: bool,
+    schema_only: bool,
+) {
+    let issues = if schema_only {
+        Vec::new()
+    } else {
+        errors_to_issues(validate(schema, env_map), schema)
+    };
+    let error_count = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Error)
+        .count();
+    let secret_warnings = if detect_secrets {
+        secrets::detect_secrets(env_map, &parsed.line_numbers, Some(schema))
+    } else {
+        Vec::new()
+    };
+    let warning_count =
+        issues.len() - error_count + secret_warnings.len() + parsed.duplicates.len();
+    println!(
+        "[{}] {}: {} ({} variables, {} error(s), {} warning(s))",
+        local_timestamp(),
+        label,
+        if error_count == 0 { "OK" } else { "FAILED" },
+        env_map.len(),
+        error_count,
+        warning_count
+    );
+    for issue in issues {
+        eprintln!(
+            "           {}: {}",
+            if issue.severity == Severity::Error {
+                "ERROR"
+            } else {
+                "WARNING"
+            },
+            issue.message
+        );
+    }
+    for warning in secret_warnings {
+        eprintln!("           WARNING: {}: {}", warning.key, warning.reason);
+    }
+    for duplicate in &parsed.duplicates {
+        eprintln!(
+            "           WARNING: duplicate {} at line {}",
+            duplicate.key, duplicate.line
+        );
+    }
+    if error_count > 0 {
+        print_bell();
     }
 }
 
@@ -895,77 +944,29 @@ fn run_initial_validation(
     schema: &Schema,
     allow_missing_env: bool,
     detect_secrets: bool,
-    schema_path: &str,
+    _schema_path: &str,
 ) -> Result<WatchState, CliError> {
-    let timestamp = local_timestamp();
-
-    // Read schema content for hash
-    let schema_hash = if let Ok(content) = fs::read_to_string(schema_path) {
-        compute_hash(&content)
-    } else {
-        0 // Remote schema or missing
-    };
-
-    // Load env file
-    let resolved_path = resolve_env_file(env_path);
-    let (env_map, line_numbers, content_hash): (
-        HashMap<String, String>,
-        HashMap<String, usize>,
-        u64,
-    ) = match &resolved_path {
-        Some(resolved) => {
-            let content =
-                fs::read_to_string(resolved).map_err(|e| CliError::Input(e.to_string()))?;
-            let hash = compute_hash(&content);
-            let parse_result = envfile::parse_env_file_detailed(resolved)
-                .map_err(|e| CliError::Input(e.to_string()))?;
-            (parse_result.values, parse_result.line_numbers, hash)
-        }
-        None if allow_missing_env => (HashMap::new(), HashMap::new(), 0),
+    let resolved = resolve_env_file(env_path);
+    let content = match &resolved {
+        Some(path) => fs::read_to_string(path).map_err(|e| CliError::Input(e.to_string()))?,
+        None if allow_missing_env => String::new(),
         None => return Err(CliError::Input(missing_env_error(env_path))),
     };
-
-    // Interpolate
-    let env_map = envfile::interpolate_env(env_map).map_err(|e| CliError::Input(e.to_string()))?;
-
-    // Validate all
-    let errors = validate(schema, &env_map);
-
-    // Check for secrets
-    let secret_warnings = if detect_secrets {
-        secrets::detect_secrets(&env_map, &line_numbers, Some(schema))
-    } else {
-        Vec::new()
-    };
-
-    let has_errors = !errors.is_empty();
-    let has_warnings = !secret_warnings.is_empty();
-    let var_count = env_map.len();
-
-    if has_errors {
-        eprintln!("[{}] Initial: FAILED ({} variables)", timestamp, var_count);
-        for e in &errors {
-            eprintln!("           - {}", e);
-        }
-        print_bell();
-    } else if has_warnings {
-        println!(
-            "[{}] Initial: OK ({} variables, {} secret warning(s))",
-            timestamp,
-            var_count,
-            secret_warnings.len()
-        );
-        for warning in &secret_warnings {
-            eprintln!("           - {}: {}", warning.key, warning.reason);
-        }
-    } else {
-        println!("[{}] Initial: OK ({} variables)", timestamp, var_count);
-    }
-
+    let parsed = envfile::parse_env_str_detailed(&content);
+    let env_map = envfile::interpolate_env(parsed.values.clone())
+        .map_err(|e| CliError::Input(e.to_string()))?;
+    print_watch_summary(
+        "Initial",
+        schema,
+        &env_map,
+        &parsed,
+        detect_secrets,
+        resolved.is_none(),
+    );
     Ok(WatchState {
-        content_hash,
+        content_hash: compute_hash(&content),
         env_map,
-        schema_hash,
+        schema_hash: schema_fingerprint(schema),
     })
 }
 
@@ -1028,7 +1029,32 @@ fn detect_changes(old: &HashMap<String, String>, new: &HashMap<String, String>) 
     changes
 }
 
-/// Print delta validation results for changed variables
+/// Format a change without exposing schema-declared or detected secrets.
+fn format_watch_change(change: &EnvChange, schema: &Schema) -> String {
+    let display = |value: &str| {
+        if schema.get(&change.key).and_then(|spec| spec.secret) == Some(true) {
+            "***MASKED***".to_string()
+        } else {
+            truncate_value_for_display(&change.key, value, 30)
+        }
+    };
+    match &change.change_type {
+        ChangeType::Added => format!(
+            "+ {} = \"{}\"",
+            change.key,
+            display(change.new_value.as_deref().unwrap_or(""))
+        ),
+        ChangeType::Removed => format!("- {} (removed)", change.key),
+        ChangeType::Modified { old_value } => format!(
+            "~ {}: \"{}\" -> \"{}\"",
+            change.key,
+            display(old_value),
+            display(change.new_value.as_deref().unwrap_or(""))
+        ),
+    }
+}
+
+/// Print delta validation results for changed variables.
 fn print_delta_validation(
     changes: &[EnvChange],
     env_map: &HashMap<String, String>,
@@ -1040,44 +1066,23 @@ fn print_delta_validation(
     let mut had_errors = false;
 
     for change in changes {
-        let symbol = match &change.change_type {
-            ChangeType::Added => "+",
-            ChangeType::Removed => "-",
-            ChangeType::Modified { .. } => "~",
-        };
-
-        // Build change description
-        let change_desc = match &change.change_type {
-            ChangeType::Added => {
-                // Mask sensitive values: the watch feed must never print a raw
-                // secret (truncate_value_for_display masks on key + value).
-                let val = truncate_value_for_display(
-                    &change.key,
-                    change.new_value.as_deref().unwrap_or(""),
-                    30,
-                );
-                format!("{} {} = \"{}\"", symbol, change.key, val)
-            }
-            ChangeType::Removed => {
-                format!("{} {} (removed)", symbol, change.key)
-            }
-            ChangeType::Modified { old_value } => {
-                let old = truncate_value_for_display(&change.key, old_value, 30);
-                let new = truncate_value_for_display(
-                    &change.key,
-                    change.new_value.as_deref().unwrap_or(""),
-                    30,
-                );
-                format!("{} {}: \"{}\" -> \"{}\"", symbol, change.key, old, new)
-            }
-        };
+        let change_desc = format_watch_change(change, schema);
 
         // Validate this specific key
         let validation_result = if change.change_type == ChangeType::Removed {
             // Check if removed key was required
             if let Some(spec) = schema.get(&change.key) {
                 if spec.required && spec.default.is_none() {
-                    Some(format!("FAILED: {} is required", change.key))
+                    had_errors |= spec.severity == Severity::Error;
+                    Some(format!(
+                        "{}: {} is required",
+                        if spec.severity == Severity::Warning {
+                            "WARNING"
+                        } else {
+                            "FAILED"
+                        },
+                        change.key
+                    ))
                 } else {
                     Some("OK: optional variable removed".to_string())
                 }
@@ -1092,15 +1097,23 @@ fn print_delta_validation(
                     match validate_single_key(&change.key, value, spec) {
                         Ok(type_info) => Some(format!("OK ({})", type_info)),
                         Err(e) => {
-                            had_errors = true;
-                            Some(format!("FAILED: {}", e))
+                            had_errors |= spec.severity == Severity::Error;
+                            Some(format!(
+                                "{}: {}",
+                                if spec.severity == Severity::Warning {
+                                    "WARNING"
+                                } else {
+                                    "FAILED"
+                                },
+                                e
+                            ))
                         }
                     }
                 }
                 None => {
                     // Key not in schema
                     had_errors = true;
-                    let mut msg = "WARNING: not in schema".to_string();
+                    let mut msg = "FAILED: not in schema".to_string();
                     if let Some(hint) =
                         suggestions::suggest_variable_name(&change.key, schema.keys())
                     {
@@ -1151,189 +1164,14 @@ fn print_delta_validation(
 
 /// Validate a single key-value pair against its spec
 fn validate_single_key(key: &str, value: &str, spec: &VarSpec) -> Result<String, String> {
-    match spec.var_type {
-        VarType::String => {
-            if let Some(ref rules) = spec.validate {
-                if let Some(min_len) = rules.min_length {
-                    if value.len() < min_len {
-                        return Err(format!("length {} < minimum {}", value.len(), min_len));
-                    }
-                }
-                if let Some(max_len) = rules.max_length {
-                    if value.len() > max_len {
-                        return Err(format!("length {} > maximum {}", value.len(), max_len));
-                    }
-                }
-                if let Some(ref pattern) = rules.pattern {
-                    match get_cached_regex(pattern) {
-                        Ok(re) => {
-                            if !re.is_match(value) {
-                                return Err(format!("does not match pattern '{}'", pattern));
-                            }
-                        }
-                        Err(e) => {
-                            return Err(format!("invalid regex: {}", e));
-                        }
-                    }
-                }
-            }
-            Ok("string".to_string())
-        }
-        VarType::Int => match value.parse::<i64>() {
-            Ok(n) => {
-                if let Some(ref rules) = spec.validate {
-                    if let Some(min) = rules.min {
-                        if n < min {
-                            return Err(format!("value {} < minimum {}", n, min));
-                        }
-                    }
-                    if let Some(max) = rules.max {
-                        if n > max {
-                            return Err(format!("value {} > maximum {}", n, max));
-                        }
-                    }
-                }
-                Ok(format!("int: {}", n))
-            }
-            Err(_) => Err(format!(
-                "expected int, got '{}'",
-                mask_value_with_spec(key, value, spec.secret)
-            )),
-        },
-        VarType::Float => match value.parse::<f64>() {
-            Ok(n) => {
-                if let Some(ref rules) = spec.validate {
-                    if let Some(min_val) = rules.min_value {
-                        if n < min_val {
-                            return Err(format!("value {} < minimum {}", n, min_val));
-                        }
-                    }
-                    if let Some(max_val) = rules.max_value {
-                        if n > max_val {
-                            return Err(format!("value {} > maximum {}", n, max_val));
-                        }
-                    }
-                }
-                Ok(format!("float: {}", n))
-            }
-            Err(_) => Err(format!(
-                "expected float, got '{}'",
-                mask_value_with_spec(key, value, spec.secret)
-            )),
-        },
-        VarType::Bool => {
-            let v = value.to_lowercase();
-            if matches!(v.as_str(), "true" | "false" | "1" | "0" | "yes" | "no") {
-                Ok(format!("bool: {}", v))
-            } else {
-                Err(format!(
-                    "expected bool, got '{}'",
-                    mask_value_with_spec(key, value, spec.secret)
-                ))
-            }
-        }
-        VarType::Url => {
-            if Url::parse(value).is_ok() {
-                Ok("url".to_string())
-            } else {
-                Err(format!(
-                    "expected url, got '{}'",
-                    mask_value_with_spec(key, value, spec.secret)
-                ))
-            }
-        }
-        VarType::Enum => match spec.values.as_ref() {
-            Some(allowed) => {
-                if allowed.iter().any(|v| v == value) {
-                    Ok(format!("enum: {}", value))
-                } else {
-                    let mut msg = format!("expected one of {:?}", allowed);
-                    if let Some(hint) = suggestions::suggest_enum_value(value, allowed.iter()) {
-                        msg.push_str(&format!(" -- {}", hint));
-                    }
-                    Err(msg)
-                }
-            }
-            None => Err("enum type missing 'values' in schema".to_string()),
-        },
-        VarType::Uuid => {
-            if uuid_regex().is_match(value) {
-                Ok("uuid".to_string())
-            } else {
-                Err(format!(
-                    "expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'",
-                    mask_value_with_spec(key, value, spec.secret)
-                ))
-            }
-        }
-        VarType::Email => {
-            if email_regex().is_match(value) {
-                Ok("email".to_string())
-            } else {
-                Err(format!(
-                    "expected email (user@domain.tld), got '{}'",
-                    mask_value_with_spec(key, value, spec.secret)
-                ))
-            }
-        }
-        VarType::Ipv4 => {
-            if is_valid_ipv4(value) {
-                Ok("ipv4".to_string())
-            } else {
-                Err(format!(
-                    "expected ipv4 (x.x.x.x where x is 0-255), got '{}'",
-                    mask_value_with_spec(key, value, spec.secret)
-                ))
-            }
-        }
-        VarType::Semver => {
-            if semver_regex().is_match(value) {
-                Ok("semver".to_string())
-            } else {
-                Err(format!(
-                    "expected semver (x.y.z[-prerelease][+build]), got '{}'",
-                    mask_value_with_spec(key, value, spec.secret)
-                ))
-            }
-        }
-        VarType::Ipv6 => {
-            if ipv6_regex().is_match(value) {
-                Ok("ipv6".to_string())
-            } else {
-                Err(format!(
-                    "expected ipv6 address, got '{}'",
-                    mask_value_with_spec(key, value, spec.secret)
-                ))
-            }
-        }
-        VarType::Port => match value.parse::<u16>() {
-            Ok(port) if port >= 1 => Ok(format!("port: {}", port)),
-            Ok(_) => Err("port must be between 1 and 65535".to_string()),
-            Err(_) => Err(format!(
-                "expected port (1-65535), got '{}'",
-                mask_value_with_spec(key, value, spec.secret)
-            )),
-        },
-        VarType::Date => {
-            if date_regex().is_match(value) {
-                Ok("date".to_string())
-            } else {
-                Err(format!(
-                    "expected date (YYYY-MM-DD), got '{}'",
-                    mask_value_with_spec(key, value, spec.secret)
-                ))
-            }
-        }
-        VarType::Hostname => {
-            if value.len() <= 253 && hostname_regex().is_match(value) {
-                Ok("hostname".to_string())
-            } else {
-                Err(format!(
-                    "expected hostname (RFC 1123), got '{}'",
-                    mask_value_with_spec(key, value, spec.secret)
-                ))
-            }
-        }
+    match validate_value(key, value, spec).into_iter().next() {
+        Some(error) => Err(error
+            .strip_prefix(&format!("{}: ", key))
+            .unwrap_or(&error)
+            .to_string()),
+        // The change feed already shows the masked value. Avoid echoing it
+        // again in a type annotation (numeric and enum secrets leaked here).
+        None => Ok(format!("{:?}", spec.var_type).to_lowercase()),
     }
 }
 
@@ -1348,38 +1186,6 @@ fn compute_hash(content: &str) -> u64 {
 /// Print terminal bell character (beep on error)
 fn print_bell() {
     eprint!("\x07");
-}
-
-/// Print a schema error with helpful context
-fn print_schema_error(error: &dyn std::fmt::Display) {
-    let timestamp = local_timestamp();
-    let error_str = error.to_string();
-
-    eprintln!("[{}] Schema error:", timestamp);
-
-    // Parse the error for better formatting
-    if error_str.contains("line ") && error_str.contains("column ") {
-        // JSON parse error with location
-        eprintln!("           {}", error_str);
-        eprintln!();
-        eprintln!(
-            "           Tip: Check for trailing commas, missing quotes, or invalid JSON syntax."
-        );
-    } else if error_str.contains("No such file")
-        || error_str.contains("cannot find")
-        || error_str.contains("not found")
-    {
-        eprintln!("           File not found: {}", error_str);
-        eprintln!();
-        eprintln!("           Tip: Create a schema with: zenv init --example .env.example");
-    } else if error_str.contains("invalid type") || error_str.contains("unknown variant") {
-        eprintln!("           {}", error_str);
-        eprintln!();
-        eprintln!("           Tip: Valid types are: string, int, float, bool, url, enum");
-    } else {
-        // Generic error
-        eprintln!("           {}", error_str);
-    }
 }
 
 /// Get local timestamp in HH:MM:SS format using OS APIs
@@ -1469,233 +1275,7 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
 
         let value = value_opt.unwrap();
 
-        match spec.var_type {
-            VarType::String => {
-                // Apply string validation rules
-                if let Some(ref rules) = spec.validate {
-                    if let Some(min_len) = rules.min_length {
-                        if value.len() < min_len {
-                            // For sensitive values, hide the exact length --
-                            // it's a side channel for HMAC/AES key sizes.
-                            if spec.secret.unwrap_or(false) || is_sensitive_key(key) {
-                                errors.push(format!("{key}: length below minimum {}", min_len));
-                            } else {
-                                errors.push(format!(
-                                    "{key}: length {} is less than minimum {}",
-                                    value.len(),
-                                    min_len
-                                ));
-                            }
-                        }
-                    }
-                    if let Some(max_len) = rules.max_length {
-                        if value.len() > max_len {
-                            if spec.secret.unwrap_or(false) || is_sensitive_key(key) {
-                                errors.push(format!("{key}: length exceeds maximum {}", max_len));
-                            } else {
-                                errors.push(format!(
-                                    "{key}: length {} exceeds maximum {}",
-                                    value.len(),
-                                    max_len
-                                ));
-                            }
-                        }
-                    }
-                    if let Some(ref pattern) = rules.pattern {
-                        match get_cached_regex(pattern) {
-                            Ok(re) => {
-                                if !re.is_match(value) {
-                                    let masked = mask_value_with_spec(key, value, spec.secret);
-                                    errors.push(format!("{key}: value '{masked}' does not match pattern '{pattern}'"));
-                                }
-                            }
-                            Err(e) => {
-                                errors
-                                    .push(format!("{key}: invalid regex pattern '{pattern}': {e}"));
-                            }
-                        }
-                    }
-                }
-            }
-
-            VarType::Int => {
-                match value.parse::<i64>() {
-                    Err(_) => {
-                        errors.push(format!(
-                            "{key}: expected int, got '{}'",
-                            mask_value_with_spec(key, value, spec.secret)
-                        ));
-                    }
-                    Ok(n) => {
-                        // Apply int validation rules
-                        if let Some(ref rules) = spec.validate {
-                            if let Some(min) = rules.min {
-                                if n < min {
-                                    errors.push(format!(
-                                        "{key}: value {n} is less than minimum {min}"
-                                    ));
-                                }
-                            }
-                            if let Some(max) = rules.max {
-                                if n > max {
-                                    errors.push(format!("{key}: value {n} exceeds maximum {max}"));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            VarType::Float => {
-                match value.parse::<f64>() {
-                    Err(_) => {
-                        errors.push(format!(
-                            "{key}: expected float, got '{}'",
-                            mask_value_with_spec(key, value, spec.secret)
-                        ));
-                    }
-                    Ok(n) => {
-                        // Apply float validation rules
-                        if let Some(ref rules) = spec.validate {
-                            if let Some(min_val) = rules.min_value {
-                                if n < min_val {
-                                    errors.push(format!(
-                                        "{key}: value {n} is less than minimum {min_val}"
-                                    ));
-                                }
-                            }
-                            if let Some(max_val) = rules.max_value {
-                                if n > max_val {
-                                    errors.push(format!(
-                                        "{key}: value {n} exceeds maximum {max_val}"
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            VarType::Bool => {
-                let v = value.to_lowercase();
-                let ok = matches!(v.as_str(), "true" | "false" | "1" | "0" | "yes" | "no");
-                if !ok {
-                    errors.push(format!(
-                        "{key}: expected bool (true/false/1/0/yes/no), got '{}'",
-                        mask_value_with_spec(key, value, spec.secret)
-                    ));
-                }
-            }
-
-            VarType::Url => {
-                if Url::parse(value).is_err() {
-                    errors.push(format!(
-                        "{key}: expected url, got '{}'",
-                        mask_value_with_spec(key, value, spec.secret)
-                    ));
-                }
-            }
-
-            VarType::Enum => {
-                match spec.values.as_ref() {
-                    None => {
-                        errors.push(format!("{key}: enum type missing 'values' field in schema"));
-                    }
-                    Some(allowed) => {
-                        if !allowed.iter().any(|v| v == value) {
-                            let mut error_msg = format!(
-                                "{key}: expected one of {:?}, got '{}'",
-                                allowed,
-                                mask_value_with_spec(key, value, spec.secret)
-                            );
-                            // Add "Did you mean?" suggestion
-                            if let Some(suggestion) =
-                                suggestions::suggest_enum_value(value, allowed.iter())
-                            {
-                                error_msg.push_str(&format!("\n  {}", suggestion));
-                            }
-                            errors.push(error_msg);
-                        }
-                    }
-                }
-            }
-
-            VarType::Uuid => {
-                if !uuid_regex().is_match(value) {
-                    errors.push(format!(
-                        "{key}: expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'",
-                        mask_value_with_spec(key, value, spec.secret)
-                    ));
-                }
-            }
-
-            VarType::Email => {
-                if !email_regex().is_match(value) {
-                    errors.push(format!(
-                        "{key}: expected email (user@domain.tld), got '{}'",
-                        mask_value_with_spec(key, value, spec.secret)
-                    ));
-                }
-            }
-
-            VarType::Ipv4 => {
-                if !is_valid_ipv4(value) {
-                    errors.push(format!(
-                        "{key}: expected ipv4 (x.x.x.x where x is 0-255), got '{}'",
-                        mask_value_with_spec(key, value, spec.secret)
-                    ));
-                }
-            }
-
-            VarType::Semver => {
-                if !semver_regex().is_match(value) {
-                    errors.push(format!(
-                        "{key}: expected semver (x.y.z[-prerelease][+build]), got '{}'",
-                        mask_value_with_spec(key, value, spec.secret)
-                    ));
-                }
-            }
-
-            VarType::Ipv6 => {
-                if !ipv6_regex().is_match(value) {
-                    errors.push(format!(
-                        "{key}: expected ipv6 address, got '{}'",
-                        mask_value_with_spec(key, value, spec.secret)
-                    ));
-                }
-            }
-
-            VarType::Port => match value.parse::<u16>() {
-                Ok(port) if port >= 1 => {}
-                Ok(_) => {
-                    errors.push(format!("{key}: port must be between 1 and 65535"));
-                }
-                Err(_) => {
-                    errors.push(format!(
-                        "{key}: expected port (1-65535), got '{}'",
-                        mask_value_with_spec(key, value, spec.secret)
-                    ));
-                }
-            },
-
-            VarType::Date => {
-                if !date_regex().is_match(value) {
-                    errors.push(format!(
-                        "{key}: expected date (YYYY-MM-DD), got '{}'",
-                        mask_value_with_spec(key, value, spec.secret)
-                    ));
-                }
-            }
-
-            VarType::Hostname => {
-                if value.len() > 253 || !hostname_regex().is_match(value) {
-                    errors.push(format!(
-                        "{key}: expected hostname (RFC 1123), got '{}'",
-                        mask_value_with_spec(key, value, spec.secret)
-                    ));
-                }
-            }
-        }
+        errors.extend(validate_value(key, value, spec));
     }
 
     // warn on unknown keys (present in env but not in schema)
@@ -1710,6 +1290,252 @@ pub fn validate(schema: &Schema, env_map: &HashMap<String, String>) -> Vec<Strin
         }
     }
 
+    errors
+}
+
+/// Shared value validation for check, watch, and fix diagnostics.
+pub(crate) fn validate_value(key: &str, value: &str, spec: &VarSpec) -> Vec<String> {
+    let mut errors = Vec::new();
+    match spec.var_type {
+        VarType::String => {
+            // Apply string validation rules
+            if let Some(ref rules) = spec.validate {
+                if let Some(min_len) = rules.min_length {
+                    if value.len() < min_len {
+                        // For sensitive values, hide the exact length --
+                        // it's a side channel for HMAC/AES key sizes.
+                        if spec.secret.unwrap_or(false) || is_sensitive_key(key) {
+                            errors.push(format!("{key}: length below minimum {}", min_len));
+                        } else {
+                            errors.push(format!(
+                                "{key}: length {} is less than minimum {}",
+                                value.len(),
+                                min_len
+                            ));
+                        }
+                    }
+                }
+                if let Some(max_len) = rules.max_length {
+                    if value.len() > max_len {
+                        if spec.secret.unwrap_or(false) || is_sensitive_key(key) {
+                            errors.push(format!("{key}: length exceeds maximum {}", max_len));
+                        } else {
+                            errors.push(format!(
+                                "{key}: length {} exceeds maximum {}",
+                                value.len(),
+                                max_len
+                            ));
+                        }
+                    }
+                }
+                if let Some(ref pattern) = rules.pattern {
+                    match get_cached_regex(pattern) {
+                        Ok(re) => {
+                            if !re.is_match(value) {
+                                let masked = mask_value_with_spec(key, value, spec.secret);
+                                errors.push(format!(
+                                    "{key}: value '{masked}' does not match pattern '{pattern}'"
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(format!("{key}: invalid regex pattern '{pattern}': {e}"));
+                        }
+                    }
+                }
+            }
+        }
+
+        VarType::Int => {
+            match value.parse::<i64>() {
+                Err(_) => {
+                    errors.push(format!(
+                        "{key}: expected int, got '{}'",
+                        mask_value_with_spec(key, value, spec.secret)
+                    ));
+                }
+                Ok(n) => {
+                    // Apply int validation rules
+                    if let Some(ref rules) = spec.validate {
+                        if let Some(min) = rules.min {
+                            if n < min {
+                                errors.push(format!(
+                                    "{key}: value {} is less than minimum {min}",
+                                    mask_value_with_spec(key, value, spec.secret)
+                                ));
+                            }
+                        }
+                        if let Some(max) = rules.max {
+                            if n > max {
+                                errors.push(format!(
+                                    "{key}: value {} exceeds maximum {max}",
+                                    mask_value_with_spec(key, value, spec.secret)
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        VarType::Float => {
+            match value.parse::<f64>() {
+                Err(_) => {
+                    errors.push(format!(
+                        "{key}: expected float, got '{}'",
+                        mask_value_with_spec(key, value, spec.secret)
+                    ));
+                }
+                Ok(n) if !n.is_finite() => {
+                    errors.push(format!(
+                        "{key}: expected finite float, got '{}'",
+                        mask_value_with_spec(key, value, spec.secret)
+                    ));
+                }
+                Ok(n) => {
+                    // Apply float validation rules
+                    if let Some(ref rules) = spec.validate {
+                        if let Some(min_val) = rules.min_value {
+                            if n < min_val {
+                                errors.push(format!(
+                                    "{key}: value {} is less than minimum {min_val}",
+                                    mask_value_with_spec(key, value, spec.secret)
+                                ));
+                            }
+                        }
+                        if let Some(max_val) = rules.max_value {
+                            if n > max_val {
+                                errors.push(format!(
+                                    "{key}: value {} exceeds maximum {max_val}",
+                                    mask_value_with_spec(key, value, spec.secret)
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        VarType::Bool => {
+            let v = value.to_lowercase();
+            let ok = matches!(v.as_str(), "true" | "false" | "1" | "0" | "yes" | "no");
+            if !ok {
+                errors.push(format!(
+                    "{key}: expected bool (true/false/1/0/yes/no), got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ));
+            }
+        }
+
+        VarType::Url => {
+            if Url::parse(value).is_err() {
+                errors.push(format!(
+                    "{key}: expected url, got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ));
+            }
+        }
+
+        VarType::Enum => {
+            match spec.values.as_ref() {
+                None => {
+                    errors.push(format!("{key}: enum type missing 'values' field in schema"));
+                }
+                Some(allowed) => {
+                    if !allowed.iter().any(|v| v == value) {
+                        let mut error_msg = format!(
+                            "{key}: expected one of {:?}, got '{}'",
+                            allowed,
+                            mask_value_with_spec(key, value, spec.secret)
+                        );
+                        // Add "Did you mean?" suggestion
+                        if let Some(suggestion) =
+                            suggestions::suggest_enum_value(value, allowed.iter())
+                        {
+                            error_msg.push_str(&format!("\n  {}", suggestion));
+                        }
+                        errors.push(error_msg);
+                    }
+                }
+            }
+        }
+
+        VarType::Uuid => {
+            if !uuid_regex().is_match(value) {
+                errors.push(format!(
+                    "{key}: expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ));
+            }
+        }
+
+        VarType::Email => {
+            if !email_regex().is_match(value) {
+                errors.push(format!(
+                    "{key}: expected email (user@domain.tld), got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ));
+            }
+        }
+
+        VarType::Ipv4 => {
+            if !is_valid_ipv4(value) {
+                errors.push(format!(
+                    "{key}: expected ipv4 (x.x.x.x where x is 0-255), got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ));
+            }
+        }
+
+        VarType::Semver => {
+            if !semver_regex().is_match(value) {
+                errors.push(format!(
+                    "{key}: expected semver (x.y.z[-prerelease][+build]), got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ));
+            }
+        }
+
+        VarType::Ipv6 => {
+            if value.parse::<std::net::Ipv6Addr>().is_err() {
+                errors.push(format!(
+                    "{key}: expected ipv6 address, got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ));
+            }
+        }
+
+        VarType::Port => match value.parse::<u16>() {
+            Ok(port) if port >= 1 => {}
+            Ok(_) => {
+                errors.push(format!("{key}: port must be between 1 and 65535"));
+            }
+            Err(_) => {
+                errors.push(format!(
+                    "{key}: expected port (1-65535), got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ));
+            }
+        },
+
+        VarType::Date => {
+            if !is_valid_date(value) {
+                errors.push(format!(
+                    "{key}: expected date (YYYY-MM-DD), got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ));
+            }
+        }
+
+        VarType::Hostname => {
+            if value.len() > 253 || !hostname_regex().is_match(value) {
+                errors.push(format!(
+                    "{key}: expected hostname (RFC 1123), got '{}'",
+                    mask_value_with_spec(key, value, spec.secret)
+                ));
+            }
+        }
+    }
     errors
 }
 
@@ -1760,6 +1586,55 @@ pub fn validate_files(
 mod tests {
     use super::*;
     use crate::schema::{ValidationRule, VarSpec, VarType};
+
+    #[test]
+    fn watch_masks_declared_secrets_in_changes_and_annotations() {
+        let spec = VarSpec {
+            var_type: VarType::Int,
+            secret: Some(true),
+            ..Default::default()
+        };
+        let schema = Schema::from([("VALUE".into(), spec.clone())]);
+        for change_type in [
+            ChangeType::Added,
+            ChangeType::Modified {
+                old_value: "7654321".into(),
+            },
+        ] {
+            let change = EnvChange {
+                key: "VALUE".into(),
+                change_type,
+                new_value: Some("8675309".into()),
+            };
+            let display = format_watch_change(&change, &schema);
+            assert!(display.contains("***MASKED***"));
+            assert!(!display.contains("7654321"));
+            assert!(!display.contains("8675309"));
+        }
+        assert_eq!(
+            validate_single_key("VALUE", "8675309", &spec).unwrap(),
+            "int"
+        );
+    }
+
+    #[test]
+    fn watch_rejects_impossible_dates_and_nonfinite_floats() {
+        for (var_type, value) in [
+            (VarType::Float, "NaN"),
+            (VarType::Date, "2025-02-29"),
+            (VarType::Semver, "01.2.3"),
+            (VarType::Ipv6, "1:2:3:4:5:6:7::8"),
+        ] {
+            let spec = VarSpec {
+                var_type,
+                ..Default::default()
+            };
+            assert!(
+                validate_single_key("VALUE", value, &spec).is_err(),
+                "{value}"
+            );
+        }
+    }
 
     fn make_schema(entries: Vec<(&str, VarSpec)>) -> Schema {
         entries

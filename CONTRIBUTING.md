@@ -37,7 +37,7 @@ Feature requests are welcome! Please:
 
 ### Prerequisites
 
-- Rust 1.70+ (install via [rustup](https://rustup.rs/))
+- Rust 1.85+ (install via [rustup](https://rustup.rs/))
 - Git
 
 ### Clone and Build
@@ -62,7 +62,7 @@ cargo run -- init
 cargo test
 ```
 
-All 630 tests should pass.
+All tests should pass. CI also checks the minimum supported Rust version.
 
 ### Check Code Quality
 
@@ -133,7 +133,7 @@ Add validation rule for email type
 cargo test
 
 # Specific test file
-cargo test --test schema
+cargo test --test workflows
 
 # Specific test
 cargo test test_validate_int_min_max
@@ -194,7 +194,22 @@ src/
     version.rs     # zenv version command
 ```
 
-## Questions?
+## Preparing a release
+
+Use Python 3.11 or newer for release tooling:
+
+```bash
+python scripts/release.py --check
+python scripts/test_release.py
+node --test scripts/test_sync_website.js
+python scripts/release.py 0.3.12
+```
+
+The final command prepares a version bump in Cargo.toml, Cargo.lock, and the Action fallback. It does not publish, tag, commit, or change dependency versions. Update CHANGELOG.md and review the diff before creating a release tag. Tag builds must pass the reusable cross-platform CI workflow, tag/version agreement, and a locked package dry run before release artifacts or the crate are published. `cargo release` runs the locked release-profile tests.
+
+After crate publication, the release workflow explicitly calls the website sync workflow. GitHub releases created with `GITHUB_TOKEN` do not trigger a separate release-event workflow ([GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)). The website lives in the separate private repository `Rex0Lux/zorl` on `master`; the existing `ZORL_WEBSITE_TOKEN` secret must grant access to it. Sync updates version metadata only; feature descriptions, counts, examples, and privacy statements require a separate content review. The sync script checks both files before editing and targets the zenv section of `public/llms.txt`.
+
+## Questions and documentation
 
 - Read the [official documentation](https://zorl.cloud/zenv/docs)
 - Check the [FAQ](https://github.com/zorl-engine/zorath-env/wiki/FAQ)

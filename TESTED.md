@@ -1,5 +1,63 @@
 # zenv - Tested and Verified
 
+## Local hardening verification - October 10, 2026
+
+The following audit was recorded locally before release preparation, from a working tree based on v0.3.11. The fixes are prepared for v0.3.12. Publication and hosted verification must be checked against the release revision in [GitHub Actions](https://github.com/zorl-engine/zorath-env/actions) and the [release page](https://github.com/zorl-engine/zorath-env/releases/tag/v0.3.12). Local verification on Windows x86-64:
+
+| Check | Result |
+|---|---|
+| `cargo test --locked --quiet` | **841 passed**, 0 failed; 2 existing documentation examples ignored. Includes 36 integration regressions in `regressions.rs`, `hardening.rs`, and `workflows.rs`. The project package was rebuilt after stale local Cargo artifacts were detected. |
+| Formatting and strict Clippy | `cargo fmt --all -- --check`; `cargo clippy --locked --all-targets -- -D warnings` passed. |
+| Minimum Rust version | `cargo +1.85.0 check --locked --all-targets --target-dir target/msrv` passed against the updated lockfile. |
+| Dependency audit | cargo-audit 0.22.2: 160 dependencies, **0 advisories, 0 warnings**. RustSec database commit `7eebec69c352c7191b1f13eb95dd510eeca5d1de`, updated October 9. |
+| Release executable | `cargo build --release --locked` passed. The follow-up smoke used 40 CLI/MCP invocations covering all 14 commands, 6 presets, 7 exports, literal option-like MCP paths, YAML resource metadata, and requests using notification method names. |
+| Network behavior | Rebuilt binary passed live HTTPS validation, URL-specific cache clearing, and an immediate refetch without `--no-cache`. Both the unique test URL's content and metadata were confirmed removed. Previous-pass checks also covered cache reuse, remote doctor, and crates.io update metadata. Windows uses the OS application-cache directory. |
+| Package verification | `cargo publish --dry-run --locked --allow-dirty` packaged and verified successfully. No upload occurred. The existing v0.3.11 crate cannot be overwritten; publication needs a new version. |
+| Action and release helpers | `scripts/test_action.py` passed with Git Bash and jq; `scripts/test_release.py` and `scripts/release.py --check` passed. The real Action validation script also passed valid, invalid, and allowed-missing scenarios against the rebuilt release binary. Release builds now depend on the composite Action workflow. |
+| Website tooling | `node --test scripts/test_sync_website.js`: 3 passed, including preserving other products' versions and failing before edits on invalid metadata. Sync also passed against a local copy of the real files from `Rex0Lux/zorl` on `master`. The remote repository and live website were not modified. |
+| Generated CI templates | All 6 platform/install-mode combinations parsed as YAML. Tests check the actual versioned Linux asset, executable permission step, compatible runtime, Rust minimum, locked dependencies, and fully commented GitLab examples. Docker Hub confirmed the Ubuntu 24.04 and cimg/rust 1.85 tags; native container execution was not tested. |
+| Workflow structure | Official checksum-verified actionlint 1.7.12 passed for all workflows. ShellCheck and Pyflakes integrations were disabled; Action/release/sync scripts were tested separately. |
+
+The newly found workflow failures are fixed and covered: config errors/path rebasing; schema typo/default/rule validation; independently pinned inherited schemas; watch updates after parent edits and repeated atomic saves; schema-aware diff masking; doctor discovery/interpolation/severity; and examples satisfying every bundled preset. Release preparation and website sync now have regression checks and release workflow wiring. See [CHANGELOG.md](CHANGELOG.md) for the complete changes.
+
+The surgical follow-up also fixed orphan cache metadata, inaccurate cache counts, MCP literal argument handling and YAML discovery metadata, unanswered malformed notification requests, incompatible/broken CI template installs, and website sync target/section validation. The `.env.local` discovery check confirmed that tools and resources already agreed; no fallback behavior was changed for that suspected issue.
+
+Repository verification: The user confirmed the CLI repository as `zorl-engine/zorath-env`; GitHub confirmed its default branch as `main`. The local origin, Cargo metadata, Action downloads, and generated CI asset URLs use that repository, whose v0.3.11 release and four assets were accessible. The separate website repository is `Rex0Lux/zorl`; GitHub confirmed its default branch as `master` and the expected `src/data/zenv.json` and `public/llms.txt` files. The website sync workflow targets that repository and branch. No CLI relocation is required, and neither repository nor the live website was modified remotely during this audit.
+
+## Completion and release readiness
+
+The tested build is usable as zenv's existing build-time configuration validator: define a schema, create or inspect an env file, validate it in development/CI, diagnose or repair supported issues, generate docs/examples, export values, and call local tools through MCP. Generated secret values remain placeholders, and arbitrary regex placeholders can require manual completion. This audit does not establish the absence of every defect.
+
+| Priority | Remaining work | Acceptance evidence |
+|---|---|---|
+| Before public release | Run the changed hosted CI/Action workflows on Linux, macOS, and Windows; exercise native Unix permission/symlink/device regressions and the downloadable artifacts. | Passing jobs for the exact release revision; install-and-check smoke results on each supported target. Only Windows ran locally. |
+| Before public release | Prepare a new version, review the full diff/changelog, verify crates.io trusted publishing and the existing website-token configuration, then publish and verify installs. | Matching crate, tag, Action fallback, and binaries; successful release jobs. The helper and gates are wired, but no release ran here. |
+| Before public release | Reconcile the product website, docs, and `llms.txt` with the shipped behavior. | Correct command/pattern/test counts and examples; accurate descriptions of network access, doctor, and fix. Version sync alone does not update feature text. |
+| Before a broad 1.0 reliability claim | Test MCP with supported real clients and its lifecycle/cancellation/large-input behavior; add parser/inheritance fuzzing and target-runtime export tests. | Recorded compatibility matrix and bounded-input/negative-case results. Current stdio/process tests do not establish complete MCP conformance or Docker/systemd execution compatibility. |
+| Distribution hardening | Verify downloaded Action artifacts against provenance/checksums before execution; document supported architectures and consider Linux ARM/musl assets. | Rejected tampered downloads and a tested install matrix. Releases emit provenance, but the Action consumer does not yet verify it. |
+
+The [live product page](https://zorl.cloud/zenv) reviewed on October 10 still mixes 22 and 15 secret patterns, 14 and 13 commands, and a 686-test badge. It describes sorting in `fix`, installation/completion checks in `doctor`, and no external requests more broadly than the implementation supports. The [live llms.txt](https://zorl.cloud/llms.txt) also includes outdated counts and positional `export .env` examples; the CLI requires `--env .env`. These are content corrections for the separate website repository; it was not edited or deployed here.
+
+Product R&D priorities are detailed in [docs/comparison.md](docs/comparison.md), with primary-source references. The next useful additions are a specified strict dotenv mode with literal quoting semantics, an explicit fail-on-secret CI policy, and a versioned machine-readable schema for editors. Conditional rules can follow. Runtime injection, encryption/vaults, overlays, and type generation are separate extensions, not prerequisites for the current build-time CLI. Current secret findings are warnings; defaults are not injected into an application's process environment.
+
+## Previous repair-pass verification - October 9, 2026
+
+Repair pass based on v0.3.11, verified locally on Windows x86-64:
+
+- `cargo test --locked --quiet`: **820 passed**, 0 failed; 2 existing documentation examples remain ignored. Includes 22 new integration regressions across `regressions.rs` and `hardening.rs`.
+- `cargo fmt --all -- --check` and `cargo clippy --locked --all-targets -- -D warnings`: passed.
+- `cargo +1.85.0 check --locked --all-targets --target-dir target/msrv`: passed. The locked `ignore`/`globset` dependencies require edition 2024; Rust 1.74 was not a valid minimum.
+- `cargo build --release --locked`: passed.
+- Release executable: 22 CLI invocations plus an MCP handshake and real validation tool call passed, covering all 14 subcommands and all 7 export formats against temporary fixtures.
+- `scripts/test_action.py`: literal argument handling, boolean flags, JSON errors, file/schema errors, and text errors passed using Git Bash and jq. No GitHub secrets were written.
+- Generated shell and GitHub Secrets scripts executed against a local mock and preserved quotes, backslashes, dollar references, newlines, and embedded `EOF` text exactly.
+- Additional hardening checks cover invalid dates/SemVer/IPv6, nonfinite floats, secret-safe diagnostics, interpolated fix analysis, schema containment, cache rate limiting, connection-time DNS filtering, bounded file reads, and concurrent atomic writes/backups. Windows write contention was reproduced and resolved with bounded retries. Unix-specific permission, symlink, and device-read regressions are included for CI but were not run on this Windows host.
+- Rebuilt release executable passed repair with an existing backup, valid/invalid checks, numeric-secret masking, and all 7 file exports. Live HTTPS loading of the repository's example schema, immediate cache reuse, and the crates.io update-metadata request also passed. Correction from the follow-up audit: changing `LOCALAPPDATA` does not isolate the `dirs` crate's Windows cache, which uses the OS known-folder API.
+
+The fixes and research references are recorded in [CHANGELOG.md](CHANGELOG.md). Hosted GitHub Actions, native Linux/macOS runs, Docker builds, and systemd service execution were not run locally. CI includes cross-platform, minimum-version, formatting, and Action checks. These results cover the tested behavior, not a claim that every possible defect has been eliminated.
+
+## Historical verification - v0.3.8
+
 **Version:** 0.3.8
 **Status:** Verified Working
 **Test Date:** January 26, 2026

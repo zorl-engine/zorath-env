@@ -58,13 +58,13 @@ Config file:
         #[arg(long)]
         schema: Option<String>,
         /// If set, missing .env is allowed (schema still validated against defaults/required rules)
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         allow_missing_env: Option<bool>,
         /// Detect potential secrets in .env file (API keys, passwords, tokens)
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         detect_secrets: Option<bool>,
         /// Skip cache when fetching remote schemas
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
         /// Watch for file changes and re-run validation
         #[arg(long, default_value_t = false)]
@@ -95,7 +95,7 @@ Examples:
         #[arg(short = 'f', long)]
         format: Option<String>,
         /// Skip cache when fetching remote schemas
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
         /// Verify remote schema integrity with SHA-256 hash
         #[arg(long)]
@@ -195,7 +195,7 @@ Examples:
         #[arg(long, default_value_t = false)]
         include_defaults: bool,
         /// Skip cache when fetching remote schemas
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
         /// Verify remote schema integrity with SHA-256 hash
         #[arg(long)]
@@ -226,7 +226,7 @@ Remote schema with integrity verification:
         #[arg(long)]
         format: Option<String>,
         /// Skip cache when fetching remote schemas
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
         /// Verify remote schema integrity with SHA-256 hash
         #[arg(long)]
@@ -267,7 +267,7 @@ What it reports but doesn't fix:
         #[arg(long, default_value_t = false)]
         dry_run: bool,
         /// Skip cache when fetching remote schemas
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
         /// Verify remote schema integrity with SHA-256 hash
         #[arg(long)]
@@ -305,7 +305,7 @@ Supported languages:
         #[arg(long)]
         format: Option<String>,
         /// Skip cache when fetching remote schemas
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
         /// Verify remote schema integrity with SHA-256 hash
         #[arg(long)]
@@ -364,7 +364,7 @@ Aliases:
         #[arg(short = 'o', long)]
         output: Option<String>,
         /// Skip cache when fetching remote schemas
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
         /// Verify remote schema integrity with SHA-256 hash
         #[arg(long)]
@@ -402,7 +402,7 @@ Each check shows:
         #[arg(long)]
         schema: Option<String>,
         /// Skip cache when fetching remote schemas
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         no_cache: Option<bool>,
         /// Verify remote schema integrity with SHA-256 hash
         #[arg(long)]
@@ -510,7 +510,13 @@ fn main() {
     }
 
     // Load config from specified path or .zenvrc (if present)
-    let config = Config::load_from(cli.config.as_deref()).unwrap_or_default();
+    let config = match Config::try_load_from(cli.config.as_deref()) {
+        Ok(config) => config.unwrap_or_default(),
+        Err(error) => {
+            eprintln!("zenv: {}", error);
+            std::process::exit(2);
+        }
+    };
 
     // Set NO_COLOR if flag or config requests it
     if cli.no_color || config.no_color_or(false) {
@@ -588,7 +594,7 @@ fn main() {
             commands::init::run_with_options(&example, &schema, preset.as_deref(), list_presets)
         }
         Command::Version { check_update } => commands::version::run(check_update),
-        Command::Mcp => commands::mcp::run(),
+        Command::Mcp => commands::mcp::run_with_config(config, cli.config),
         Command::Completions { shell } => commands::completions::run(shell, &mut Cli::command()),
         Command::Example {
             schema,
@@ -732,13 +738,14 @@ fn main() {
             let no_cache = no_cache.unwrap_or_else(|| config.no_cache_or(false));
             let verify_hash = verify_hash.or_else(|| config.verify_hash());
             let ca_cert = ca_cert.or_else(|| config.ca_cert());
-            commands::doctor::run(
+            commands::doctor::run_with_config(
                 &env,
                 &schema,
                 no_cache,
                 verify_hash.as_deref(),
                 ca_cert.as_deref(),
                 rate_limit,
+                cli.config.as_deref(),
             )
         }
         Command::Template {

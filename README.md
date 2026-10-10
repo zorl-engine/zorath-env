@@ -11,9 +11,9 @@
 
 **AI-native `.env` validation in any language.** A fast, single-binary CLI that validates `.env` files against typed schemas, detects secrets, scans your code, generates docs, exports to 7 deployment formats, and auto-fixes issues -- with a Claude Code skill AND a stdio MCP server built into the binary so AI coding agents can drive it directly. No runtime, no hosting, no telemetry.
 
-`14 types` -- `7 export formats` -- `9 language scan` -- `22 secret patterns` -- `6 framework presets` -- `789 tests` -- `stdio MCP` -- `Claude Code skill`
+`14 types` -- `7 export formats` -- `9 language scan` -- `22 secret patterns` -- `6 framework presets` -- `regression tests` -- `stdio MCP` -- `Claude Code skill`
 
-> zenv is the only single-binary `.env` validator that ships a local stdio MCP server, a typed schema language with cryptographically-pinned remote inheritance, and a built-in 22-pattern secret-detection engine.
+> zenv combines typed `.env` validation, a local stdio MCP server, pinned schema inheritance, and secret detection in one Rust binary.
 
 ## Why zenv
 
@@ -26,7 +26,7 @@
 - **AI-native** -- ships a Claude Code skill AND an `mcp` subcommand that speaks JSON-RPC 2.0 over stdio per [MCP spec 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25). 5 tools, 3 resources, 3 prompts. No hosting, no telemetry, no vendor URL -- the agent drives the local binary as a subprocess
 - **Validate with real types** -- 14 validators (url, email, port, semver, uuid, ipv4, ipv6, date, hostname, and more), not just "is it a string?"
 - **Detect secrets in the validation pass** -- 22 patterns (AWS, OpenAI, Anthropic, Stripe, GitHub, GitLab, Discord/Slack webhooks, JWT, private keys, more) PLUS value-aware URL-password detection that catches `postgres://user:pass@host` even under innocuous keys like `FOO`
-- **Cryptographically-pinned remote schemas** -- fetch over HTTPS with `--verify-hash <sha256>`, custom CA, SSRF allowlist (loopback / RFC1918 / link-local / cloud metadata / IPv4-mapped IPv6). Share schemas across repos without trusting the host
+- **Cryptographically-pinned remote schemas** -- fetch over HTTPS with `--verify-hash <sha256>`, custom CA, and connection-time address checks that reject internal destinations, including mapped IPv4. Share schemas across repos without trusting the host
 - **Scan your code** -- find env vars used in source code across 9 languages that aren't in your schema yet
 - **Export anywhere** -- shell, Docker, Kubernetes, systemd, GitHub Secrets, JSON, dotenv
 - **Auto-fix** -- add missing vars, remove unknown keys, preview changes safely with `--dry-run`. Atomic write with Unix mode preservation
@@ -37,13 +37,15 @@
 
 ## Privacy
 
-zenv runs locally. No uploads, no telemetry, no phoning home.
+Local validation runs offline and never uploads your `.env` values. Remote schema URLs and `version --check-update` make explicit HTTPS requests. There is no telemetry.
 
 ## Install
 
 ### Via cargo (recommended)
+Requires Rust 1.85 or newer with the locked dependencies.
+
 ```bash
-cargo install zorath-env
+cargo install --locked zorath-env
 ```
 
 ### From source
@@ -187,10 +189,12 @@ zenv check --watch --detect-secrets # Watch with secret detection
 
 Features:
 - Delta detection: shows exactly which variable changed
-- Targeted validation: only validates changed keys
+- Shows changed keys and reports the complete current validation status
 - Content-hash skip: ignores saves without changes
 - Local timestamps
 - Terminal bell on errors
+- Tracks inherited local schemas, editor file replacements, and recovery after read errors
+- Applies the same warning/error severity rules as a normal check
 
 ### `zenv docs`
 
@@ -239,6 +243,8 @@ zenv example --include-defaults  # Include default values
 zenv example --output .env.example  # Write to file
 ```
 
+Placeholders respect declared types, enum choices, and basic length/numeric bounds. All six bundled presets generate examples that pass their schema checks. Secret placeholders must still be replaced with real application values; passing a format check does not make them usable credentials or encryption keys. Arbitrary regex constraints that cannot be generated are marked for manual completion. Default values are masked in comments; `--include-defaults` explicitly writes them into assignments.
+
 ### `zenv diff`
 
 Compares two `.env` files and shows differences.
@@ -267,14 +273,14 @@ zenv fix --remove-unknown         # Also remove keys not in schema
 ```
 
 **What it fixes:**
-- Missing optional variables (adds with schema defaults)
+- Missing required variables (adds schema defaults, or empty placeholders for manual completion)
 - Unknown keys (with `--remove-unknown`)
 
 **Security:** `--dry-run` masks sensitive values (passwords, keys, tokens) as `***MASKED***`.
 
 **What it reports but doesn't fix:**
 - Invalid types (needs human input)
-- Missing required variables (needs human input)
+- Required values without a schema default (review and fill the added placeholders)
 
 ### `zenv scan`
 
@@ -302,6 +308,8 @@ zenv cache clear https://...      # Clear specific cached schema
 zenv cache path                   # Show cache directory location
 ```
 
+Clearing removes the schema and its rate-limit metadata, so a fresh request can follow immediately. Listing, statistics, and doctor count schema files only; unrelated files and in-progress temporary writes are preserved.
+
 ### `zenv export`
 
 Export `.env` to various formats for deployment.
@@ -319,6 +327,8 @@ zenv export --env .env --schema s.json         # Only export vars in schema
 zenv export --env .env -f shell -o setup.sh    # Write to file
 ```
 
+Exports preserve literal quotes, backslashes, and newlines where the target format supports them. Dockerfile export rejects multiline values; use JSON or dotenv for those values. Shell, Docker, systemd, and GitHub Secrets exports require valid environment variable names.
+
 ### `zenv doctor`
 
 Run health check and diagnostics.
@@ -335,6 +345,8 @@ Checks:
 - Validation passes (if schema and env exist)
 
 Output shows `[OK]`, `[WARN]`, or `[ERROR]` with actionable suggestions.
+
+Doctor reports the selected custom or discovered config and validates the files it finds, including YAML schemas and `.env.local`. Explicit missing paths report an error. Warning-severity validation issues remain warnings.
 
 ### `zenv template`
 
@@ -498,7 +510,21 @@ Schemas can extend other schemas:
 }
 ```
 
-Inheritance supports up to 10 levels of depth. Circular references are detected and will cause an error.
+Inheritance supports up to 10 levels of depth. Circular references are detected and will cause an error. Local parent schemas must exist within the referring schema's directory or its subdirectories; paths and symlinks that escape that directory are rejected.
+
+A local schema can also extend an HTTPS URL. Pin each parent with `extends_hash`, using its SHA-256 digest (or at least 32 hexadecimal characters):
+
+```json
+{
+  "extends": "https://example.com/base.schema.json",
+  "extends_hash": "<replace with the parent's actual SHA-256 digest>",
+  "EXTRA_VAR": { "type": "string" }
+}
+```
+
+When `--verify-hash` pins the root, every inherited schema must have its own parent pin. A single digest cannot verify different files. Missing parent pins and hash mismatches fail before the untrusted dependency is used.
+
+Schemas are validated when loaded: unknown variable/rule fields, inapplicable or contradictory constraints, missing enum choices, invalid patterns, and invalid defaults are errors even when no `.env` values exist. Defaults describe accepted fallback values and are used by `fix` and `example --include-defaults`; `check` does not inject them into your application or rewrite your `.env`.
 
 ### Remote schemas
 
@@ -520,17 +546,19 @@ zenv check --schema https://example.com/schema.json --no-cache
 - Automatic caching with 1-hour TTL
 - `--no-cache` flag to bypass cache
 - Remote schemas can extend other schemas (URLs resolved relative to parent)
+- Cached schemas remain available during the network rate-limit window
+- YAML URL detection ignores query parameters and fragments
+
+Remote requests connect directly: proxy environment variables are ignored so a proxy cannot bypass destination address checks. DNS resolution is covered by the 30-second request timeout, and the checked addresses are passed directly to the connection. Networks that require an outbound proxy must provide schemas locally.
 
 #### Remote schema security
 
 **Hash verification** - Verify schema integrity with SHA-256:
 
 ```bash
-# Verify schema hasn't been tampered with
-zenv check --schema https://example.com/schema.json --verify-hash abc123def456...
-
-# Hash prefix matching supported (first 16+ chars)
-zenv check --schema https://example.com/schema.json --verify-hash abc123def456
+# Use the schema's actual SHA-256 digest (64 hexadecimal characters),
+# or a prefix containing at least 32 hexadecimal characters.
+zenv check --schema https://example.com/schema.json --verify-hash "$SCHEMA_SHA256"
 ```
 
 **Custom CA certificates** - For enterprise internal servers:
@@ -572,6 +600,8 @@ Create a `.zenvrc` file in your project root to set default options. CLI argumen
 | `format` | string | Default output format for `check`/`docs`/`diff`/`scan`/`export` (per-command default if omitted) |
 
 ### Example: Full Configuration
+
+Invalid or unreadable configuration is an input error; it no longer silently disables configured checks. Relative `env`, `schema`, and `ca_cert` paths are resolved from the config file directory. Explicit command-line paths are resolved from the current working directory.
 
 ```json
 {
@@ -715,6 +745,8 @@ Exposes 5 tools, 3 resources (schema, masked .env, generated docs),
 standard lifecycle surface (initialize, ping, logging/setLevel,
 completion). Zero new dependencies in the binary, zero hosting, zero
 telemetry -- runs entirely as a subprocess of your AI client.
+
+`zenv --config path/to/config.json mcp` applies that configuration to both tool calls and resources. The masked env resource respects schema `secret: true` declarations and masks complete multiline assignments, including duplicates. Tool arguments are checked against their advertised input schemas before execution.
 
 ## GitHub Action
 

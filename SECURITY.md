@@ -102,19 +102,23 @@ zenv provides security features for remote schema fetching:
 Verify schema integrity with SHA-256:
 
 ```bash
-zenv check --schema https://example.com/schema.json --verify-hash abc123def456...
+zenv check --schema https://example.com/schema.json --verify-hash "$SCHEMA_SHA256"
 ```
 
 - Prevents man-in-the-middle attacks
 - Verifies both cached and fresh content
-- Supports full hash or prefix matching (16+ chars)
+- Supports full SHA-256 hashes or prefixes of at least 32 hexadecimal characters
+
+Pinned inheritance uses a distinct `extends_hash` for each immediate parent. Pinning the root requires a complete pinned chain; an unpinned parent is rejected.
+
+Remote requests connect directly with no environment proxy, validate the addresses actually used by the connection, reject internal/nonpublic destinations, and do not follow redirects.
 
 ### Custom CA Certificates (`--ca-cert`)
 
-For enterprise environments with internal HTTPS servers:
+For custom trust roots on public HTTPS endpoints (private network destinations remain blocked):
 
 ```bash
-zenv check --schema https://internal.corp/schema.json --ca-cert /path/to/ca.pem
+zenv check --schema https://schemas.example.com/schema.json --ca-cert /path/to/ca.pem
 ```
 
 - PEM format required

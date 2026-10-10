@@ -69,23 +69,50 @@ pub fn parse_env_str(content: &str) -> HashMap<String, String> {
 
 /// Parse .env content and return detailed results including duplicate key information
 pub fn parse_env_str_detailed(content: &str) -> ParseResult {
+    parse_env_inner(content, false).0
+}
+
+/// A complete assignment, including every physical line of a quoted value.
+/// Retain duplicates so consumers never leave an earlier secret unmasked.
+pub(crate) struct EnvEntry {
+    pub key: String,
+    pub value: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+pub(crate) fn parse_env_with_entries(content: &str) -> (ParseResult, Vec<EnvEntry>) {
+    parse_env_inner(content, true)
+}
+
+fn parse_env_inner(content: &str, collect_entries: bool) -> (ParseResult, Vec<EnvEntry>) {
     let mut map = HashMap::new();
+    let mut entries = Vec::new();
     let mut key_lines: HashMap<String, usize> = HashMap::new();
     let mut duplicates = Vec::new();
     let mut state = ParseState::LineStart;
     let mut current_key = String::new();
     let mut current_value = String::new();
-    let mut chars = content.chars().peekable();
+    let mut chars = content.trim_start_matches('\u{feff}').chars().peekable();
     let mut line_number: usize = 1;
     let mut key_start_line: usize = 1;
 
     // Helper to insert and track duplicates
-    let insert_tracking = |map: &mut HashMap<String, String>,
-                           key_lines: &mut HashMap<String, usize>,
-                           duplicates: &mut Vec<DuplicateKey>,
-                           key: String,
-                           value: String,
-                           line: usize| {
+    let mut insert_tracking = |map: &mut HashMap<String, String>,
+                               key_lines: &mut HashMap<String, usize>,
+                               duplicates: &mut Vec<DuplicateKey>,
+                               key: String,
+                               value: String,
+                               line: usize,
+                               end_line: usize| {
+        if collect_entries {
+            entries.push(EnvEntry {
+                key: key.clone(),
+                value: value.clone(),
+                start_line: line,
+                end_line,
+            });
+        }
         if let Some(&prev_line) = key_lines.get(&key) {
             duplicates.push(DuplicateKey {
                 key: key.clone(),
@@ -117,8 +144,8 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                 } else if ch.is_whitespace() {
                     // Skip leading whitespace
                 } else if ch == 'e' && chars.peek() == Some(&'x') {
-                    let rest: String = chars.clone().take(5).collect();
-                    if rest == "xport" {
+                    let rest: String = chars.clone().take(6).collect();
+                    if rest == "xport " || rest == "xport\t" {
                         for _ in 0..5 {
                             chars.next();
                         }
@@ -128,6 +155,7 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                         state = ParseState::LineStart;
                     } else {
                         current_key.push(ch);
+                        key_start_line = line_number;
                         state = ParseState::InKey;
                     }
                 } else {
@@ -165,6 +193,7 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                             key,
                             String::new(),
                             key_start_line,
+                            line_number - usize::from(ch == '\n'),
                         );
                     }
                     current_key.clear();
@@ -189,6 +218,7 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                             key,
                             val,
                             key_start_line,
+                            line_number - usize::from(ch == '\n'),
                         );
                     }
                     current_key.clear();
@@ -205,6 +235,7 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                             key,
                             val,
                             key_start_line,
+                            line_number,
                         );
                     }
                     current_key.clear();
@@ -236,6 +267,7 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                             key.clone(),
                             current_value.clone(),
                             key_start_line,
+                            closing_line,
                         );
                     }
                     current_key.clear();
@@ -272,6 +304,7 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                     '\n' | '\r' => {
                         if ch == '\r' && chars.peek() == Some(&'\n') {
                             chars.next();
+                            line_number += 1;
                         }
                     }
                     _ => {
@@ -294,6 +327,7 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                             key,
                             current_value.clone(),
                             key_start_line,
+                            closing_line,
                         );
                     }
                     current_key.clear();
@@ -335,10 +369,16 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                     key,
                     val,
                     key_start_line,
+                    line_number,
                 );
             }
         }
-        ParseState::InDoubleQuoted | ParseState::InSingleQuoted => {
+        ParseState::InDoubleQuoted
+        | ParseState::InSingleQuoted
+        | ParseState::InDoubleQuotedEscape => {
+            if state == ParseState::InDoubleQuotedEscape {
+                current_value.push('\\');
+            }
             let key = current_key.trim().to_string();
             if !key.is_empty() {
                 insert_tracking(
@@ -348,6 +388,7 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                     key,
                     current_value,
                     key_start_line,
+                    line_number,
                 );
             }
         }
@@ -361,17 +402,45 @@ pub fn parse_env_str_detailed(content: &str) -> ParseResult {
                     key,
                     String::new(),
                     key_start_line,
+                    line_number,
                 );
             }
         }
         _ => {}
     }
 
-    ParseResult {
-        values: map,
-        duplicates,
-        line_numbers: key_lines,
+    (
+        ParseResult {
+            values: map,
+            duplicates,
+            line_numbers: key_lines,
+        },
+        entries,
+    )
+}
+
+/// Serialize a value using the same escaping rules as our dotenv parser.
+pub(crate) fn format_env_value(value: &str) -> String {
+    if needs_env_quotes(value) {
+        format!(
+            "\"{}\"",
+            value
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+                .replace('\t', "\\t")
+        )
+    } else {
+        value.to_string()
     }
+}
+
+pub(crate) fn needs_env_quotes(value: &str) -> bool {
+    value.is_empty()
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '#' | '"' | '\'' | '$'))
 }
 
 /// Interpolate ${VAR} and $VAR references in a single value

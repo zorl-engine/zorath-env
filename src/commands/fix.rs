@@ -5,13 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-// Cached regex helpers stay in check.rs (the validation hub); masking
-// helpers were consolidated into crate::secrets so check.rs / diff.rs / fix.rs
-// all share one source of truth for the sensitivity heuristic.
-use super::check::{
-    date_regex, email_regex, hostname_regex, ipv4_regex, ipv6_regex, semver_regex, uuid_regex,
-};
-use crate::secrets::{is_sensitive_key, mask_value_with_spec};
+use crate::secrets::is_sensitive_key;
 
 /// Actions that can be automatically fixed
 #[derive(Debug, Clone)]
@@ -121,7 +115,8 @@ pub fn run(
     };
 
     // Parse env file
-    let env_map = envfile::parse_env_str(&original_content);
+    let env_map = envfile::interpolate_env(envfile::parse_env_str(&original_content))
+        .map_err(|e| CliError::Input(e.to_string()))?;
 
     // Analyze for fixes
     let analysis = analyze_fixes(&env_map, &original_content, &schema, remove_unknown);
@@ -134,7 +129,7 @@ pub fn run(
 
     // Print dry run or apply fixes
     if dry_run {
-        print_dry_run(&analysis, env_path);
+        print_dry_run(&analysis, env_path, &schema);
     } else {
         apply_fixes(env_path, &original_content, &analysis).map_err(CliError::Input)?;
     }
@@ -229,249 +224,18 @@ fn get_default_value(spec: &VarSpec) -> (String, bool) {
 
 /// Check if a value has validation errors (returns error message if so)
 fn check_value_error(key: &str, value: &str, spec: &VarSpec) -> Option<String> {
-    use crate::schema::VarType;
-
-    let masked = || mask_value_with_spec(key, value, spec.secret);
-
-    match spec.var_type {
-        VarType::Int => {
-            if value.parse::<i64>().is_err() {
-                return Some(format!("{}: expected int, got '{}'", key, masked()));
-            }
-        }
-        VarType::Float => {
-            if value.parse::<f64>().is_err() {
-                return Some(format!("{}: expected float, got '{}'", key, masked()));
-            }
-        }
-        VarType::Bool => {
-            let lower = value.to_lowercase();
-            if !matches!(lower.as_str(), "true" | "false" | "1" | "0" | "yes" | "no") {
-                return Some(format!(
-                    "{}: expected bool (true/false/1/0/yes/no), got '{}'",
-                    key,
-                    masked()
-                ));
-            }
-        }
-        VarType::Url => {
-            if url::Url::parse(value).is_err() {
-                return Some(format!("{}: expected url, got '{}'", key, masked()));
-            }
-        }
-        VarType::Enum => {
-            if let Some(ref values) = spec.values {
-                if !values.contains(&value.to_string()) {
-                    return Some(format!(
-                        "{}: expected one of [{}], got '{}'",
-                        key,
-                        values.join(", "),
-                        masked()
-                    ));
-                }
-            }
-        }
-        VarType::String => {
-            // String type - check validation rules if present
-            if let Some(ref validate) = spec.validate {
-                if let Some(min_len) = validate.min_length {
-                    if value.len() < min_len {
-                        return Some(format!(
-                            "{}: length {} is less than minimum {}",
-                            key,
-                            value.len(),
-                            min_len
-                        ));
-                    }
-                }
-                if let Some(max_len) = validate.max_length {
-                    if value.len() > max_len {
-                        return Some(format!(
-                            "{}: length {} exceeds maximum {}",
-                            key,
-                            value.len(),
-                            max_len
-                        ));
-                    }
-                }
-                if let Some(ref pattern) = validate.pattern {
-                    match super::check::get_cached_regex(pattern) {
-                        Ok(re) => {
-                            if !re.is_match(value) {
-                                return Some(format!(
-                                    "{}: value '{}' does not match pattern '{}'",
-                                    key,
-                                    masked(),
-                                    pattern
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            return Some(format!("{}: {}", key, e));
-                        }
-                    }
-                }
-            }
-        }
-        VarType::Uuid => {
-            // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (using cached regex)
-            if !uuid_regex().is_match(value) {
-                return Some(format!(
-                    "{}: expected uuid (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got '{}'",
-                    key,
-                    masked()
-                ));
-            }
-        }
-        VarType::Email => {
-            // Simplified RFC 5322 email (using cached regex)
-            if !email_regex().is_match(value) {
-                return Some(format!(
-                    "{}: expected email (user@domain.tld), got '{}'",
-                    key,
-                    masked()
-                ));
-            }
-        }
-        VarType::Ipv4 => {
-            // IPv4 format with octet range check (using cached regex)
-            if let Some(caps) = ipv4_regex().captures(value) {
-                for i in 1..=4 {
-                    if let Some(m) = caps.get(i) {
-                        if let Ok(octet) = m.as_str().parse::<u16>() {
-                            if octet > 255 {
-                                return Some(format!(
-                                    "{}: expected ipv4 (x.x.x.x where x is 0-255), got '{}'",
-                                    key,
-                                    masked()
-                                ));
-                            }
-                        }
-                    }
-                }
-            } else {
-                return Some(format!(
-                    "{}: expected ipv4 (x.x.x.x where x is 0-255), got '{}'",
-                    key,
-                    masked()
-                ));
-            }
-        }
-        VarType::Semver => {
-            // Semantic versioning format: x.y.z[-prerelease][+build] (using cached regex)
-            if !semver_regex().is_match(value) {
-                return Some(format!(
-                    "{}: expected semver (x.y.z[-prerelease][+build]), got '{}'",
-                    key,
-                    masked()
-                ));
-            }
-        }
-        VarType::Ipv6 => {
-            // IPv6 format (using cached regex)
-            if !ipv6_regex().is_match(value) {
-                return Some(format!(
-                    "{}: expected ipv6 address, got '{}'",
-                    key,
-                    masked()
-                ));
-            }
-        }
-        VarType::Port => {
-            // Port: 1-65535
-            match value.parse::<u16>() {
-                Ok(port) if port >= 1 => {}
-                Ok(_) => {
-                    return Some(format!("{}: port must be between 1 and 65535", key));
-                }
-                Err(_) => {
-                    return Some(format!(
-                        "{}: expected port (1-65535), got '{}'",
-                        key,
-                        masked()
-                    ));
-                }
-            }
-        }
-        VarType::Date => {
-            // ISO 8601 date format: YYYY-MM-DD (using cased regex)
-            if !date_regex().is_match(value) {
-                return Some(format!(
-                    "{}: expected date (YYYY-MM-DD), got '{}'",
-                    key,
-                    masked()
-                ));
-            }
-        }
-        VarType::Hostname => {
-            // RFC 1123 hostname (using cached regex)
-            if value.len() > 253 || !hostname_regex().is_match(value) {
-                return Some(format!(
-                    "{}: expected hostname (RFC 1123), got '{}'",
-                    key,
-                    masked()
-                ));
-            }
-        }
-    }
-
-    // Check numeric validation rules
-    if let Some(ref validate) = spec.validate {
-        if let Ok(n) = value.parse::<i64>() {
-            if let Some(min) = validate.min {
-                if n < min {
-                    return Some(format!("{}: value {} is less than minimum {}", key, n, min));
-                }
-            }
-            if let Some(max) = validate.max {
-                if n > max {
-                    return Some(format!("{}: value {} exceeds maximum {}", key, n, max));
-                }
-            }
-        }
-        if let Ok(f) = value.parse::<f64>() {
-            if let Some(min_value) = validate.min_value {
-                if f < min_value {
-                    return Some(format!(
-                        "{}: value {} is less than minimum {}",
-                        key, f, min_value
-                    ));
-                }
-            }
-            if let Some(max_value) = validate.max_value {
-                if f > max_value {
-                    return Some(format!(
-                        "{}: value {} exceeds maximum {}",
-                        key, f, max_value
-                    ));
-                }
-            }
-        }
-    }
-
-    None
+    super::check::validate_value(key, value, spec)
+        .into_iter()
+        .next()
 }
 
 /// Build a map of key -> line number from original content
 fn build_line_map(content: &str) -> HashMap<String, usize> {
-    let mut map = HashMap::new();
-    for (line_num, line) in content.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        // Handle export prefix
-        let line_content = trimmed.strip_prefix("export ").unwrap_or(trimmed);
-        if let Some(eq_pos) = line_content.find('=') {
-            let key = line_content[..eq_pos].trim();
-            map.insert(key.to_string(), line_num + 1);
-        }
-    }
-    map
+    envfile::parse_env_str_detailed(content).line_numbers
 }
 
 /// Print what would be done in dry-run mode
-fn print_dry_run(analysis: &FixAnalysis, env_path: &str) {
+fn print_dry_run(analysis: &FixAnalysis, env_path: &str, schema: &Schema) {
     println!("zenv fix (dry run)");
     println!();
 
@@ -498,7 +262,12 @@ fn print_dry_run(analysis: &FixAnalysis, env_path: &str) {
                 {
                     if *has_default {
                         // Mask sensitive values for safe display
-                        let display_value = if is_sensitive_key(key) {
+                        let display_value = if schema
+                            .get(key)
+                            .is_some_and(|spec| spec.secret == Some(true))
+                            || is_sensitive_key(key)
+                            || crate::secrets::value_looks_secret(value)
+                        {
                             "***MASKED***".to_string()
                         } else {
                             value.clone()
@@ -554,27 +323,19 @@ fn apply_fixes(
         })
         .collect();
 
-    // Process original content line by line, removing marked keys
+    // Remove complete parser-recognized assignments, including duplicates and
+    // multiline bodies. A KEY= fragment inside another value is not a key.
+    let (_, entries) = envfile::parse_env_with_entries(original_content);
+    let removed_lines: std::collections::HashSet<usize> = entries
+        .iter()
+        .filter(|entry| keys_to_remove.contains(&entry.key))
+        .flat_map(|entry| entry.start_line..=entry.end_line)
+        .collect();
     let mut new_lines: Vec<String> = Vec::new();
-    for line in original_content.lines() {
-        let trimmed = line.trim();
-
-        // Keep empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+    for (index, line) in original_content.lines().enumerate() {
+        if !removed_lines.contains(&(index + 1)) {
             new_lines.push(line.to_string());
-            continue;
         }
-
-        // Check if this line should be removed
-        let line_content = trimmed.strip_prefix("export ").unwrap_or(trimmed);
-        if let Some(eq_pos) = line_content.find('=') {
-            let key = line_content[..eq_pos].trim();
-            if keys_to_remove.contains(key) {
-                continue; // Skip this line
-            }
-        }
-
-        new_lines.push(line.to_string());
     }
 
     // Add missing variables at the end
@@ -600,11 +361,7 @@ fn apply_fixes(
         new_lines.push("# Added by zenv fix".to_string());
 
         for (key, value) in &adds {
-            let formatted = if value.is_empty() || needs_quotes(value) {
-                format!("{}=\"{}\"", key, value)
-            } else {
-                format!("{}={}", key, value)
-            };
+            let formatted = format!("{}={}", key, envfile::format_env_value(value));
             new_lines.push(formatted);
         }
     }
@@ -651,56 +408,46 @@ fn apply_fixes(
     Ok(())
 }
 
-/// Create a backup of the original file. On Unix, restricts the backup
-/// to the original file's mode (or 0600 if the original is missing) so
-/// secrets can't leak via a world-readable backup.
+/// Create a backup without replacing existing files. Staging starts private;
+/// Unix backups preserve the original mode (or use 0600 if it is missing).
 fn create_backup(env_path: &str, content: &str) -> Result<String, String> {
-    let base_backup = format!("{}.backup", env_path);
-
-    let backup_path = if !Path::new(&base_backup).exists() {
-        base_backup
-    } else {
-        let mut counter = 1;
-        loop {
-            let numbered = format!("{}.backup.{}", env_path, counter);
-            if !Path::new(&numbered).exists() {
-                break numbered;
-            }
-            counter += 1;
-            if counter > 100 {
-                return Err("too many backup files exist".to_string());
-            }
+    use std::io::Write;
+    let path = Path::new(env_path);
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let create = || -> std::io::Result<tempfile::NamedTempFile> {
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        file.write_all(content.as_bytes())?;
+        file.as_file().sync_all()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = match fs::metadata(path) {
+                Ok(meta) => meta.permissions().mode() & 0o777,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0o600,
+                Err(e) => return Err(e),
+            };
+            file.as_file()
+                .set_permissions(fs::Permissions::from_mode(mode))?;
         }
+        Ok(file)
     };
-
-    fs::write(&backup_path, content).map_err(|e| format!("failed to create backup: {}", e))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(env_path)
-            .ok()
-            .map(|m| m.permissions().mode() & 0o7777)
-            .unwrap_or(0o600);
-        if let Ok(meta) = fs::metadata(&backup_path) {
-            let mut perms = meta.permissions();
-            perms.set_mode(mode);
-            let _ = fs::set_permissions(&backup_path, perms);
+    let mut staged = create().map_err(|e| format!("failed to create backup: {}", e))?;
+    for counter in 0..=100 {
+        let backup = if counter == 0 {
+            format!("{}.backup", env_path)
+        } else {
+            format!("{}.backup.{}", env_path, counter)
+        };
+        match staged.persist_noclobber(&backup) {
+            Ok(_) => return Ok(backup),
+            Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => staged = e.file,
+            Err(e) => return Err(format!("failed to create backup: {}", e.error)),
         }
     }
-
-    Ok(backup_path)
-}
-
-/// Check if a value needs quotes
-fn needs_quotes(value: &str) -> bool {
-    value.contains(' ')
-        || value.contains('#')
-        || value.contains('"')
-        || value.contains('\'')
-        || value.contains('\n')
-        || value.contains('\t')
-        || value.is_empty()
+    Err("too many backup files exist".to_string())
 }
 
 #[cfg(test)]
@@ -708,6 +455,52 @@ mod tests {
     use super::*;
     use crate::schema::{VarSpec, VarType};
     use tempfile::tempdir;
+
+    #[test]
+    fn concurrent_backups_do_not_overwrite_each_other() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".env");
+        fs::write(&path, "original").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let content = format!("VALUE={i}");
+                    barrier.wait();
+                    let backup = create_backup(path.to_str().unwrap(), &content).unwrap();
+                    assert_eq!(fs::read_to_string(&backup).unwrap(), content);
+                    backup
+                })
+            })
+            .collect();
+        let names: std::collections::HashSet<_> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(names.len(), 8);
+        assert_eq!(fs::read_to_string(path).unwrap(), "original");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 9);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_does_not_follow_existing_symlink() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let other = dir.path().join("other");
+        fs::write(&path, "secret").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&other, "untouched").unwrap();
+        symlink(&other, dir.path().join(".env.backup")).unwrap();
+        let backup = create_backup(path.to_str().unwrap(), "secret").unwrap();
+        assert!(backup.ends_with(".backup.1"));
+        assert_eq!(fs::read_to_string(other).unwrap(), "untouched");
+        assert_eq!(
+            fs::metadata(backup).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 
     fn make_schema(vars: Vec<(&str, bool, Option<&str>)>) -> Schema {
         let mut schema = Schema::new();
@@ -842,11 +635,11 @@ mod tests {
 
     #[test]
     fn test_needs_quotes() {
-        assert!(needs_quotes("hello world"));
-        assert!(needs_quotes("value#comment"));
-        assert!(needs_quotes(""));
-        assert!(!needs_quotes("simple"));
-        assert!(!needs_quotes("123"));
+        assert!(envfile::needs_env_quotes("hello world"));
+        assert!(envfile::needs_env_quotes("value#comment"));
+        assert!(envfile::needs_env_quotes(""));
+        assert!(!envfile::needs_env_quotes("simple"));
+        assert!(!envfile::needs_env_quotes("123"));
     }
 
     #[test]
@@ -1003,12 +796,12 @@ mod tests {
 
     #[test]
     fn test_needs_quotes_with_special_chars() {
-        assert!(needs_quotes("value with space"));
-        assert!(needs_quotes("value\twith\ttab"));
-        assert!(needs_quotes("value#with#hash"));
+        assert!(envfile::needs_env_quotes("value with space"));
+        assert!(envfile::needs_env_quotes("value\twith\ttab"));
+        assert!(envfile::needs_env_quotes("value#with#hash"));
         // Equals signs don't need quoting - they're fine in values
-        assert!(!needs_quotes("value=with=equals"));
-        assert!(!needs_quotes("simplevalue123"));
+        assert!(!envfile::needs_env_quotes("value=with=equals"));
+        assert!(!envfile::needs_env_quotes("simplevalue123"));
     }
 
     #[test]

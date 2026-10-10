@@ -1,0 +1,2 @@
+# Bash scripts must remain executable by Git Bash on Windows checkouts.
+*.sh text eol=lf

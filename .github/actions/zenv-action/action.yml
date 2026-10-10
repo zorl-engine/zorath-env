@@ -7,6 +7,10 @@ branding:
   color: 'green'
 
 inputs:
+  skip-install:
+    description: 'Use the zenv binary already on PATH (for testing source builds)'
+    required: false
+    default: 'false'
   schema:
     description: 'Path to the JSON schema file'
     required: false
@@ -56,48 +60,58 @@ runs:
   using: 'composite'
   steps:
     - name: Determine version
+      if: inputs.skip-install != 'true'
       id: version
+      env:
+        ZENV_VERSION: ${{ inputs.version }}
       shell: bash
       run: |
-        if [ "${{ inputs.version }}" = "latest" ]; then
+        if [ "$ZENV_VERSION" = "latest" ]; then
           # Get latest version from crates.io. A User-Agent is REQUIRED --
           # crates.io returns 403 to UA-less requests, which would silently
           # force the fallback path below on every run.
-          VERSION=$(curl -s -H "User-Agent: zorath-env-action (github.com/zorl-engine/zorath-env)" https://crates.io/api/v1/crates/zorath-env | jq -r '.crate.newest_version // empty')
+          VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 -H "User-Agent: zorath-env-action (github.com/zorl-engine/zorath-env)" https://crates.io/api/v1/crates/zorath-env | jq -r '.crate.max_stable_version // .crate.newest_version // empty') || VERSION=""
           if [ -z "$VERSION" ]; then
             echo "Warning: Could not fetch version from crates.io, using fallback"
             # Fallback version. MUST track Cargo.toml [package].version on
-            # release -- action-cli-sync.sh only tolerates MAJOR.MINOR
-            # alignment, but the fallback hits exact-match download paths
+            # release -- scripts/release.py checks exact version agreement.
+            # The fallback hits exact-match download paths
             # so a stale value installs an outdated binary on crates.io
             # outages.
-            VERSION="0.3.11"
+            VERSION="0.3.12"
           fi
         else
-          VERSION="${{ inputs.version }}"
+          VERSION="$ZENV_VERSION"
         fi
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+          echo "::error::Invalid zenv version"
+          exit 1
+        fi
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
         echo "Using zenv version: $VERSION"
 
     - name: Cache zenv binary
+      if: inputs.skip-install != 'true'
       id: cache
       uses: actions/cache@v4
       with:
-        path: ~/.local/bin/zenv
-        key: zenv-${{ runner.os }}-${{ steps.version.outputs.version }}
+        path: ~/.local/bin/zenv*
+        key: zenv-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.version.outputs.version }}
 
     - name: Install zenv
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: inputs.skip-install != 'true' && steps.cache.outputs.cache-hit != 'true'
+      env:
+        ZENV_VERSION: ${{ steps.version.outputs.version }}
       shell: bash
       run: |
         mkdir -p ~/.local/bin
-        VERSION="${{ steps.version.outputs.version }}"
+        VERSION="$ZENV_VERSION"
         BASE_URL="https://github.com/zorl-engine/zorath-env/releases/download/v${VERSION}"
 
         # Determine binary name based on OS
-        case "${{ runner.os }}" in
+        case "$RUNNER_OS" in
           Linux)
-            BINARY_NAME="zenv-linux"
+            if [ "$RUNNER_ARCH" = X64 ]; then BINARY_NAME="zenv-linux"; else BINARY_NAME=""; fi
             ;;
           macOS)
             if [ "$(uname -m)" = "arm64" ]; then
@@ -107,30 +121,39 @@ runs:
             fi
             ;;
           Windows)
-            BINARY_NAME="zenv.exe"
+            if [ "$RUNNER_ARCH" = X64 ]; then BINARY_NAME="zenv.exe"; else BINARY_NAME=""; fi
             ;;
           *)
-            echo "Unsupported OS: ${{ runner.os }}"
+            echo "Unsupported OS: $RUNNER_OS"
             exit 1
             ;;
         esac
 
+        DEST="$HOME/.local/bin/zenv"
+        if [ "$RUNNER_OS" = Windows ]; then
+          DEST="$DEST.exe"
+        fi
+        DOWNLOAD=$(mktemp)
+        trap 'rm -f "$DOWNLOAD"' EXIT
+
         # Download prebuilt binary
         echo "Downloading ${BINARY_NAME} from ${BASE_URL}..."
-        if curl -sL --fail -o ~/.local/bin/zenv "${BASE_URL}/${BINARY_NAME}"; then
-          chmod +x ~/.local/bin/zenv
+        if [ -n "$BINARY_NAME" ] && curl -fsSL --connect-timeout 10 --max-time 120 -o "$DOWNLOAD" "${BASE_URL}/${BINARY_NAME}"; then
+          chmod +x "$DOWNLOAD"
+          mv "$DOWNLOAD" "$DEST"
           echo "Downloaded prebuilt binary successfully"
         else
           echo "Prebuilt binary not available, building from source..."
           # Fallback to cargo install
           if ! command -v cargo &> /dev/null; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            source $HOME/.cargo/env
+            source "$HOME/.cargo/env"
           fi
-          cargo install zorath-env --version ${VERSION} --root ~/.local
+          cargo install zorath-env --locked --version "$VERSION" --root "$HOME/.local"
         fi
 
     - name: Add zenv to PATH
+      if: inputs.skip-install != 'true'
       shell: bash
       run: echo "$HOME/.local/bin" >> $GITHUB_PATH
 
@@ -143,53 +166,13 @@ runs:
     - name: Validate environment
       id: validate
       shell: bash
-      run: |
-        set +e
-
-        # Build command with proper quoting. Optional inputs only get
-        # appended when set so unused flags don't change zenv defaults.
-        CMD="zenv check --schema \"${{ inputs.schema }}\" --env \"${{ inputs.env-file }}\""
-        if [ "${{ inputs.allow-missing-env }}" = "true" ]; then
-          CMD="$CMD --allow-missing-env=true"
-        fi
-        if [ "${{ inputs.detect-secrets }}" = "true" ]; then
-          CMD="$CMD --detect-secrets"
-        fi
-        if [ -n "${{ inputs.verify-hash }}" ]; then
-          CMD="$CMD --verify-hash \"${{ inputs.verify-hash }}\""
-        fi
-        if [ -n "${{ inputs.ca-cert }}" ]; then
-          CMD="$CMD --ca-cert \"${{ inputs.ca-cert }}\""
-        fi
-        if [ "${{ inputs.no-cache }}" = "true" ]; then
-          CMD="$CMD --no-cache"
-        fi
-        if [ "${{ inputs.format }}" = "json" ]; then
-          CMD="$CMD --format json"
-        fi
-
-        # Run validation and capture output
-        OUTPUT=$(eval $CMD 2>&1)
-        EXIT_CODE=$?
-
-        echo "Command: $CMD"
-        echo "Exit code: $EXIT_CODE"
-        echo "Output:"
-        echo "$OUTPUT"
-
-        if [ $EXIT_CODE -eq 0 ]; then
-          echo "valid=true" >> $GITHUB_OUTPUT
-          echo "errors=[]" >> $GITHUB_OUTPUT
-        else
-          echo "valid=false" >> $GITHUB_OUTPUT
-          # Convert output to JSON array
-          ERRORS=$(echo "$OUTPUT" | grep -E "^  - " | sed 's/^  - //' | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          if [ -z "$ERRORS" ] || [ "$ERRORS" = "[]" ]; then
-            ERRORS=$(echo "$OUTPUT" | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          fi
-          echo "errors=$ERRORS" >> $GITHUB_OUTPUT
-
-          # Fail the step
-          echo "::error::Environment validation failed"
-          exit 1
-        fi
+      env:
+        ZENV_SCHEMA: ${{ inputs.schema }}
+        ZENV_ENV_FILE: ${{ inputs.env-file }}
+        ZENV_ALLOW_MISSING_ENV: ${{ inputs.allow-missing-env }}
+        ZENV_DETECT_SECRETS: ${{ inputs.detect-secrets }}
+        ZENV_VERIFY_HASH: ${{ inputs.verify-hash }}
+        ZENV_CA_CERT: ${{ inputs.ca-cert }}
+        ZENV_NO_CACHE: ${{ inputs.no-cache }}
+        ZENV_FORMAT: ${{ inputs.format }}
+      run: bash "$GITHUB_ACTION_PATH/validate.sh"

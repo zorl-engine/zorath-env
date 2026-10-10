@@ -6,11 +6,18 @@ on:
     paths:
       - '.github/actions/zenv-action/**'
       - '.github/workflows/test-action.yml'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   pull_request:
     paths:
       - '.github/actions/zenv-action/**'
       - '.github/workflows/test-action.yml'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   workflow_dispatch:
+  workflow_call:
 
 # Least privilege: only checks out + runs the action; no repo writes.
 permissions:
@@ -28,7 +35,7 @@ jobs:
 
       - name: Build zenv from source
         run: |
-          cargo build --release
+          cargo build --release --locked
           mkdir -p ~/.local/bin
           cp target/release/zenv ~/.local/bin/
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -45,17 +52,17 @@ jobs:
         id: zenv
         uses: ./.github/actions/zenv-action
         with:
+          skip-install: 'true'
           schema: env.schema.json
           env-file: .env
 
       - name: Check outputs
+        env:
+          VALID: ${{ steps.zenv.outputs.valid }}
+          ERRORS: ${{ steps.zenv.outputs.errors }}
         run: |
-          echo "Valid: ${{ steps.zenv.outputs.valid }}"
-          echo 'Errors: ${{ steps.zenv.outputs.errors }}'
-          if [ "${{ steps.zenv.outputs.valid }}" != "true" ]; then
-            echo "Expected valid=true but got ${{ steps.zenv.outputs.valid }}"
-            exit 1
-          fi
+          test "$VALID" = true
+          test "$ERRORS" = '[]'
 
   test-action-invalid:
     name: Test with invalid .env
@@ -68,7 +75,7 @@ jobs:
 
       - name: Build zenv from source
         run: |
-          cargo build --release
+          cargo build --release --locked
           mkdir -p ~/.local/bin
           cp target/release/zenv ~/.local/bin/
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -88,17 +95,19 @@ jobs:
         uses: ./.github/actions/zenv-action
         continue-on-error: true
         with:
+          skip-install: 'true'
           schema: env.schema.json
           env-file: .env
 
       - name: Check outputs
+        env:
+          VALID: ${{ steps.zenv.outputs.valid }}
+          ERRORS: ${{ steps.zenv.outputs.errors }}
+          OUTCOME: ${{ steps.zenv.outcome }}
         run: |
-          echo "Valid: ${{ steps.zenv.outputs.valid }}"
-          echo 'Errors: ${{ steps.zenv.outputs.errors }}'
-          if [ "${{ steps.zenv.outputs.valid }}" != "false" ]; then
-            echo "Expected valid=false but got ${{ steps.zenv.outputs.valid }}"
-            exit 1
-          fi
+          test "$OUTCOME" = failure
+          test "$VALID" = false
+          printf '%s' "$ERRORS" | jq -e 'type == "array" and length > 0'
 
   test-action-missing-env:
     name: Test with missing .env (allowed)
@@ -111,7 +120,7 @@ jobs:
 
       - name: Build zenv from source
         run: |
-          cargo build --release
+          cargo build --release --locked
           mkdir -p ~/.local/bin
           cp target/release/zenv ~/.local/bin/
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -128,14 +137,15 @@ jobs:
         id: zenv
         uses: ./.github/actions/zenv-action
         with:
+          skip-install: 'true'
           schema: env.schema.json
           env-file: .env
           allow-missing-env: 'true'
 
       - name: Check outputs
+        env:
+          VALID: ${{ steps.zenv.outputs.valid }}
+          ERRORS: ${{ steps.zenv.outputs.errors }}
         run: |
-          echo "Valid: ${{ steps.zenv.outputs.valid }}"
-          if [ "${{ steps.zenv.outputs.valid }}" != "true" ]; then
-            echo "Expected valid=true with allow-missing-env but got ${{ steps.zenv.outputs.valid }}"
-            exit 1
-          fi
+          test "$VALID" = true
+          test "$ERRORS" = '[]'

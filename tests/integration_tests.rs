@@ -857,7 +857,8 @@ fn test_export_k8s_configmap_format() {
     let output = result.unwrap();
     assert!(output.contains("apiVersion: v1"), "Should have K8s version");
     assert!(output.contains("kind: ConfigMap"), "Should be ConfigMap");
-    assert!(output.contains("PORT:"), "Should have PORT key");
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&output).unwrap();
+    assert_eq!(parsed["data"]["PORT"].as_str(), Some("3000"));
 }
 
 #[test]
@@ -2505,15 +2506,8 @@ fn test_config_handles_unknown_keys_gracefully() {
     )
     .unwrap();
 
-    // Change to temp directory to test config loading
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&env.base_path).unwrap();
-
     // Config should load without panic (warnings printed but parsing succeeds)
-    let config = Config::load();
-
-    // Restore original directory
-    std::env::set_current_dir(original_dir).unwrap();
+    let config = Config::load_from(config_path.to_str());
 
     // Config should be Some (loaded successfully despite unknown keys)
     assert!(
@@ -2523,7 +2517,10 @@ fn test_config_handles_unknown_keys_gracefully() {
 
     // Valid key should be accessible
     let cfg = config.unwrap();
-    assert_eq!(cfg.schema_or("default"), "env.schema.json");
+    assert_eq!(
+        std::path::Path::new(&cfg.schema_or("default")),
+        env.base_path.join("env.schema.json")
+    );
 }
 
 #[test]

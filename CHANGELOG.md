@@ -1,5 +1,46 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.3.12] - 2026-10-10
+
+### Security
+- Updated locked `crossbeam-epoch` to 0.9.20 and `rustls` to 0.23.45 (including `rustls-webpki` 0.103.15), addressing [RUSTSEC-2026-0204](https://rustsec.org/advisories/RUSTSEC-2026-0204.html) and [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html). Current lockfile audit reports zero advisories or warnings.
+
+### Fixed
+- Cache clearing removes both content and rate-limit metadata, including orphan sidecars, without deleting unrelated files. Cache listing, statistics, and doctor count schema files instead of metadata, temporary files, or directories.
+- MCP passes option-like filenames literally to subprocesses, reports YAML media types consistently in resource lists and reads, and returns errors for notification method names incorrectly sent as requests instead of leaving those requests unanswered.
+- Generated CI templates download the actual versioned `zenv-linux` asset, set its executable bit, and use a compatible Ubuntu/glibc runtime instead of Alpine. CircleCI's Rust image follows the declared minimum version; source installs use locked dependencies. Optional GitLab examples remain fully commented.
+- Release builds now require the real composite Action tests. Website sync targets the separate `Rex0Lux/zorl` repository's `master` branch, scopes version updates to the zenv section, and rejects malformed metadata before editing either destination.
+- Invalid or explicitly missing config files now fail instead of silently reverting to defaults. Configured schema/env/CA paths resolve relative to the config file; explicit CLI paths remain relative to the invocation directory.
+- Schema loading rejects unknown variable/rule fields, invalid enums/defaults, contradictory bounds, invalid regexes, and rules incompatible with their type. Pinned inheritance now uses an explicit `extends_hash` for each parent instead of reusing the child's hash. Local schemas can extend HTTPS schemas.
+- Watch tracks inherited local schemas and repeated atomic editor saves, recovers from read errors, preserves warning severity, and prints the complete current validation status after changes.
+- Diff honors schema-declared secrets and fails before printing values when its requested schema is invalid. Doctor reports the selected config, validates discovered YAML/env files, reports interpolation failures, preserves severity, and avoids fetching the same remote schema twice.
+- Example generation respects declared types and basic constraints across all six presets. Secret defaults are masked in comments, secret placeholders are labeled, and unsynthesized regex constraints are marked for manual completion.
+- Release preparation updates exact version fields without replacing runtime Action logic. Tag publication requires CI, security auditing, version agreement, and a locked packaging dry run. Action integration tests use the binary built from their checkout.
+- Website sync validates version arguments, preserves complete prerelease versions, and receives an explicit call after crate publication; GitHub's `GITHUB_TOKEN` release events do not start downstream release-event workflows. Dynamic inputs stay outside shell source.
+- Check, watch, and fix share validation rules: reject nonfinite floats, impossible calendar dates, malformed IPv6, and invalid SemVer; accept valid compressed IPv6 and hyphenated SemVer identifiers. Fix analyzes interpolated values.
+- Numeric-bound diagnostics mask secrets. Watch-mode change descriptions honor schema-declared secrets, and successful validation annotations no longer repeat values.
+- Schema inheritance checks also protect bare filenames and Windows drive-relative paths; unresolved containment checks fail closed. Remote YAML detection uses the URL path.
+- Fresh cached schemas are usable during the network rate-limit window. Remote DNS checks validate the exact addresses used by the connection, within the request timeout. Additional nonpublic IP ranges and trailing-dot localhost aliases are rejected.
+- Atomic writes use exclusive temporary files, clean up failed writes, preserve Unix permissions, and retry transient Windows rename conflicts. Concurrent backups use no-clobber persistence. Cache and certificate reads enforce limits while reading.
+- Remote requests ignore proxy environment variables to keep destination checks enforceable; proxy-only networks must use local schemas.
+- MCP tool calls and resources honor the selected `--config`; masked resources now cover entire multiline assignments, duplicate values, and schema-declared secrets. YAML resources report the correct media type.
+- MCP validates request envelopes and tool arguments, does not respond to notifications, and preserves explicit `detect_secrets: false` overrides.
+- Bare `--no-cache` and `--allow-missing-env` flags work as documented, while explicit true/false values remain supported.
+- Dotenv parsing preserves keys beginning with `export`, supports a leading BOM, and tracks continuation lines correctly. Fix removes whole assignments without deleting key-like text inside retained values.
+- Example, fix, and dotenv export share value escaping. Multiline example metadata stays commented; fix previews also mask schema-declared secrets and embedded credentials.
+- Shell and GitHub Secrets exports preserve newlines and backslashes without heredoc collisions. Docker escapes literal substitutions and rejects multiline instructions. Executable exports reject invalid variable names and NUL values.
+- Kubernetes exports preserve string types and control characters; systemd exports escape literal percent specifiers.
+- GitHub Action passes inputs through environment variables and argument arrays, returns structured error messages, validates versions, handles version-lookup failure, and separates cached binaries by architecture. Windows downloads retain the `.exe` extension.
+
+### Build and verification
+- Added real-process config, schema, doctor, diff, watch, and six-preset example regressions; portable release-helper and website-sync tests; and a valid `cargo release` alias. Current results and remaining release gates are in [TESTED.md](TESTED.md). Refreshed the [tool comparison and R&D priorities](docs/comparison.md) against primary project documentation.
+- Added validation, secret-masking, schema-containment, DNS-resolver, cache, concurrent-write, and backup regressions. Reviewed [SemVer 2.0.0](https://semver.org/), IANA's [IPv4](https://www.iana.org/assignments/iana-ipv4-special-registry/) and [IPv6](https://www.iana.org/assignments/iana-ipv6-special-registry/) special-purpose registries, and the installed ureq 3.1.4 resolver/connector source.
+- Promoted the existing tempfile dependency to production use for atomic persistence; restricted ureq to 3.1 patch releases because the connection resolver uses its unversioned API.
+- Corrected the minimum supported Rust version to 1.85, required by the locked edition-2024 dependencies; added an MSRV CI check, all-target Clippy, formatting, and Action regression checks.
+- Added real-process regressions covering CLI, MCP, file preservation, and export behavior. Protocol and escaping changes were checked against the [MCP tools specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools), [JSON-RPC specification](https://www.jsonrpc.org/specification), [Dockerfile reference](https://docs.docker.com/reference/dockerfile/), and [GitHub script-injection guidance](https://docs.github.com/en/actions/concepts/security/script-injections).
+
 All notable changes to this project will be documented in this file.
 
 ## [0.3.11] - 2026-05-30

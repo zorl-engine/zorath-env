@@ -1,7 +1,59 @@
 use crate::errors::CliError;
 use crate::remote::{cache_dir, cache_filename, CACHE_TTL_SECS};
 use std::fs;
+use std::path::Path;
 use std::time::SystemTime;
+
+fn is_cache_entry(entry: &fs::DirEntry, extensions: &[&str]) -> bool {
+    let path = entry.path();
+    entry.file_type().is_ok_and(|kind| kind.is_file())
+        && path
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|ext| extensions.contains(&ext))
+        && path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|stem| stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+pub(crate) fn is_schema_entry(entry: &fs::DirEntry) -> bool {
+    is_cache_entry(entry, &["json"])
+}
+
+fn clear_at(dir: &Path, url: Option<&str>) -> std::io::Result<usize> {
+    let mut stems = std::collections::BTreeSet::new();
+    if let Some(url) = url {
+        stems.insert(cache_filename(url).trim_end_matches(".json").to_string());
+    } else {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if is_cache_entry(&entry, &["json", "meta"]) {
+                stems.insert(
+                    entry
+                        .path()
+                        .file_stem()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    let mut cleared = 0;
+    for stem in stems {
+        let mut removed = false;
+        for extension in ["json", "meta"] {
+            match fs::remove_file(dir.join(format!("{stem}.{extension}"))) {
+                Ok(()) => removed = true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        cleared += usize::from(removed);
+    }
+    Ok(cleared)
+}
 
 /// List all cached remote schemas
 #[doc(hidden)]
@@ -21,12 +73,7 @@ pub fn run_list() -> Result<(), CliError> {
     let entries: Vec<_> = fs::read_dir(&dir)
         .map_err(|e| CliError::Input(format!("Failed to read cache directory: {}", e)))?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "json")
-                .unwrap_or(false)
-        })
+        .filter(is_schema_entry)
         .collect();
 
     if entries.is_empty() {
@@ -101,12 +148,9 @@ pub fn run_clear(url: Option<&str>) -> Result<(), CliError> {
         Some(url) => {
             // Clear specific URL
             let filename = cache_filename(url);
-            let cache_path = dir.join(&filename);
-
-            if cache_path.exists() {
-                fs::remove_file(&cache_path).map_err(|e| {
-                    CliError::Input(format!("Failed to remove cached schema: {}", e))
-                })?;
+            let count = clear_at(&dir, Some(url))
+                .map_err(|e| CliError::Input(format!("Failed to clear cache: {}", e)))?;
+            if count > 0 {
                 println!("Cleared: {}", url);
                 println!("  ({})", filename);
             } else {
@@ -116,21 +160,14 @@ pub fn run_clear(url: Option<&str>) -> Result<(), CliError> {
         }
         None => {
             // Clear all
-            let mut count = 0;
-            for entry in fs::read_dir(&dir)
-                .map_err(|e| CliError::Input(format!("Failed to read cache directory: {}", e)))?
-                .filter_map(|e| e.ok())
-            {
-                let path = entry.path();
-                if path.extension().map(|ext| ext == "json").unwrap_or(false)
-                    && fs::remove_file(&path).is_ok()
-                {
-                    count += 1;
-                }
-            }
+            let count = clear_at(&dir, None)
+                .map_err(|e| CliError::Input(format!("Failed to clear cache: {}", e)))?;
 
             if count > 0 {
-                println!("Cleared {} cached schema(s).", count);
+                println!(
+                    "Cleared {} cache entry/entries (schemas and metadata).",
+                    count
+                );
             } else {
                 println!("Cache is already empty.");
             }
@@ -171,12 +208,7 @@ pub fn run_stats() -> Result<(), CliError> {
     let entries: Vec<_> = fs::read_dir(&dir)
         .map_err(|e| CliError::Input(format!("Failed to read cache directory: {}", e)))?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "json")
-                .unwrap_or(false)
-        })
+        .filter(is_schema_entry)
         .collect();
 
     let mut total_size: u64 = 0;
@@ -273,6 +305,28 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_removes_schema_and_rate_limit_sidecars_without_touching_other_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = "https://example.com/schema.json";
+        let schema = dir.path().join(cache_filename(url));
+        let meta = schema.with_extension("meta");
+        fs::write(&schema, "{}").unwrap();
+        fs::write(&meta, "rate limit metadata").unwrap();
+        assert_eq!(clear_at(dir.path(), Some(url)).unwrap(), 1);
+        assert!(!schema.exists() && !meta.exists());
+        fs::write(&meta, "orphan metadata").unwrap();
+        fs::write(dir.path().join("notes.json"), "preserve").unwrap();
+        fs::write(dir.path().join(".tmp-write"), "in flight").unwrap();
+        fs::create_dir(dir.path().join("1111111111111111.json")).unwrap();
+        assert_eq!(clear_at(dir.path(), None).unwrap(), 1);
+        assert!(!meta.exists());
+        assert!(dir.path().join("notes.json").exists());
+        assert!(dir.path().join(".tmp-write").exists());
+        assert!(dir.path().join("1111111111111111.json").is_dir());
+        assert_eq!(clear_at(dir.path(), None).unwrap(), 0);
+    }
 
     #[test]
     fn test_format_size() {

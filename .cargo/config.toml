@@ -14,5 +14,5 @@ t = "test"
 # Run clippy lints
 lint = "clippy -- -D warnings"
 
-# Full release workflow: clean + build + test
-release = ["clean", "build --release", "test --release"]
+# Verify the release profile (Cargo aliases cannot chain multiple commands).
+release = "test --release --locked"

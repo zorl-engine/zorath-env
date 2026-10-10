@@ -24,6 +24,13 @@ fn mask_for_diff(key: &str, value: &str) -> String {
     }
 }
 
+fn declared_secret(schema: Option<&schema::Schema>, key: &str) -> bool {
+    schema
+        .and_then(|schema| schema.get(key))
+        .and_then(|spec| spec.secret)
+        == Some(true)
+}
+
 /// JSON output structure for diff command
 #[derive(Serialize)]
 struct DiffOutput {
@@ -75,6 +82,24 @@ pub fn run(
     ca_cert: Option<&str>,
     rate_limit_seconds: Option<u64>,
 ) -> Result<(), CliError> {
+    let options = LoadOptions {
+        no_cache,
+        verify_hash: verify_hash.map(str::to_string),
+        ca_cert: ca_cert.map(str::to_string),
+        rate_limit_seconds,
+    };
+    // Load before displaying values: unavailable schema must not disable masking.
+    let loaded_schema = schema_path
+        .map(|path| schema::load_schema_with_options(path, &options))
+        .transpose()
+        .map_err(|e| CliError::Schema(e.to_string()))?;
+    let display = |key: &str, value: &str, limit: usize| {
+        if declared_secret(loaded_schema.as_ref(), key) {
+            "***MASKED***".to_string()
+        } else {
+            truncate_value_for_display(key, value, limit)
+        }
+    };
     // Parse both env files
     let map_a = envfile::parse_env_file(env_a)
         .map_err(|e| CliError::Input(format!("Error reading {}: {}", env_a, e)))?;
@@ -114,10 +139,7 @@ pub fn run(
             &only_in_b,
             &different_values,
             schema_path,
-            no_cache,
-            verify_hash,
-            ca_cert,
-            rate_limit_seconds,
+            loaded_schema.as_ref(),
         )
         .map_err(CliError::Input);
     }
@@ -140,7 +162,7 @@ pub fn run(
         println!("Only in {}:", env_a);
         for key in &only_in_a {
             let val = map_a.get(*key).unwrap();
-            println!("  + {}={}", key, truncate_value_for_display(key, val, 50));
+            println!("  + {}={}", key, display(key, val, 50));
         }
         println!();
     }
@@ -151,7 +173,7 @@ pub fn run(
         println!("Only in {}:", env_b);
         for key in &only_in_b {
             let val = map_b.get(*key).unwrap();
-            println!("  + {}={}", key, truncate_value_for_display(key, val, 50));
+            println!("  + {}={}", key, display(key, val, 50));
         }
         println!();
     }
@@ -190,68 +212,55 @@ pub fn run(
             println!("  {}:", key);
             println!(
                 "    {} -> {}",
-                truncate_value_for_display(key, val_a, 40),
-                truncate_value_for_display(key, val_b, 40)
+                display(key, val_a, 40),
+                display(key, val_b, 40)
             );
         }
         println!();
     }
 
     // Schema compliance check if schema provided
-    if let Some(schema_path) = schema_path {
-        let options = LoadOptions {
-            no_cache,
-            verify_hash: verify_hash.map(|s| s.to_string()),
-            ca_cert: ca_cert.map(|s| s.to_string()),
-            rate_limit_seconds,
-        };
-        match schema::load_schema_with_options(schema_path, &options) {
-            Ok(schema) => {
-                println!("Schema compliance ({}):", schema_path);
+    if let (Some(schema_path), Some(schema)) = (schema_path, loaded_schema.as_ref()) {
+        println!("Schema compliance ({}):", schema_path);
 
-                // Check A against schema
-                let missing_a = check_missing_required(&map_a, &schema);
-                let unknown_a = check_unknown_keys(&map_a, &schema);
+        // Check A against schema
+        let missing_a = check_missing_required(&map_a, schema);
+        let unknown_a = check_unknown_keys(&map_a, schema);
 
-                // Check B against schema
-                let missing_b = check_missing_required(&map_b, &schema);
-                let unknown_b = check_unknown_keys(&map_b, &schema);
+        // Check B against schema
+        let missing_b = check_missing_required(&map_b, schema);
+        let unknown_b = check_unknown_keys(&map_b, schema);
 
-                // Report A
-                print!("  {}: ", env_a);
-                if missing_a.is_empty() && unknown_a.is_empty() {
-                    println!("OK");
-                } else {
-                    let mut issues = Vec::new();
-                    if !missing_a.is_empty() {
-                        issues.push(format!("{} missing required", missing_a.len()));
-                    }
-                    if !unknown_a.is_empty() {
-                        issues.push(format!("{} unknown", unknown_a.len()));
-                    }
-                    println!("{}", issues.join(", "));
-                }
-
-                // Report B
-                print!("  {}: ", env_b);
-                if missing_b.is_empty() && unknown_b.is_empty() {
-                    println!("OK");
-                } else {
-                    let mut issues = Vec::new();
-                    if !missing_b.is_empty() {
-                        issues.push(format!("{} missing required", missing_b.len()));
-                    }
-                    if !unknown_b.is_empty() {
-                        issues.push(format!("{} unknown", unknown_b.len()));
-                    }
-                    println!("{}", issues.join(", "));
-                }
-                println!();
+        // Report A
+        print!("  {}: ", env_a);
+        if missing_a.is_empty() && unknown_a.is_empty() {
+            println!("OK");
+        } else {
+            let mut issues = Vec::new();
+            if !missing_a.is_empty() {
+                issues.push(format!("{} missing required", missing_a.len()));
             }
-            Err(e) => {
-                eprintln!("Warning: Could not load schema: {}", e);
+            if !unknown_a.is_empty() {
+                issues.push(format!("{} unknown", unknown_a.len()));
             }
+            println!("{}", issues.join(", "));
         }
+
+        // Report B
+        print!("  {}: ", env_b);
+        if missing_b.is_empty() && unknown_b.is_empty() {
+            println!("OK");
+        } else {
+            let mut issues = Vec::new();
+            if !missing_b.is_empty() {
+                issues.push(format!("{} missing required", missing_b.len()));
+            }
+            if !unknown_b.is_empty() {
+                issues.push(format!("{} unknown", unknown_b.len()));
+            }
+            println!("{}", issues.join(", "));
+        }
+        println!();
     }
 
     if !has_diff {
@@ -297,37 +306,29 @@ fn output_json(
     only_in_b: &[&String],
     different_values: &[(&String, &String, &String)],
     schema_path: Option<&str>,
-    no_cache: bool,
-    verify_hash: Option<&str>,
-    ca_cert: Option<&str>,
-    rate_limit_seconds: Option<u64>,
+    schema: Option<&schema::Schema>,
 ) -> Result<(), String> {
     let has_diff = !only_in_a.is_empty() || !only_in_b.is_empty() || !different_values.is_empty();
 
-    // Build schema compliance if schema provided
-    let schema_compliance = if let Some(schema_path) = schema_path {
-        let options = LoadOptions {
-            no_cache,
-            verify_hash: verify_hash.map(|s| s.to_string()),
-            ca_cert: ca_cert.map(|s| s.to_string()),
-            rate_limit_seconds,
-        };
-        match schema::load_schema_with_options(schema_path, &options) {
-            Ok(schema) => Some(SchemaCompliance {
-                schema_path: schema_path.to_string(),
-                file_a: FileCompliance {
-                    missing_required: check_missing_required(map_a, &schema),
-                    unknown_keys: check_unknown_keys(map_a, &schema),
-                },
-                file_b: FileCompliance {
-                    missing_required: check_missing_required(map_b, &schema),
-                    unknown_keys: check_unknown_keys(map_b, &schema),
-                },
-            }),
-            Err(_) => None,
+    let schema_compliance = schema_path
+        .zip(schema)
+        .map(|(path, schema)| SchemaCompliance {
+            schema_path: path.to_string(),
+            file_a: FileCompliance {
+                missing_required: check_missing_required(map_a, schema),
+                unknown_keys: check_unknown_keys(map_a, schema),
+            },
+            file_b: FileCompliance {
+                missing_required: check_missing_required(map_b, schema),
+                unknown_keys: check_unknown_keys(map_b, schema),
+            },
+        });
+    let mask = |key: &str, value: &str| {
+        if declared_secret(schema, key) {
+            "***MASKED***".to_string()
+        } else {
+            mask_for_diff(key, value)
         }
-    } else {
-        None
     };
 
     let output = DiffOutput {
@@ -337,22 +338,22 @@ fn output_json(
             .iter()
             .map(|k| KeyValue {
                 key: (*k).clone(),
-                value: mask_for_diff(k, map_a.get(*k).unwrap()),
+                value: mask(k, map_a.get(*k).unwrap()),
             })
             .collect(),
         only_in_b: only_in_b
             .iter()
             .map(|k| KeyValue {
                 key: (*k).clone(),
-                value: mask_for_diff(k, map_b.get(*k).unwrap()),
+                value: mask(k, map_b.get(*k).unwrap()),
             })
             .collect(),
         different_values: different_values
             .iter()
             .map(|(k, va, vb)| ValueDiff {
                 key: (*k).clone(),
-                value_a: mask_for_diff(k, va),
-                value_b: mask_for_diff(k, vb),
+                value_a: mask(k, va),
+                value_b: mask(k, vb),
             })
             .collect(),
         schema_compliance,

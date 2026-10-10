@@ -7,15 +7,15 @@
  *
  * Usage:
  *   node scripts/sync-website.js --version 0.2.3
- *   node scripts/sync-website.js --version 0.2.3 --website-path ../zorl.cloud
+ *   node scripts/sync-website.js --version 0.2.3 --website-path ../zorl
  */
 
 const fs = require("fs");
 const path = require("path");
+const SEMVER = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(\+[0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*)?$/;
 
 // Parse command line arguments
-function parseArgs() {
-  const args = process.argv.slice(2);
+function parseArgs(args = process.argv.slice(2)) {
   const result = {
     version: null,
     websitePath: null,
@@ -28,6 +28,8 @@ function parseArgs() {
     } else if (args[i] === "--website-path" && args[i + 1]) {
       result.websitePath = args[i + 1];
       i++;
+    } else {
+      throw new Error(`Unknown or incomplete argument: ${args[i]}`);
     }
   }
 
@@ -46,56 +48,53 @@ function getVersionFromCargo() {
   return match ? match[1] : null;
 }
 
-// Read README.md to extract features
-function extractFeaturesFromReadme() {
-  const readmePath = path.join(__dirname, "..", "README.md");
-  if (!fs.existsSync(readmePath)) {
-    console.warn("README.md not found, using default features");
-    return null;
-  }
-
-  // Features are extracted from the existing data file
-  // README is used to validate but not as the source of truth
-  return null;
-}
-
-// Update llms.txt with new version
-function updateLlmsTxt(version, websitePath) {
+// Prepare the zenv section only; never overwrite another product's version.
+function prepareLlmsTxt(version, websitePath) {
   const llmsPath = path.join(websitePath, "public", "llms.txt");
 
   if (!fs.existsSync(llmsPath)) {
     console.warn("llms.txt not found, skipping");
-    return false;
+    return null;
   }
 
-  let content = fs.readFileSync(llmsPath, "utf8");
-
-  // Update version line
-  content = content.replace(
-    /- \*\*Version\*\*: [\d.]+/,
-    `- **Version**: ${version}`
-  );
-
-  fs.writeFileSync(llmsPath, content);
-  console.log("Updated llms.txt:");
-  console.log("  - version:", version);
-  console.log("  - path:", llmsPath);
-
-  return true;
+  const content = fs.readFileSync(llmsPath, "utf8");
+  const headings = [...content.matchAll(/^##[ \t]+(?:zorath-env(?:[ \t]+\(zenv\))?|zenv)[ \t]*\r?$/gim)];
+  if (headings.length !== 1) {
+    throw new Error("llms.txt must contain exactly one zenv product section");
+  }
+  const start = headings[0].index + headings[0][0].length;
+  const rest = content.slice(start);
+  const nextSection = rest.search(/^#{1,2}[ \t]/m);
+  const end = nextSection < 0 ? content.length : start + nextSection;
+  const section = content.slice(start, end);
+  const versionLine = /^- \*\*Version\*\*:[^\r\n]*/gm;
+  if ([...section.matchAll(versionLine)].length !== 1) {
+    throw new Error("The zenv section must contain exactly one version field");
+  }
+  return {
+    path: llmsPath,
+    content: content.slice(0, start) + section.replace(versionLine, `- **Version**: ${version}`) + content.slice(end),
+  };
 }
 
 // Main sync function
 function syncWebsite(version, websitePath) {
+  if (!SEMVER.test(version) || /[\r\n]/.test(version)) {
+    throw new Error("Version must be valid SemVer without a v prefix");
+  }
   const dataFilePath = path.join(websitePath, "src", "data", "zenv.json");
 
   if (!fs.existsSync(dataFilePath)) {
-    console.error("Error: Data file not found at", dataFilePath);
-    console.error("Make sure the website repository path is correct.");
-    process.exit(1);
+    throw new Error(`Data file not found at ${dataFilePath}`);
   }
 
   // Read existing data
   const existingData = JSON.parse(fs.readFileSync(dataFilePath, "utf8"));
+  if (!existingData || typeof existingData !== "object" || Array.isArray(existingData)) {
+    throw new Error("zenv.json must contain a JSON object");
+  }
+  // Validate both destinations before changing either file.
+  const llms = prepareLlmsTxt(version, websitePath);
 
   // Update version and lastUpdated
   const today = new Date().toISOString().split("T")[0];
@@ -114,7 +113,10 @@ function syncWebsite(version, websitePath) {
   console.log("  - path:", dataFilePath);
 
   // Also update llms.txt
-  updateLlmsTxt(version, websitePath);
+  if (llms) {
+    fs.writeFileSync(llms.path, llms.content);
+    console.log("Updated llms.txt:", llms.path);
+  }
 
   return true;
 }
@@ -142,7 +144,7 @@ function main() {
   }
   if (!websitePath) {
     // Default relative path from zenv repo
-    websitePath = path.join(__dirname, "..", "..", "zorl.cloud");
+    websitePath = path.join(__dirname, "..", "..", "zorl");
   }
 
   // Resolve to absolute path
@@ -161,10 +163,15 @@ function main() {
     console.log("\nSync complete!");
     console.log("Next steps:");
     console.log("  1. cd", websitePath);
-    console.log("  2. git add src/data/zenv.json");
+    console.log("  2. git add src/data/zenv.json public/llms.txt");
     console.log("  3. git commit -m 'Update zenv to v" + version + "'");
     console.log("  4. git push");
   }
 }
 
-main();
+if (require.main === module) {
+  try { main(); }
+  catch (error) { console.error(error.message); process.exitCode = 1; }
+}
+
+module.exports = { parseArgs, syncWebsite };

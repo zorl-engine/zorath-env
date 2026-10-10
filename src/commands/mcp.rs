@@ -13,15 +13,10 @@
 //! diagnostics must go to stderr or they will corrupt the protocol stream
 //! and the client will hang or panic.
 //!
-//! ## Why roll our own (not rmcp / mcp-attr / etc.)
+//! ## Synchronous transport
 //!
-//! Every available Rust MCP crate as of May 2026 either: (a) drags tokio
-//! into the dep graph, (b) requires Rust 1.85+ via edition = "2024"
-//! (rmcp), (c) emits non-ASCII characters in default output, or (d) is
-//! pre-0.1 with a single maintainer. zenv is sync, ASCII-only, MSRV 1.74,
-//! and lean on deps -- so we own ~300 lines of well-understood code rather
-//! than inherit any of those tradeoffs. The protocol surface required for
-//! a tools-only stdio server is small.
+//! The server uses the CLI's existing synchronous runtime and standard-library
+//! I/O. Protocol behavior is covered by unit and real-process integration tests.
 //!
 //! ## Tool model
 //!
@@ -33,6 +28,7 @@
 //! return structured data instead of `println!`-ing it. Out of scope
 //! for v1.
 
+use crate::config::Config;
 use crate::errors::CliError;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
@@ -108,6 +104,26 @@ fn log_at(level: u8, msg: &str) {
 /// writes responses to stdout one per line. Loops until EOF.
 #[doc(hidden)]
 pub fn run() -> Result<(), CliError> {
+    run_with_config(
+        Config::try_load_from(None)
+            .map_err(CliError::Input)?
+            .unwrap_or_default(),
+        None,
+    )
+}
+
+#[derive(Default)]
+struct ServerContext {
+    config: Config,
+    config_path: Option<String>,
+}
+
+#[doc(hidden)]
+pub fn run_with_config(config: Config, config_path: Option<String>) -> Result<(), CliError> {
+    let context = ServerContext {
+        config,
+        config_path,
+    };
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     log_at(LEVEL_NOTICE, "server ready");
@@ -140,23 +156,41 @@ pub fn run() -> Result<(), CliError> {
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let params = req.get("params");
 
+        // Validate the envelope before dispatch. Valid notifications never
+        // receive responses (nor invoke request-only tools as a side effect).
+        let valid_id = id
+            .as_ref()
+            .is_none_or(|v| v.is_string() || v.is_i64() || v.is_u64());
+        if !req.is_object()
+            || req.get("jsonrpc") != Some(&json!("2.0"))
+            || !req.get("method").is_some_and(Value::is_string)
+            || !valid_id
+            || params.is_some_and(|p| !p.is_object())
+        {
+            write_frame(
+                &mut stdout,
+                &jsonrpc_error(
+                    if valid_id {
+                        id.unwrap_or(Value::Null)
+                    } else {
+                        Value::Null
+                    },
+                    -32600,
+                    "Invalid Request",
+                ),
+            );
+            continue;
+        }
+        if id.is_none() {
+            continue;
+        }
+
         let response = match method {
             "initialize" => Some(handle_initialize(&req)),
-            "notifications/initialized" => {
-                log_at(LEVEL_INFO, "client initialized");
-                None
-            }
-            // Cancellation has no in-flight work to cancel (every tool call
-            // is sync and completes before the next stdin read). Drop the
-            // notification but log at debug for traceability.
-            "notifications/cancelled" => {
-                log_at(LEVEL_DEBUG, "cancellation requested (no-op)");
-                None
-            }
             "tools/list" => Some(handle_tools_list(id.clone())),
-            "tools/call" => Some(handle_tools_call(id.clone(), params)),
-            "resources/list" => Some(handle_resources_list(id.clone())),
-            "resources/read" => Some(handle_resources_read(id.clone(), params)),
+            "tools/call" => Some(handle_tools_call(id.clone(), params, &context)),
+            "resources/list" => Some(handle_resources_list(id.clone(), &context)),
+            "resources/read" => Some(handle_resources_read(id.clone(), params, &context)),
             "prompts/list" => Some(handle_prompts_list(id.clone())),
             "prompts/get" => Some(handle_prompts_get(id.clone(), params)),
             "completion/complete" => Some(handle_completion_complete(id.clone(), params)),
@@ -265,7 +299,7 @@ fn tool_registry() -> Vec<Value> {
     vec![
         json!({
             "name": "zenv_check",
-            "description": "Validate an env file against a schema. Returns JSON with valid/errors/warnings/secrets arrays. Use when the user asks to validate, audit, or check an env file.",
+            "description": "Validate an env file against a schema. Returns JSON with valid, errors, warnings, and secret_warnings fields. Use when the user asks to validate, audit, or check an env file.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -305,7 +339,7 @@ fn tool_registry() -> Vec<Value> {
         }),
         json!({
             "name": "zenv_doctor",
-            "description": "Run a health check across the env setup. Surfaces missing files, mis-gitignored secrets, schema/code drift, and config issues. Returns plain text (not JSON). Use as the first diagnostic when the user says something is wrong with their env setup.",
+            "description": "Run a health check across the env setup. Checks schema, env, config, cache access, and validation. Returns plain text (not JSON). Use as the first diagnostic when the user says something is wrong with their env setup.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false
@@ -330,12 +364,11 @@ fn handle_tools_list(id: Option<Value>) -> Value {
     jsonrpc_result(id, json!({ "tools": tool_registry() }))
 }
 
-/// Handle `tools/call`. Dispatches to a known tool or returns method-not-
-/// found for unknown tool names. Tool-execution failures (zenv exits
+/// Handle `tools/call`. Unknown tools return invalid params. Tool-execution failures (zenv exits
 /// non-zero) are reported as `isError: true` on the content payload,
 /// not as JSON-RPC errors -- per MCP spec, JSON-RPC errors are reserved
 /// for malformed requests, not tool failures.
-fn handle_tools_call(id: Option<Value>, params: Option<&Value>) -> Value {
+fn handle_tools_call(id: Option<Value>, params: Option<&Value>, context: &ServerContext) -> Value {
     let id_owned = id.unwrap_or(Value::Null);
     let Some(params) = params else {
         return jsonrpc_error(id_owned, ERR_INVALID_PARAMS, "missing params");
@@ -345,6 +378,22 @@ fn handle_tools_call(id: Option<Value>, params: Option<&Value>) -> Value {
         None => return jsonrpc_error(id_owned, ERR_INVALID_PARAMS, "missing tool name"),
     };
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    let registry = tool_registry();
+    let Some(tool) = registry.iter().find(|tool| tool["name"] == name) else {
+        return jsonrpc_error(
+            id_owned,
+            ERR_INVALID_PARAMS,
+            &format!("unknown tool: {}", name),
+        );
+    };
+    if let Err(message) = validate_tool_arguments(&args, &tool["inputSchema"]) {
+        return jsonrpc_result(
+            Some(id_owned),
+            json!({
+                "content": [{"type": "text", "text": message}], "isError": true
+            }),
+        );
+    }
 
     let cli_args: Result<Vec<String>, String> = match name {
         "zenv_check" => Ok(build_check_args(&args)),
@@ -366,7 +415,7 @@ fn handle_tools_call(id: Option<Value>, params: Option<&Value>) -> Value {
         Err(e) => return jsonrpc_error(id_owned, ERR_INVALID_PARAMS, &e),
     };
 
-    let outcome = run_zenv_subprocess(&cli_args);
+    let outcome = run_zenv_subprocess(&cli_args, context);
     let content = match outcome {
         Ok(stdout) => json!([{ "type": "text", "text": stdout }]),
         Err(err_text) => {
@@ -386,6 +435,35 @@ fn handle_tools_call(id: Option<Value>, params: Option<&Value>) -> Value {
     )
 }
 
+/// Validate the small registry's object/string/boolean schemas before any
+/// child process is launched. Keep this driven by the advertised contract.
+fn validate_tool_arguments(args: &Value, schema: &Value) -> Result<(), String> {
+    let args = args.as_object().ok_or("arguments must be an object")?;
+    if let Some(required) = schema["required"].as_array() {
+        for key in required.iter().filter_map(Value::as_str) {
+            if !args.contains_key(key) {
+                return Err(format!("{} is required", key));
+            }
+        }
+    }
+    for (key, value) in args {
+        let property = &schema["properties"][key];
+        let valid = match property["type"].as_str() {
+            Some("string") => value.is_string(),
+            Some("boolean") => value.is_boolean(),
+            _ => return Err(format!("unknown argument: {}", key)),
+        };
+        if !valid {
+            return Err(format!(
+                "{} must be a {}",
+                key,
+                property["type"].as_str().unwrap_or("valid value")
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn build_check_args(args: &Value) -> Vec<String> {
     let mut a = vec![
         "check".to_string(),
@@ -393,19 +471,14 @@ fn build_check_args(args: &Value) -> Vec<String> {
         "json".to_string(),
     ];
     if let Some(env) = args.get("env").and_then(|v| v.as_str()) {
-        a.push("--env".to_string());
-        a.push(env.to_string());
+        a.push(format!("--env={env}"));
     }
     if let Some(schema) = args.get("schema").and_then(|v| v.as_str()) {
-        a.push("--schema".to_string());
-        a.push(schema.to_string());
+        a.push(format!("--schema={schema}"));
     }
-    if args
-        .get("detect_secrets")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
+    if let Some(detect) = args.get("detect_secrets").and_then(Value::as_bool) {
         a.push("--detect-secrets".to_string());
+        a.push(detect.to_string());
     }
     a
 }
@@ -417,12 +490,10 @@ fn build_scan_args(args: &Value) -> Vec<String> {
         "json".to_string(),
     ];
     if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
-        a.push("--path".to_string());
-        a.push(p.to_string());
+        a.push(format!("--path={p}"));
     }
     if let Some(s) = args.get("schema").and_then(|v| v.as_str()) {
-        a.push("--schema".to_string());
-        a.push(s.to_string());
+        a.push(format!("--schema={s}"));
     }
     if args
         .get("show_paths")
@@ -445,15 +516,13 @@ fn build_diff_args(args: &Value) -> Result<Vec<String>, String> {
         .ok_or_else(|| "env_b is required".to_string())?;
     let mut a = vec![
         "diff".to_string(),
-        env_a.to_string(),
-        env_b.to_string(),
         "--format".to_string(),
         "json".to_string(),
     ];
     if let Some(s) = args.get("schema").and_then(|v| v.as_str()) {
-        a.push("--schema".to_string());
-        a.push(s.to_string());
+        a.push(format!("--schema={s}"));
     }
+    a.extend(["--".to_string(), env_a.to_string(), env_b.to_string()]);
     Ok(a)
 }
 
@@ -464,8 +533,7 @@ fn build_docs_args(args: &Value) -> Vec<String> {
         "json".to_string(),
     ];
     if let Some(s) = args.get("schema").and_then(|v| v.as_str()) {
-        a.push("--schema".to_string());
-        a.push(s.to_string());
+        a.push(format!("--schema={s}"));
     }
     a
 }
@@ -474,11 +542,25 @@ fn build_docs_args(args: &Value) -> Vec<String> {
 /// return an Err containing stderr + stdout merged so the model can see
 /// the failure reason. Uses --no-color so escape sequences don't pollute
 /// the model's view of the output.
-fn run_zenv_subprocess(args: &[String]) -> Result<String, String> {
+fn run_zenv_subprocess(args: &[String], context: &ServerContext) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot resolve current exe: {}", e))?;
-    let output = Command::new(&exe)
-        .arg("--no-color")
-        .args(args)
+    let mut command = Command::new(&exe);
+    if let Some(path) = &context.config_path {
+        command.arg(format!("--config={path}"));
+    }
+    command.arg("--no-color").args(args);
+    // Match resource discovery for projects using a conventional YAML schema.
+    // An explicit tool schema still takes precedence; diff's schema is optional.
+    if matches!(
+        args.first().map(String::as_str),
+        Some("check" | "scan" | "docs" | "doctor")
+    ) && !args
+        .iter()
+        .any(|arg| arg == "--schema" || arg.starts_with("--schema="))
+    {
+        command.arg(format!("--schema={}", active_schema_path(&context.config)));
+    }
+    let output = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -542,11 +624,17 @@ fn resource_registry() -> Vec<Value> {
     ]
 }
 
-fn handle_resources_list(id: Option<Value>) -> Value {
-    jsonrpc_result(id, json!({ "resources": resource_registry() }))
+fn handle_resources_list(id: Option<Value>, context: &ServerContext) -> Value {
+    let mut resources = resource_registry();
+    resources[0]["mimeType"] = json!(schema_mime(&active_schema_path(&context.config)));
+    jsonrpc_result(id, json!({ "resources": resources }))
 }
 
-fn handle_resources_read(id: Option<Value>, params: Option<&Value>) -> Value {
+fn handle_resources_read(
+    id: Option<Value>,
+    params: Option<&Value>,
+    context: &ServerContext,
+) -> Value {
     let id_owned = id.unwrap_or(Value::Null);
     let Some(params) = params else {
         return jsonrpc_error(id_owned, ERR_INVALID_PARAMS, "missing params");
@@ -557,8 +645,8 @@ fn handle_resources_read(id: Option<Value>, params: Option<&Value>) -> Value {
     };
 
     let (text, mime) = match uri {
-        URI_SCHEMA => match read_schema_file() {
-            Ok(t) => (t, "application/json"),
+        URI_SCHEMA => match read_schema_file(&context.config) {
+            Ok(t) => t,
             Err(e) => {
                 return jsonrpc_error(
                     id_owned,
@@ -567,17 +655,20 @@ fn handle_resources_read(id: Option<Value>, params: Option<&Value>) -> Value {
                 )
             }
         },
-        URI_ENV_MASKED => match read_env_masked_at(std::path::Path::new(".env")) {
+        URI_ENV_MASKED => match read_active_env_masked(&context.config) {
             Ok(t) => (t, "text/plain"),
             Err(e) => {
                 return jsonrpc_error(id_owned, ERR_INTERNAL, &format!("cannot read .env: {}", e))
             }
         },
-        URI_DOCS => match run_zenv_subprocess(&[
-            "docs".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-        ]) {
+        URI_DOCS => match run_zenv_subprocess(
+            &[
+                "docs".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+            context,
+        ) {
             Ok(t) => (t, "application/json"),
             Err(e) => {
                 return jsonrpc_error(
@@ -610,65 +701,106 @@ fn handle_resources_read(id: Option<Value>, params: Option<&Value>) -> Value {
 
 /// Find and read the active schema file (JSON or YAML). Caller treats
 /// the content as text -- we do not parse it here.
-fn read_schema_file() -> Result<String, String> {
-    for candidate in &["env.schema.json", "env.schema.yaml", "env.schema.yml"] {
-        if std::path::Path::new(candidate).exists() {
-            return std::fs::read_to_string(candidate).map_err(|e| e.to_string());
-        }
-    }
-    Err("no schema file found (looked for env.schema.{json,yaml,yml})".to_string())
+fn read_schema_file(config: &Config) -> Result<(String, &'static str), String> {
+    let path = active_schema_path(config);
+    let text = if crate::remote::is_remote_url(&path) {
+        let options = load_options(config);
+        crate::remote::fetch_remote_schema_secure(
+            &path,
+            options.no_cache,
+            &options.to_security_options(),
+        )
+        .map_err(|e| e.to_string())?
+    } else {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())?
+    };
+    Ok((text, schema_mime(&path)))
 }
 
-/// Read .env at the current working directory and mask sensitive values.
-/// Thin wrapper around `read_env_masked_at` -- the path-taking version
-/// is what tests exercise directly, sidestepping the process-wide CWD
-/// race that bit us when two tests both chdir to their own tempdir.
-#[allow(dead_code)]
-fn read_env_masked() -> Result<String, String> {
-    read_env_masked_at(std::path::Path::new(".env"))
+fn schema_mime(path: &str) -> &'static str {
+    match crate::schema::SchemaFormat::from_path(path) {
+        crate::schema::SchemaFormat::Json => "application/json",
+        crate::schema::SchemaFormat::Yaml => "application/yaml",
+    }
+}
+
+fn active_schema_path(config: &Config) -> String {
+    if let Some(path) = &config.schema {
+        return path.clone();
+    }
+    ["env.schema.json", "env.schema.yaml", "env.schema.yml"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .unwrap_or("env.schema.json")
+        .to_string()
+}
+
+fn load_options(config: &Config) -> crate::schema::LoadOptions {
+    crate::schema::LoadOptions {
+        no_cache: config.no_cache_or(false),
+        verify_hash: config.verify_hash(),
+        ca_cert: config.ca_cert(),
+        rate_limit_seconds: config.rate_limit_seconds(),
+    }
+}
+
+fn read_active_env_masked(config: &Config) -> Result<String, String> {
+    let schema_path = active_schema_path(config);
+    let schema = if config.schema.is_some() || std::path::Path::new(&schema_path).exists() {
+        Some(
+            crate::schema::load_schema_with_options(&schema_path, &load_options(config))
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
+    let mut path = config.env_or(".env");
+    if path == ".env" && !std::path::Path::new(&path).exists() {
+        for candidate in [".env.local", ".env.development", ".env.development.local"] {
+            if std::path::Path::new(candidate).exists() {
+                path = candidate.to_string();
+                break;
+            }
+        }
+    }
+    read_env_masked_at(std::path::Path::new(&path), schema.as_ref())
 }
 
 /// Read .env from an explicit path and mask sensitive values. Uses both
 /// key-name heuristics and value-aware checks so URL-password-style
 /// leaks under innocuous keys also get masked. Format is preserved
 /// otherwise (comments, blank lines, original surrounding quotes).
-fn read_env_masked_at(path: &std::path::Path) -> Result<String, String> {
+fn read_env_masked_at(
+    path: &std::path::Path,
+    schema: Option<&crate::schema::Schema>,
+) -> Result<String, String> {
     let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut out = String::with_capacity(raw.len());
-    for line in raw.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('#') || trimmed.is_empty() {
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        }
-        if let Some((key, value)) = line.split_once('=') {
-            let key_trim = key.trim();
-            let raw_value = value.trim();
-            // Inspect the inner unquoted value for sensitivity, but
-            // preserve the original line shape in the non-masked branch.
-            let inner = raw_value
-                .strip_prefix('"')
-                .and_then(|s| s.strip_suffix('"'))
-                .or_else(|| {
-                    raw_value
-                        .strip_prefix('\'')
-                        .and_then(|s| s.strip_suffix('\''))
-                })
-                .unwrap_or(raw_value);
-            if crate::secrets::is_sensitive_key(key_trim)
-                || crate::secrets::value_looks_secret(inner)
-            {
-                out.push_str(key);
-                out.push('=');
-                out.push_str("***MASKED***");
-            } else {
-                out.push_str(line);
+    let (_, entries) = crate::envfile::parse_env_with_entries(&raw);
+    let mut entries = entries
+        .iter()
+        .filter(|entry| {
+            schema
+                .and_then(|s| s.get(&entry.key))
+                .is_some_and(|spec| spec.secret == Some(true))
+                || crate::secrets::is_sensitive_key(&entry.key)
+                || crate::secrets::value_looks_secret(&entry.value)
+        })
+        .peekable();
+    for (index, line) in raw.split_inclusive('\n').enumerate() {
+        let line_number = index + 1;
+        if let Some(entry) = entries
+            .peek()
+            .filter(|entry| entry.start_line <= line_number)
+        {
+            if line_number == entry.start_line {
+                out.push_str(&format!("{}=***MASKED***\n", entry.key));
             }
-            out.push('\n');
+            if line_number >= entry.end_line {
+                entries.next();
+            }
         } else {
             out.push_str(line);
-            out.push('\n');
         }
     }
     Ok(out)
@@ -1021,19 +1153,24 @@ mod tests {
         let resp = handle_tools_call(
             Some(json!(2)),
             Some(&json!({ "name": "zenv_bogus", "arguments": {} })),
+            &ServerContext::default(),
         );
-        assert_eq!(resp["error"]["code"].as_i64(), Some(ERR_METHOD_NOT_FOUND));
+        assert_eq!(resp["error"]["code"].as_i64(), Some(ERR_INVALID_PARAMS));
     }
 
     #[test]
     fn test_tools_call_missing_params_returns_invalid_params() {
-        let resp = handle_tools_call(Some(json!(3)), None);
+        let resp = handle_tools_call(Some(json!(3)), None, &ServerContext::default());
         assert_eq!(resp["error"]["code"].as_i64(), Some(ERR_INVALID_PARAMS));
     }
 
     #[test]
     fn test_tools_call_missing_tool_name_returns_invalid_params() {
-        let resp = handle_tools_call(Some(json!(4)), Some(&json!({ "arguments": {} })));
+        let resp = handle_tools_call(
+            Some(json!(4)),
+            Some(&json!({ "arguments": {} })),
+            &ServerContext::default(),
+        );
         assert_eq!(resp["error"]["code"].as_i64(), Some(ERR_INVALID_PARAMS));
     }
 
@@ -1042,8 +1179,9 @@ mod tests {
         let resp = handle_tools_call(
             Some(json!(5)),
             Some(&json!({ "name": "zenv_diff", "arguments": { "env_b": ".env" } })),
+            &ServerContext::default(),
         );
-        assert_eq!(resp["error"]["code"].as_i64(), Some(ERR_INVALID_PARAMS));
+        assert_eq!(resp["result"]["isError"], true);
     }
 
     #[test]
@@ -1064,28 +1202,23 @@ mod tests {
             "env": "/tmp/.env.prod",
             "schema": "/tmp/env.schema.json"
         }));
-        assert!(args
-            .windows(2)
-            .any(|w| w[0] == "--env" && w[1] == "/tmp/.env.prod"));
-        assert!(args
-            .windows(2)
-            .any(|w| w[0] == "--schema" && w[1] == "/tmp/env.schema.json"));
+        assert!(args.contains(&"--env=/tmp/.env.prod".to_string()));
+        assert!(args.contains(&"--schema=/tmp/env.schema.json".to_string()));
     }
 
     #[test]
     fn test_build_scan_args_adds_show_paths_when_truthy() {
         let args = build_scan_args(&json!({ "path": "src", "show_paths": true }));
         assert!(args.contains(&"--show-paths".to_string()));
-        assert!(args.windows(2).any(|w| w[0] == "--path" && w[1] == "src"));
+        assert!(args.contains(&"--path=src".to_string()));
     }
 
     #[test]
     fn test_build_diff_args_positional_order_preserved() {
         let args = build_diff_args(&json!({ "env_a": "a.env", "env_b": "b.env" })).unwrap();
-        // diff takes two positional args before --format
+        // The terminator keeps positional filenames from becoming options.
         assert_eq!(args[0], "diff");
-        assert_eq!(args[1], "a.env");
-        assert_eq!(args[2], "b.env");
+        assert_eq!(&args[3..], ["--", "a.env", "b.env"]);
         assert!(args.contains(&"--format".to_string()));
     }
 
@@ -1113,7 +1246,7 @@ mod tests {
 
     #[test]
     fn test_resources_list_returns_three_resources() {
-        let resp = handle_resources_list(Some(json!(20)));
+        let resp = handle_resources_list(Some(json!(20)), &ServerContext::default());
         let resources = resp["result"]["resources"].as_array().unwrap();
         assert_eq!(resources.len(), 3);
         let uris: Vec<&str> = resources
@@ -1130,19 +1263,21 @@ mod tests {
         let resp = handle_resources_read(
             Some(json!(21)),
             Some(&json!({ "uri": "zenv://does-not-exist" })),
+            &ServerContext::default(),
         );
         assert_eq!(resp["error"]["code"].as_i64(), Some(ERR_INVALID_PARAMS));
     }
 
     #[test]
     fn test_resources_read_missing_uri_returns_invalid_params() {
-        let resp = handle_resources_read(Some(json!(22)), Some(&json!({})));
+        let resp =
+            handle_resources_read(Some(json!(22)), Some(&json!({})), &ServerContext::default());
         assert_eq!(resp["error"]["code"].as_i64(), Some(ERR_INVALID_PARAMS));
     }
 
     #[test]
     fn test_resources_read_missing_params_returns_invalid_params() {
-        let resp = handle_resources_read(Some(json!(23)), None);
+        let resp = handle_resources_read(Some(json!(23)), None, &ServerContext::default());
         assert_eq!(resp["error"]["code"].as_i64(), Some(ERR_INVALID_PARAMS));
     }
 
@@ -1337,7 +1472,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join(".env");
         std::fs::write(&path, "FOO=plain\nAPI_KEY=sk_live_abc123\nNOTES=hello\n").unwrap();
-        let body = read_env_masked_at(&path).unwrap();
+        let body = read_env_masked_at(&path, None).unwrap();
         assert!(body.contains("FOO=plain"));
         assert!(body.contains("API_KEY=***MASKED***"));
         assert!(body.contains("NOTES=hello"));
@@ -1349,7 +1484,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join(".env");
         std::fs::write(&path, "INNOCUOUS=postgres://user:Tr0ub4dor!@host/db\n").unwrap();
-        let body = read_env_masked_at(&path).unwrap();
+        let body = read_env_masked_at(&path, None).unwrap();
         assert!(body.contains("INNOCUOUS=***MASKED***"));
         assert!(!body.contains("Tr0ub4dor"));
     }

@@ -70,64 +70,61 @@ impl Config {
         Self::load_from(None)
     }
 
-    /// Load config from a specific path, or search current/parent directories
+    /// Compatibility wrapper. CLI callers use try_load_from so invalid
+    /// configuration cannot silently disable security settings.
     pub fn load_from(path: Option<&str>) -> Option<Self> {
-        let config_path = if let Some(p) = path {
-            let pb = PathBuf::from(p);
-            if !pb.exists() {
-                eprintln!("zenv warning: config file not found: {}", p);
-                return None;
-            }
-            pb
-        } else {
-            find_config_file()?
-        };
-        let content = fs::read_to_string(&config_path).ok()?;
-
-        // First parse as Value to check for unknown keys
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(obj) = value.as_object() {
-                let unknown_keys: Vec<&String> = obj
-                    .keys()
-                    .filter(|k| !VALID_CONFIG_KEYS.contains(&k.as_str()))
-                    .collect();
-
-                if !unknown_keys.is_empty() && env::var("ZENV_QUIET").is_err() {
-                    eprintln!(
-                        "zenv warning: unknown key(s) in {}: {}",
-                        config_path.display(),
-                        unknown_keys
-                            .iter()
-                            .map(|k| format!("'{}'", k))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                    eprintln!("  Valid keys: {}", VALID_CONFIG_KEYS.join(", "));
-                }
-            }
-        }
-
-        match serde_json::from_str::<Config>(&content) {
-            Ok(config) => {
-                // Only print if config was successfully loaded and has content
-                if (config.schema.is_some() || config.env.is_some())
-                    && env::var("ZENV_QUIET").is_err()
-                {
-                    eprintln!("zenv: loaded config from {}", config_path.display());
-                }
-                Some(config)
-            }
-            Err(e) => {
-                if env::var("ZENV_QUIET").is_err() {
-                    eprintln!(
-                        "zenv warning: invalid .zenvrc at {}: {}",
-                        config_path.display(),
-                        e
-                    );
-                }
+        match Self::try_load_from(path) {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("zenv warning: {}", error);
                 None
             }
         }
+    }
+
+    /// Load optional discovered config, returning read and parse failures.
+    pub fn try_load_from(path: Option<&str>) -> Result<Option<Self>, String> {
+        let config_path = match path {
+            Some(path) => PathBuf::from(path),
+            None => match find_config_file() {
+                Some(path) => path,
+                None => return Ok(None),
+            },
+        };
+        let content = fs::read_to_string(&config_path)
+            .map_err(|e| format!("cannot read config {}: {}", config_path.display(), e))?;
+        let value: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("invalid config {}: {}", config_path.display(), e))?;
+        if let Some(obj) = value.as_object() {
+            let unknown: Vec<_> = obj
+                .keys()
+                .filter(|key| !VALID_CONFIG_KEYS.contains(&key.as_str()))
+                .collect();
+            if !unknown.is_empty() && env::var("ZENV_QUIET").is_err() {
+                eprintln!(
+                    "zenv warning: unknown config keys in {}: {:?}",
+                    config_path.display(),
+                    unknown
+                );
+            }
+        }
+        let mut config: Config = serde_json::from_value(value)
+            .map_err(|e| format!("invalid config {}: {}", config_path.display(), e))?;
+        // Configured paths belong to the config file, even when invoked from
+        // a subdirectory. Explicit command-line paths still belong to cwd.
+        let base = config_path.parent().unwrap_or_else(|| Path::new("."));
+        for value in [&mut config.schema, &mut config.env, &mut config.ca_cert]
+            .into_iter()
+            .flatten()
+        {
+            if !crate::remote::is_remote_url(value) && Path::new(value).is_relative() {
+                *value = base.join(&*value).to_string_lossy().into_owned();
+            }
+        }
+        if (config.schema.is_some() || config.env.is_some()) && env::var("ZENV_QUIET").is_err() {
+            eprintln!("zenv: loaded config from {}", config_path.display());
+        }
+        Ok(Some(config))
     }
 
     /// Get schema path with fallback to default
@@ -196,7 +193,7 @@ impl Config {
 /// On Unix, additionally skips any `.zenvrc` not owned by the current
 /// uid (mirrors git's `safe.directory` model). The skip is a warning,
 /// not an error -- next iteration continues walking upward.
-fn find_config_file() -> Option<PathBuf> {
+pub(crate) fn find_config_file() -> Option<PathBuf> {
     const REPO_MARKERS: &[&str] = &[
         ".git",
         "Cargo.toml",

@@ -74,12 +74,12 @@ pub fn run(
 }
 
 /// Generate comment lines for a variable
-fn generate_var_comments(_key: &str, spec: &VarSpec) -> String {
+fn generate_var_comments(key: &str, spec: &VarSpec) -> String {
     let mut comments = String::new();
 
     // Description
     if let Some(ref desc) = spec.description {
-        comments.push_str(&format!("# {}\n", desc));
+        comments.push_str(&format!("# {}\n", comment_value(desc)));
     }
 
     // Type and required status
@@ -105,16 +105,23 @@ fn generate_var_comments(_key: &str, spec: &VarSpec) -> String {
         "optional"
     };
     comments.push_str(&format!("# Type: {} ({})\n", type_str, required_str));
+    if spec.secret.unwrap_or(false) || crate::secrets::is_sensitive_key(key) {
+        comments.push_str("# Placeholder only: replace with your own value before use.\n");
+    }
 
     // Enum values
     if let Some(ref values) = spec.values {
-        comments.push_str(&format!("# Values: {}\n", values.join(", ")));
+        comments.push_str(&format!(
+            "# Values: {}\n",
+            comment_value(&values.join(", "))
+        ));
     }
 
     // Default value
     if let Some(ref default) = spec.default {
-        let default_str = format_default_value(default);
-        comments.push_str(&format!("# Default: {}\n", default_str));
+        let default_str =
+            crate::secrets::mask_value_with_spec(key, &format_default_value(default), spec.secret);
+        comments.push_str(&format!("# Default: {}\n", comment_value(&default_str)));
     }
 
     // Validation rules
@@ -144,11 +151,18 @@ fn generate_var_comments(_key: &str, spec: &VarSpec) -> String {
         }
 
         if !rules.is_empty() {
-            comments.push_str(&format!("# Validation: {}\n", rules.join(", ")));
+            comments.push_str(&format!(
+                "# Validation: {}\n",
+                comment_value(&rules.join(", "))
+            ));
         }
     }
 
     comments
+}
+
+fn comment_value(value: &str) -> String {
+    value.replace('\r', "\\r").replace('\n', "\n# ")
 }
 
 /// Format a default value for display
@@ -173,11 +187,81 @@ fn generate_var_line(key: &str, spec: &VarSpec, include_defaults: bool) -> Strin
         generate_placeholder(key, spec)
     };
 
-    format!("{}={}", key, value)
+    format!(
+        "{}{}={}",
+        if super::check::validate_value(key, &value, spec).is_empty() {
+            ""
+        } else {
+            "# Supply a value matching the validation rules above; this placeholder is incomplete.\n"
+        },
+        key,
+        if value.is_empty() {
+            String::new()
+        } else {
+            crate::envfile::format_env_value(&value)
+        }
+    )
 }
 
 /// Generate a type-aware placeholder value
 fn generate_placeholder(key: &str, spec: &VarSpec) -> String {
+    for candidate in [named_placeholder(key, spec), typed_placeholder(spec)] {
+        let candidate = fit_simple_rules(candidate, spec);
+        if super::check::validate_value(key, &candidate, spec).is_empty() {
+            return candidate;
+        }
+    }
+    // Arbitrary regexes cannot safely be synthesized. The emitted validation
+    // comments describe what the user must provide instead.
+    fit_simple_rules(typed_placeholder(spec), spec)
+}
+
+fn fit_simple_rules(mut value: String, spec: &VarSpec) -> String {
+    if let Some(rules) = &spec.validate {
+        match spec.var_type {
+            VarType::String => {
+                if rules.pattern.as_deref() == Some("^base64:.+$") {
+                    value = "base64:replace_with_generated_application_key".into();
+                }
+                if let Some(max) = rules.max_length {
+                    // Built-in placeholders are ASCII; still keep UTF-8 boundaries.
+                    while value.len() > max {
+                        value.pop();
+                    }
+                }
+                if let Some(min) = rules.min_length.filter(|min| *min <= 4096) {
+                    value.extend(std::iter::repeat_n('_', min.saturating_sub(value.len())));
+                }
+            }
+            VarType::Int => {
+                if let Ok(mut number) = value.parse::<i64>() {
+                    if let Some(min) = rules.min {
+                        number = number.max(min);
+                    }
+                    if let Some(max) = rules.max {
+                        number = number.min(max);
+                    }
+                    value = number.to_string();
+                }
+            }
+            VarType::Float => {
+                if let Ok(mut number) = value.parse::<f64>() {
+                    if let Some(min) = rules.min_value {
+                        number = number.max(min);
+                    }
+                    if let Some(max) = rules.max_value {
+                        number = number.min(max);
+                    }
+                    value = number.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    value
+}
+
+fn named_placeholder(key: &str, spec: &VarSpec) -> String {
     let lower_key = key.to_lowercase();
 
     // Special cases based on key name
@@ -224,7 +308,10 @@ fn generate_placeholder(key: &str, spec: &VarSpec) -> String {
         return "/path/to/directory".to_string();
     }
 
-    // Type-based fallback
+    typed_placeholder(spec)
+}
+
+fn typed_placeholder(spec: &VarSpec) -> String {
     match spec.var_type {
         VarType::String => String::new(),
         VarType::Int => "0".to_string(),

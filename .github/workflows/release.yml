@@ -14,14 +14,47 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  security:
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+
+  action-tests:
+    uses: ./.github/workflows/test-action.yml
+    permissions:
+      contents: read
+
+  preflight:
+    name: Verify release metadata and package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check tag and version agreement
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/release.py --check --tag "$RELEASE_TAG"
+      - run: cargo publish --dry-run --locked
+
   build:
+    needs: [ci, security, action-tests, preflight]
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             name: zenv-linux
           - target: x86_64-apple-darwin
             os: macos-latest
@@ -42,7 +75,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Rename binary (Unix)
         if: matrix.os != 'windows-latest'
@@ -88,12 +121,24 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
-      - run: cargo publish
+      - run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  sync-website:
+    name: Sync published version to website
+    needs: publish
+    uses: ./.github/workflows/sync-website.yml
+    permissions:
+      contents: read
+    with:
+      version: ${{ github.ref_name }}
+    secrets:
+      ZORL_WEBSITE_TOKEN: ${{ secrets.ZORL_WEBSITE_TOKEN }}

@@ -5,6 +5,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use ureq::tls::{parse_pem, PemItem, RootCerts, TlsConfig};
+use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 #[derive(Error, Debug)]
 pub enum RemoteError {
@@ -47,6 +49,30 @@ pub const MIN_HASH_PREFIX_LEN: usize = 32;
 /// `--ca-cert /dev/zero` or symlink-to-huge-file inputs that would
 /// otherwise exhaust memory before parse_pem rejects.
 pub const MAX_CA_CERT_BYTES: u64 = 1024 * 1024;
+
+const MAX_CACHE_METADATA_BYTES: u64 = 64 * 1024;
+
+/// Bound the read itself, including files that grow after metadata inspection
+/// and devices whose reported size is zero.
+fn read_limited(path: &std::path::Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("file exceeds {} byte limit", limit),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn read_text_limited(path: &std::path::Path, limit: u64) -> std::io::Result<String> {
+    String::from_utf8(read_limited(path, limit)?)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
 
 /// Security options for remote schema fetching
 #[derive(Debug, Clone)]
@@ -116,11 +142,6 @@ pub fn fetch_remote_schema_secure(
     // SSRF defense: reject internal hostnames and IP ranges before fetching
     validate_url_host(url)?;
 
-    // Check rate limit (unless no_cache bypasses it)
-    if !no_cache && security.rate_limit_seconds > 0 {
-        check_rate_limit(url, security.rate_limit_seconds)?;
-    }
-
     // Check cache first (unless no_cache is set)
     if !no_cache {
         if let Some(cached) = read_cache(url)? {
@@ -130,6 +151,11 @@ pub fn fetch_remote_schema_secure(
             }
             return Ok(cached);
         }
+    }
+
+    // Rate limiting applies to network requests, not successful cache reads.
+    if !no_cache && security.rate_limit_seconds > 0 {
+        check_rate_limit(url, security.rate_limit_seconds)?;
     }
 
     // Fetch from network
@@ -190,17 +216,14 @@ pub fn compute_content_hash(content: &str) -> String {
 }
 
 /// Reject URLs whose host is loopback, private, link-local, or otherwise
-/// internal. Resolves the host via the OS resolver and checks every
-/// returned address.
+/// internal. DNS results are checked by PublicResolver at connection time.
 fn validate_url_host(url: &str) -> Result<(), RemoteError> {
-    use std::net::ToSocketAddrs;
-
     let parsed = url::Url::parse(url).map_err(|_| RemoteError::InvalidUrl(url.to_string()))?;
     let host = parsed
         .host_str()
         .ok_or_else(|| RemoteError::InvalidUrl(url.to_string()))?;
 
-    let lower = host.to_ascii_lowercase();
+    let lower = host.trim_end_matches('.').to_ascii_lowercase();
     if lower == "localhost"
         || lower == "ip6-localhost"
         || lower.ends_with(".local")
@@ -213,35 +236,78 @@ fn validate_url_host(url: &str) -> Result<(), RemoteError> {
         )));
     }
 
-    let port = parsed.port().unwrap_or(443);
-    let target = format!("{}:{}", host, port);
-
-    // If resolution fails, defer to ureq for the actual error.
-    if let Ok(addrs) = target.to_socket_addrs() {
-        for addr in addrs {
-            if is_forbidden_ip(&addr.ip()) {
-                return Err(RemoteError::InvalidUrl(format!(
-                    "host resolves to internal/loopback address: {} -> {}",
-                    host,
-                    addr.ip()
-                )));
-            }
-        }
+    let ip = match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => Some(std::net::IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => Some(std::net::IpAddr::V6(ip)),
+        _ => None,
+    };
+    if ip.as_ref().is_some_and(is_forbidden_ip) {
+        return Err(RemoteError::InvalidUrl(format!(
+            "internal or reserved address not allowed: {}",
+            host
+        )));
     }
 
     Ok(())
 }
 
+/// Validate the exact addresses handed to the connector, without a second DNS
+/// lookup. Delegating the timeout also bounds DNS work by the request deadline.
+#[derive(Debug)]
+struct PublicResolver<R>(R);
+
+impl<R: Resolver> Resolver for PublicResolver<R> {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: NextTimeout,
+    ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        let addresses = self.0.resolve(uri, config, timeout)?;
+        if addresses
+            .iter()
+            .any(|address| is_forbidden_ip(&address.ip()))
+        {
+            return Err(ureq::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "host resolves to an internal or reserved address",
+            )));
+        }
+        Ok(addresses)
+    }
+}
+
+fn hardened_agent(tls_config: TlsConfig) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(HTTP_TIMEOUT_SECS)))
+        .max_redirects(0)
+        // A proxy can resolve the destination itself, bypassing PublicResolver.
+        .proxy(None)
+        .tls_config(tls_config)
+        .build();
+    ureq::Agent::with_parts(
+        config,
+        DefaultConnector::default(),
+        PublicResolver(DefaultResolver::default()),
+    )
+}
+
 fn is_forbidden_ip(ip: &std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_unspecified()
                 || v4.is_broadcast()
                 || v4.is_multicast()
-                || v4.octets() == [169, 254, 169, 254] // AWS/GCP metadata IP (also link_local, but explicit)
+                || a == 0 // this network
+                || (a == 100 && (64..=127).contains(&b)) // shared address space
+                || (a == 192 && b == 0 && c == 0 && ![9, 10].contains(&v4.octets()[3]))
+                || v4.is_documentation()
+                || (a == 198 && (18..=19).contains(&b)) // benchmarking
+                || a >= 240 // reserved
         }
         std::net::IpAddr::V6(v6) => {
             // IPv4-mapped IPv6 (::ffff:0:0/96) fast path: dual-stack systems
@@ -254,11 +320,27 @@ fn is_forbidden_ip(ip: &std::net::IpAddr) -> bool {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_forbidden_ip(&std::net::IpAddr::V4(v4));
             }
+            let segments = v6.segments();
+            // The well-known NAT64 prefix carries its IPv4 destination in
+            // the low 32 bits. Apply the same checks after translation.
+            if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return is_forbidden_ip(&std::net::IpAddr::V4(std::net::Ipv4Addr::from(
+                    (u128::from(*v6) & 0xffff_ffff) as u32,
+                )));
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
                 || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || (segments[0] & 0xffc0) == 0xfec0 // deprecated site-local
+                || segments[..3] == [0x64, 0xff9b, 1] // local-use translation
+                || segments[..4] == [0x100, 0, 0, 0] // discard-only
+                || segments[..4] == [0x100, 0, 0, 1] // dummy prefix
+                || segments[..3] == [0x2001, 2, 0] // benchmarking
+                || segments[..2] == [0x2001, 0xdb8] // documentation
+                || (segments[0] == 0x3fff && segments[1] & 0xf000 == 0) // documentation
+                || segments[0] == 0x5f00 // segment-routing SIDs
         }
     }
 }
@@ -284,12 +366,7 @@ pub fn fetch_metadata(url: &str) -> Result<String, RemoteError> {
     validate_url_host(url)?;
 
     let tls_config = build_tls_config(None)?;
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(HTTP_TIMEOUT_SECS)))
-        .max_redirects(0)
-        .tls_config(tls_config)
-        .build()
-        .new_agent();
+    let agent = hardened_agent(tls_config);
 
     let ua = format!(
         "zenv/{} (+https://github.com/zorl-engine/zorath-env)",
@@ -326,12 +403,7 @@ pub fn fetch_metadata(url: &str) -> Result<String, RemoteError> {
 fn fetch_url_secure(url: &str, ca_cert_path: Option<&str>) -> Result<String, RemoteError> {
     let tls_config = build_tls_config(ca_cert_path)?;
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(HTTP_TIMEOUT_SECS)))
-        .max_redirects(0)
-        .tls_config(tls_config)
-        .build()
-        .new_agent();
+    let agent = hardened_agent(tls_config);
 
     let mut response = agent
         .get(url)
@@ -370,9 +442,10 @@ fn build_tls_config(ca_cert_path: Option<&str>) -> Result<TlsConfig, RemoteError
                 )));
             }
         }
-        let pem_data = fs::read(ca_path).map_err(|e| {
-            RemoteError::CertificateError(format!("failed to read {}: {}", ca_path, e))
-        })?;
+        let pem_data =
+            read_limited(std::path::Path::new(ca_path), MAX_CA_CERT_BYTES).map_err(|e| {
+                RemoteError::CertificateError(format!("failed to read {}: {}", ca_path, e))
+            })?;
 
         let mut certs = Vec::new();
         for item in parse_pem(&pem_data) {
@@ -421,7 +494,7 @@ fn check_rate_limit(url: &str, rate_limit_seconds: u64) -> Result<(), RemoteErro
     }
 
     // Read last fetch timestamp from metadata
-    if let Ok(content) = fs::read_to_string(&metadata_path) {
+    if let Ok(content) = read_text_limited(&metadata_path, MAX_CACHE_METADATA_BYTES) {
         if let Ok(metadata) = serde_json::from_str::<CacheMetadata>(&content) {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -461,9 +534,8 @@ fn metadata_path_for_url(url: &str) -> Option<PathBuf> {
 
 /// Write schema content to cache with metadata, atomically.
 ///
-/// Both files (content + .meta sidecar) are staged to .tmp paths in the
-/// same directory then renamed into place. POSIX rename is atomic; on
-/// Windows fs::rename maps to ReplaceFileW. A SIGKILL between the two
+/// Both files (content + .meta sidecar) are staged to exclusive temporary
+/// files in the same directory then atomically persisted. A SIGKILL between the two
 /// renames can leave content fresh + .meta stale, but the read path
 /// recomputes SHA-256 against .meta.content_hash and treats mismatch
 /// as a cache miss, so the worst case is a refetch.
@@ -495,102 +567,60 @@ fn write_cache_with_metadata(url: &str, content: &str) -> Result<(), RemoteError
     Ok(())
 }
 
-/// Stage `bytes` to `<path>.tmp` then rename atomically over `path`.
-/// Cleans up the temp file on rename failure. Exposed crate-internal so
-/// command modules (init/example/template/export) can use the same
-/// pattern fix.rs uses for `.env` rewrites.
+/// Atomically replace a file using an exclusively created temporary file in
+/// the same directory. Existing permissions are preserved; new files are private.
 pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension(match path.extension() {
-        Some(ext) => format!("{}.tmp", ext.to_string_lossy()),
-        None => "tmp".to_string(),
-    });
-    if let Err(e) = fs::write(&tmp, bytes) {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-    if let Err(e) = fs::rename(&tmp, path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-    Ok(())
+    write_atomic_preserve_mode(path, bytes, 0o600)
 }
 
-/// Atomic write that preserves the target file's existing Unix mode (or
-/// applies `fallback_mode` if the target doesn't exist yet). Consolidates
-/// the inline atomic-write that fix.rs::apply_fixes previously open-coded
-/// for `.env` rewrites: write_atomic above does NOT preserve mode, which
-/// would leak the user's hand-tightened `.env` perms back to the umask
-/// default (typically 0644) after a fix run.
-///
-/// Uses a PID + subsecond-nanos tagged temp filename
-/// (`.{name}.zenvtmp.{pid}.{nanos}`) staged in the same directory as the
-/// target so concurrent zenv invocations against the same path cannot
-/// collide -- PID alone is insufficient under PID-reuse (container
-/// runtimes routinely recycle PID 1) and CI runners that fan out parallel
-/// jobs. `fs::rename` stays a single-FS atomic op. Tightens tmp perms
-/// BEFORE the rename so other local users never see the rewritten file at
-/// the umask default, even briefly.
 pub(crate) fn write_atomic_preserve_mode(
     path: &std::path::Path,
     bytes: &[u8],
     fallback_mode: u32,
 ) -> std::io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let file_name = path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "zenvtmp".to_string());
-    let pid = std::process::id();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let tmp = parent.join(format!(".{}.zenvtmp.{}.{}", file_name, pid, nanos));
-
-    #[cfg(unix)]
-    let original_mode: Option<u32> = {
-        use std::os::unix::fs::PermissionsExt;
-        fs::metadata(path)
-            .ok()
-            .map(|m| m.permissions().mode() & 0o7777)
-    };
-    #[cfg(not(unix))]
-    let original_mode: Option<u32> = None;
-
-    if let Err(e) = fs::write(&tmp, bytes) {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    // NamedTempFile creates with mode 0600 on Unix, before any bytes are written.
+    staged.write_all(bytes)?;
+    staged.as_file().sync_all()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = original_mode.unwrap_or(fallback_mode);
-        match fs::metadata(&tmp) {
-            Ok(meta) => {
-                let mut perms = meta.permissions();
-                perms.set_mode(mode);
-                let _ = fs::set_permissions(&tmp, perms);
-            }
+        let mode = match fs::metadata(path) {
+            Ok(meta) => meta.permissions().mode() & 0o777,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => fallback_mode,
+            Err(e) => return Err(e),
+        };
+        staged
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    let _ = fallback_mode;
+    // Windows may transiently deny replacement while another writer closes
+    // the previous destination. Retry only sharing/access conflicts, briefly.
+    for attempt in 0..=5 {
+        match staged.persist(path) {
+            Ok(_) => return Ok(()),
             Err(e) => {
-                let _ = fs::remove_file(&tmp);
-                return Err(e);
+                if cfg!(windows)
+                    && attempt < 5
+                    && matches!(e.error.raw_os_error(), Some(5 | 32 | 33))
+                {
+                    staged = e.file;
+                    std::thread::sleep(Duration::from_millis(10 * (attempt + 1)));
+                } else {
+                    return Err(e.error);
+                }
             }
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (original_mode, fallback_mode);
-    }
-
-    if let Err(e) = fs::rename(&tmp, path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-    Ok(())
+    unreachable!("final persistence attempt returns")
 }
 
 /// Get the cache directory path
@@ -632,7 +662,7 @@ fn verify_cache_meta(meta_path: &std::path::Path, content: &str) -> CacheVerdict
             meta_path.display()
         ));
     }
-    let meta_text = match fs::read_to_string(meta_path) {
+    let meta_text = match read_text_limited(meta_path, MAX_CACHE_METADATA_BYTES) {
         Ok(t) => t,
         Err(e) => {
             return CacheVerdict::Refetch(format!(
@@ -690,7 +720,8 @@ fn read_cache(url: &str) -> Result<Option<String>, RemoteError> {
         return Ok(None);
     }
 
-    let content = fs::read_to_string(&cache_path).map_err(|e| RemoteError::Cache(e.to_string()))?;
+    let content = read_text_limited(&cache_path, MAX_RESPONSE_BYTES)
+        .map_err(|e| RemoteError::Cache(e.to_string()))?;
 
     let meta_path = match metadata_path_for_url(url) {
         Some(p) => p,
@@ -770,6 +801,193 @@ pub fn resolve_relative_url(base_url: &str, relative_path: &str) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limited_reads_reject_oversized_files_and_invalid_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input");
+        fs::write(&path, "123456").unwrap();
+        assert_eq!(read_text_limited(&path, 6).unwrap(), "123456");
+        assert_eq!(
+            read_limited(&path, 5).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        fs::write(&path, [0xff]).unwrap();
+        assert_eq!(
+            read_text_limited(&path, 6).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ca_certificate_read_is_bounded_even_for_zero_sized_devices() {
+        let error = build_tls_config(Some("/dev/zero")).unwrap_err();
+        assert!(error.to_string().contains("byte limit"));
+    }
+
+    #[derive(Debug)]
+    struct FixedResolver(Vec<std::net::SocketAddr>);
+
+    impl Resolver for FixedResolver {
+        fn resolve(
+            &self,
+            _: &ureq::http::Uri,
+            _: &ureq::config::Config,
+            _: NextTimeout,
+        ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+            let mut addresses = self.empty();
+            for address in &self.0 {
+                addresses.push(*address);
+            }
+            Ok(addresses)
+        }
+    }
+
+    #[test]
+    fn resolver_rejects_private_answers_before_connecting() {
+        let agent = ureq::Agent::with_parts(
+            ureq::Agent::config_builder().proxy(None).build(),
+            DefaultConnector::default(),
+            PublicResolver(FixedResolver(vec![
+                "8.8.8.8:443".parse().unwrap(),
+                "127.0.0.1:443".parse().unwrap(),
+            ])),
+        );
+        let error = agent
+            .get("https://example.com/schema.json")
+            .call()
+            .unwrap_err();
+        assert!(
+            matches!(&error, ureq::Error::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn resolver_preserves_public_addresses_and_ports() {
+        let expected = vec![
+            "8.8.8.8:8443".parse().unwrap(),
+            "[2606:4700:4700::1111]:443".parse().unwrap(),
+        ];
+        let addresses = PublicResolver(FixedResolver(expected.clone()))
+            .resolve(
+                &"https://example.com/schema.json".parse().unwrap(),
+                &ureq::config::Config::default(),
+                NextTimeout {
+                    after: ureq::unversioned::transport::time::Duration::NotHappening,
+                    reason: ureq::Timeout::Global,
+                },
+            )
+            .unwrap();
+        assert_eq!(addresses.iter().copied().collect::<Vec<_>>(), expected);
+        assert!(hardened_agent(TlsConfig::default())
+            .config()
+            .proxy()
+            .is_none());
+    }
+
+    #[test]
+    fn remote_targets_reject_nonpublic_ranges_and_localhost_aliases() {
+        for ip in [
+            "0.1.2.3",
+            "100.64.0.1",
+            "100.127.255.254",
+            "192.0.0.8",
+            "192.0.2.1",
+            "198.18.0.1",
+            "198.19.255.254",
+            "198.51.100.1",
+            "203.0.113.1",
+            "240.0.0.1",
+            "fec0::1",
+            "2001:db8::1",
+            "3fff:fff::1",
+            "64:ff9b::7f00:1",
+            "64:ff9b:1::1",
+            "100::1",
+            "100:0:0:1::1",
+            "2001:2::1",
+            "5f00::1",
+        ] {
+            assert!(is_forbidden_ip(&ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "8.8.8.8",
+            "100.63.255.254",
+            "100.128.0.1",
+            "192.0.0.9",
+            "192.0.0.10",
+            "2606:4700:4700::1111",
+            "64:ff9b::808:808",
+        ] {
+            assert!(!is_forbidden_ip(&ip.parse().unwrap()), "{ip}");
+        }
+        for url in [
+            "https://localhost./schema.json",
+            "https://foo.local./schema.json",
+            "https://[::ffff:127.0.0.1]/schema.json",
+        ] {
+            assert!(validate_url_host(url).is_err(), "{url}");
+        }
+    }
+
+    #[test]
+    fn fresh_cache_is_available_during_network_rate_limit() {
+        let unique = tempfile::TempDir::new().unwrap();
+        let url = format!(
+            "https://8.8.8.8/{}.json",
+            unique.path().file_name().unwrap().to_string_lossy()
+        );
+        write_cache_with_metadata(&url, "{}").unwrap();
+        let result = fetch_remote_schema_secure(&url, false, &SecurityOptions::default());
+        fs::remove_file(cache_dir().unwrap().join(cache_filename(&url))).unwrap();
+        fs::remove_file(metadata_path_for_url(&url).unwrap()).unwrap();
+        assert_eq!(result.unwrap(), "{}");
+    }
+
+    #[test]
+    fn atomic_writers_never_share_staging_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("output.txt");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    write_atomic(&path, &[b'a' + i; 32 * 1024]).unwrap();
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let result = fs::read(&path).unwrap();
+        assert_eq!(result.len(), 32 * 1024);
+        assert!(result.iter().all(|byte| *byte == result[0]));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_private_mode_and_ignores_legacy_temp_symlink() {
+        use std::os::unix::{fs::symlink, fs::PermissionsExt};
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("output.env");
+        let unrelated = dir.path().join("unrelated");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&unrelated, "untouched").unwrap();
+        symlink(&unrelated, dir.path().join("output.env.tmp")).unwrap();
+        write_atomic(&path, b"secret").unwrap();
+        assert_eq!(fs::read_to_string(&unrelated).unwrap(), "untouched");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 
     #[test]
     fn test_is_remote_url() {
@@ -874,10 +1092,8 @@ mod tests {
 
     #[test]
     fn test_is_forbidden_ip_public_ipv6_allowed() {
-        // Documentation prefix 2001:db8::/32 and a generic public address
-        // must NOT be forbidden -- those are legitimate public destinations.
-        let doc: std::net::IpAddr = "2001:db8::1".parse().unwrap();
-        assert!(!is_forbidden_ip(&doc));
+        let public: std::net::IpAddr = "2606:4700:4700::1111".parse().unwrap();
+        assert!(!is_forbidden_ip(&public));
 
         // ::ffff:8.8.8.8 -- IPv4-mapped public address (Google DNS). After
         // the recursion this must NOT be forbidden because 8.8.8.8 is

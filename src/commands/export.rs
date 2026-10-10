@@ -89,6 +89,34 @@ pub fn export_to_string(
     let mut keys: Vec<&String> = env_map.keys().collect();
     keys.sort();
 
+    if matches!(
+        format,
+        ExportFormat::Shell
+            | ExportFormat::Docker
+            | ExportFormat::Systemd
+            | ExportFormat::GithubSecrets
+    ) {
+        for key in &keys {
+            let mut chars = key.chars();
+            if !chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                return Err(format!(
+                    "Invalid environment variable name for {}: {:?}",
+                    format, key
+                ));
+            }
+            if env_map[*key].contains('\0') {
+                return Err(format!(
+                    "{} contains a NUL byte, which {} cannot represent",
+                    key, format
+                ));
+            }
+        }
+    }
+
     match format {
         ExportFormat::Shell => export_shell(&keys, env_map),
         ExportFormat::Docker => export_docker(&keys, env_map),
@@ -233,6 +261,9 @@ fn export_docker(keys: &[&String], env_map: &HashMap<String, String>) -> Result<
 
     for key in keys {
         if let Some(value) = env_map.get(*key) {
+            if value.contains(['\n', '\r']) {
+                return Err(format!("{} contains a newline, which Dockerfile ENV cannot preserve; use JSON or dotenv export", key));
+            }
             let escaped = escape_docker_value(value);
             lines.push(format!("ENV {}={}", key, escaped));
         }
@@ -252,11 +283,14 @@ fn export_k8s(keys: &[&String], env_map: &HashMap<String, String>) -> Result<Str
         "data:".to_string(),
     ];
 
+    if keys.is_empty() {
+        *lines.last_mut().unwrap() = "data: {}".to_string();
+    }
     for key in keys {
         if let Some(value) = env_map.get(*key) {
             // YAML strings need proper quoting for special characters
             let yaml_value = escape_yaml_value(value);
-            lines.push(format!("  {}: {}", key, yaml_value));
+            lines.push(format!("  {}: {}", escape_yaml_value(key), yaml_value));
         }
     }
 
@@ -299,13 +333,11 @@ fn export_dotenv(keys: &[&String], env_map: &HashMap<String, String>) -> Result<
 
     for key in keys {
         if let Some(value) = env_map.get(*key) {
-            // Quote values that contain special characters
-            if needs_quoting(value) {
-                let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-                lines.push(format!("{}=\"{}\"", key, escaped));
-            } else {
-                lines.push(format!("{}={}", key, value));
-            }
+            lines.push(format!(
+                "{}={}",
+                key,
+                crate::envfile::format_env_value(value)
+            ));
         }
     }
 
@@ -327,16 +359,11 @@ fn export_github_secrets(
 
     for key in keys {
         if let Some(value) = env_map.get(*key) {
-            // Use heredoc for multi-line or special characters
-            if value.contains('\n') || value.contains('\'') {
-                lines.push(format!("gh secret set {} << 'EOF'", key));
-                lines.push(value.clone());
-                lines.push("EOF".to_string());
-            } else {
-                // Simple values can use --body
-                let escaped = value.replace('\\', "\\\\").replace('\'', "'\\''");
-                lines.push(format!("gh secret set {} --body '{}'", key, escaped));
-            }
+            // POSIX single quotes preserve newlines, backslashes and dollar
+            // signs. Escape apostrophes by closing/reopening the quoted word.
+            // A fixed heredoc delimiter could occur inside the secret.
+            let escaped = value.replace('\'', "'\\''");
+            lines.push(format!("gh secret set {} --body '{}'", key, escaped));
         }
     }
 
@@ -350,59 +377,29 @@ fn escape_shell_value(value: &str) -> String {
         .replace('"', "\\\"")
         .replace('$', "\\$")
         .replace('`', "\\`")
-        .replace('\n', "\\n")
 }
 
 /// Escape a value for Dockerfile ENV
 fn escape_docker_value(value: &str) -> String {
     // Docker ENV values with spaces need quoting
-    if value.contains(' ') || value.contains('"') || value.contains('$') {
-        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    if value
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '$' | '\\'))
+    {
+        let escaped = value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$");
         format!("\"{}\"", escaped)
     } else {
         value.to_string()
     }
 }
 
-/// Escape a value for YAML.
-///
-/// Force-quotes when the value would be misparsed by `kubectl apply` or any
-/// YAML 1.2 parser. Includes the YAML "indicator" leading characters that
-/// the prior implementation missed: `&` (anchor), `*` (alias), `!` (tag),
-/// `|` `>` (block scalars), `%` (directive), `@` ``` (reserved),
-/// `?` (mapping key), `-` (sequence entry), `[` `{` `,` (flow indicators).
+/// JSON strings are valid YAML 1.2 scalars and avoid implicit typing and
+/// literal control characters. ConfigMap data values must remain strings.
 fn escape_yaml_value(value: &str) -> String {
-    let needs_quote = value.contains(':')
-        || value.contains('#')
-        || value.contains('\n')
-        || value.contains('\t')
-        || value.contains('"')
-        || value.contains('\'')
-        || value.is_empty()
-        || value.starts_with(' ')
-        || value.ends_with(' ')
-        || value == "true"
-        || value == "false"
-        || value == "null"
-        || value.parse::<f64>().is_ok()
-        // Leading YAML indicators that change parsing
-        || matches!(
-            value.as_bytes().first(),
-            Some(b'&' | b'*' | b'!' | b'|' | b'>' | b'%' | b'@' | b'`' | b'?' | b'-' | b'[' | b'{' | b',')
-        )
-        // Any control character (other than tab/newline already handled)
-        || value.chars().any(|c| c.is_control() && c != '\t' && c != '\n');
-
-    if needs_quote {
-        let escaped = value
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\t', "\\t");
-        format!("\"{}\"", escaped)
-    } else {
-        value.to_string()
-    }
+    serde_json::to_string(value).expect("strings always serialize to JSON")
 }
 
 /// Escape a value for systemd Environment directive
@@ -412,17 +409,9 @@ fn escape_systemd_value(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
-}
-
-/// Check if a value needs quoting in .env format
-fn needs_quoting(value: &str) -> bool {
-    value.contains(' ')
-        || value.contains('"')
-        || value.contains('\'')
-        || value.contains('#')
-        || value.contains('\n')
-        || value.contains('$')
-        || value.is_empty()
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+        .replace('%', "%%")
 }
 
 #[cfg(test)]
@@ -497,7 +486,11 @@ mod tests {
         let result = export_k8s(&keys, &env).unwrap();
         assert!(result.contains("apiVersion: v1"));
         assert!(result.contains("kind: ConfigMap"));
-        assert!(result.contains("DATABASE_URL:"));
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed["data"]["DATABASE_URL"].as_str(),
+            env.get("DATABASE_URL").map(String::as_str)
+        );
     }
 
     #[test]
@@ -538,8 +531,8 @@ mod tests {
         // Numbers need quoting
         assert_eq!(escape_yaml_value("123"), "\"123\"");
         assert_eq!(escape_yaml_value("3.14"), "\"3.14\"");
-        // Normal strings don't need quoting
-        assert_eq!(escape_yaml_value("normal"), "normal");
+        // Normal strings are also quoted for consistent serialization
+        assert_eq!(escape_yaml_value("normal"), "\"normal\"");
     }
 
     // =========================================================================
@@ -573,16 +566,16 @@ mod tests {
         let keys: Vec<&String> = vec![&key];
         let result = export_github_secrets(&keys, &env).unwrap();
 
-        // Multiline values should use heredoc format
+        // Multiline values must be passed as one literal argument
         assert!(
-            result.contains("gh secret set PRIVATE_KEY << 'EOF'"),
-            "Should use heredoc for multiline"
+            result.contains("gh secret set PRIVATE_KEY --body 'line1\nline2\nline3'"),
+            "Should quote multiline values literally"
         );
         assert!(
             result.contains("line1\nline2\nline3"),
             "Should preserve newlines"
         );
-        assert!(result.contains("EOF"), "Should close heredoc");
+        assert!(!result.contains("<<"), "Should avoid delimiter collisions");
     }
 
     #[test]
@@ -593,10 +586,10 @@ mod tests {
         let keys: Vec<&String> = vec![&key];
         let result = export_github_secrets(&keys, &env).unwrap();
 
-        // Values with single quotes should use heredoc
+        // Apostrophes close and reopen the single-quoted word
         assert!(
-            result.contains("gh secret set CONFIG << 'EOF'"),
-            "Should use heredoc for quotes"
+            result.contains("gh secret set CONFIG --body 'it'\\''s a test'"),
+            "Should escape apostrophes in a quoted shell word"
         );
     }
 
