@@ -23,6 +23,7 @@ jobs:
     uses: ./.github/workflows/security.yml
     permissions:
       contents: read
+      checks: write
 
   action-tests:
     uses: ./.github/workflows/test-action.yml
