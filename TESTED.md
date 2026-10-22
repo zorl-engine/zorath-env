@@ -1,5 +1,16 @@
 # zenv - Tested and Verified
 
+## v0.4.0 verification - October 21, 2026
+
+This release replaces the deprecated `serde_yaml` engine with `serde-saphyr` 2, removing the unmaintained `unsafe-libyaml` crate (RUSTSEC-2024-0449) from the dependency tree, and raises the supported minimum Rust version from 1.85 to 1.99, the current stable toolchain. Local verification used Rust 1.99.1 on Linux x86-64; CI covered Linux, macOS, and Windows.
+
+- `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked` passed: **847 tests**, 0 failures, 2 existing ignored doc examples. Raising the minimum version surfaced three clippy `manual_is_multiple_of` findings in date validation; the modulo checks now use `is_multiple_of` with identical semantics.
+- `cargo audit` against the locked dependency tree (169 crates) reports **0 vulnerabilities and 0 warnings**; `unsafe-libyaml` and `serde_yaml` no longer appear in `Cargo.lock`. The fork `serde_yml` was evaluated and rejected: RustSec marks it unsound and unmaintained (RUSTSEC-2025-0068) and its pinned engine carries RUSTSEC-2026-0333.
+- `cargo +1.99.0 check --locked --all-targets` passed at the new minimum toolchain, and `cargo publish --dry-run --locked` packaged and verified v0.4.0 without uploading. The release helper checks (`scripts/test_release.py`) passed, and `scripts/release.py --check --tag v0.4.0` confirmed Cargo.toml, Cargo.lock, and the Action fallback agree.
+- [PR #21](https://github.com/zorl-engine/zorath-env/pull/21) carried the release (13 files) with every check green, including the renamed Rust 1.99 minimum-version job and cargo-audit. The first v0.4.0 tag push failed at Release startup: `release.yml` called `security.yml` as a reusable workflow granting only `contents: read`, while `security.yml` requests `checks: write`. [PR #22](https://github.com/zorl-engine/zorath-env/pull/22) added the missing grant (one line), the tag was moved to the fixed main, and the retry succeeded.
+
+The [v0.4.0 release](https://github.com/zorl-engine/zorath-env/releases/tag/v0.4.0) and [crate](https://crates.io/crates/zorath-env/0.4.0) are published from `a06637ad98b45487de7cc1b1ebeee31bea815f08`. The [Release run](https://github.com/zorl-engine/zorath-env/actions/runs/39714073749) completed successfully: preflight, CI, cargo-audit, Action tests, all four platform builds, release creation, and the crates.io publish step all passed (Dependency Review is pull-request-only and was skipped by design). The crates.io record for 0.4.0, verified through the API after publication, reports `rust_version` 1.99 and is not yanked; the GitHub Release carries the four binaries (`zenv-linux`, `zenv-macos-intel`, `zenv-macos-arm`, `zenv.exe`).
+
 ## Security review and website automation follow-up - October 10, 2026
 
 This follow-up changes tests, documentation, and automation; the published CLI and
