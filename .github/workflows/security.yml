@@ -23,6 +23,10 @@ on:
 
 permissions:
   contents: read
+  # rustsec/audit-check posts its report as a check run; without this the
+  # step fails with 'Resource not accessible by integration' and the run
+  # goes red even when the audit itself finds no vulnerabilities.
+  checks: write
 
 jobs:
   cargo-audit:
