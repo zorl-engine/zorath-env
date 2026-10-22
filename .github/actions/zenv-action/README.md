@@ -6,9 +6,9 @@ Validate `.env` files against JSON or YAML schemas (local files or HTTPS URLs) i
 
 ```yaml
 - name: Validate environment
-  uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.3.13
+  uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.4.0
   with:
-    version: '0.3.13'
+    version: '0.4.0'
     schema: env.schema.json
     env-file: .env.example
 ```
@@ -30,7 +30,7 @@ Validate `.env` files against JSON or YAML schemas (local files or HTTPS URLs) i
 
 The action requires Bash, curl, and jq, available on GitHub-hosted runners. Input paths are passed as literal arguments, including paths containing spaces or shell metacharacters. JSON validation errors are returned as an array of messages; input/schema failures include the CLI diagnostics.
 
-Linux and Windows prebuilt downloads target x86-64; macOS has Intel and Apple Silicon assets. The Linux asset is built on Ubuntu 24.04 with glibc; use `ubuntu-24.04` or a compatible runner, not Alpine. Unsupported Linux/Windows architectures or unavailable downloads fall back to Cargo (Rust 1.85+ for v0.3.13). Downloads do not yet have automatic consumer-side provenance verification. For a verified preinstalled binary, follow the [installation guide](https://github.com/zorl-engine/zorath-env/wiki/Installation) and set `skip-install`. `skip-install: 'true'` skips version lookup, download, and cache restoration, and validates with the binary already on PATH.
+Linux and Windows prebuilt downloads target x86-64; macOS has Intel and Apple Silicon assets. The Linux asset is built on Ubuntu 24.04 with glibc; use `ubuntu-24.04` or a compatible runner, not Alpine. Unsupported Linux/Windows architectures or unavailable downloads fall back to Cargo (Rust 1.99+ for v0.4.0). Downloads do not yet have automatic consumer-side provenance verification. For a verified preinstalled binary, follow the [installation guide](https://github.com/zorl-engine/zorath-env/wiki/Installation) and set `skip-install`. `skip-install: 'true'` skips version lookup, download, and cache restoration, and validates with the binary already on PATH.
 
 ## Outputs
 
@@ -59,9 +59,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Validate .env
-        uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.3.13
+        uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.4.0
         with:
-          version: '0.3.13'
+          version: '0.4.0'
           schema: env.schema.json
           env-file: .env.example
 ```
@@ -79,9 +79,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Validate ${{ matrix.env }}
-        uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.3.13
+        uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.4.0
         with:
-          version: '0.3.13'
+          version: '0.4.0'
           schema: env.schema.json
           env-file: .env.${{ matrix.env }}.example
 ```
@@ -91,10 +91,10 @@ jobs:
 ```yaml
 - name: Validate .env
   id: validate
-  uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.3.13
+  uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.4.0
   continue-on-error: true
   with:
-    version: '0.3.13'
+    version: '0.4.0'
     schema: env.schema.json
     env-file: .env
 
@@ -113,9 +113,9 @@ jobs:
 
 ```yaml
 - name: Validate .env
-  uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.3.13
+  uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.4.0
   with:
-    version: '0.3.13'
+    version: '0.4.0'
     schema: env.schema.json
     env-file: .env
 ```

@@ -1,10 +1,10 @@
 [package]
 name = "zorath-env"
-version = "0.3.13"
+version = "0.4.0"
 edition = "2021"
-# The locked ignore dependency uses edition 2024, requiring Rust 1.85.
+# This project tracks the current stable Rust toolchain.
 # CI checks this floor against Cargo.lock; revisit it when updating dependencies.
-rust-version = "1.85"
+rust-version = "1.99"
 description = "Fast CLI for .env validation against JSON/YAML schemas. 14 types, secret detection, watch mode, remote schemas, 7 export formats, CI templates, health diagnostics, code scanning, auto-fix. Language-agnostic single binary."
 license = "MIT"
 repository = "https://github.com/zorl-engine/zorath-env"
@@ -27,7 +27,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
+serde-saphyr = "2"
 regex = "1.10"
 thiserror = "2.0"
 url = "2.5"

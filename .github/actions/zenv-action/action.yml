@@ -78,7 +78,7 @@ runs:
             # The fallback hits exact-match download paths
             # so a stale value installs an outdated binary on crates.io
             # outages.
-            VERSION="0.3.13"
+            VERSION="0.4.0"
           fi
         else
           VERSION="$ZENV_VERSION"

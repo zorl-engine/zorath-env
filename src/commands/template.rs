@@ -284,8 +284,8 @@ mod tests {
             assert!(template.contains("-o zenv"));
             assert!(template.contains("chmod +x zenv"));
             assert!(!template.contains("tar xz") && !template.contains("alpine"));
-            let parsed: serde_yaml::Value = serde_yaml::from_str(&template).unwrap();
-            assert!(parsed.is_mapping());
+            let parsed: serde_json::Value = serde_saphyr::from_str(&template).unwrap();
+            assert!(parsed.is_object());
         }
         let release = include_str!("../../.github/workflows/release.yml");
         assert!(release.contains("name: zenv-linux"));
@@ -301,8 +301,8 @@ mod tests {
             circleci_template(false),
         ] {
             assert!(template.contains("cargo install zorath-env --locked"));
-            let parsed: serde_yaml::Value = serde_yaml::from_str(&template).unwrap();
-            assert!(parsed.is_mapping());
+            let parsed: serde_json::Value = serde_saphyr::from_str(&template).unwrap();
+            assert!(parsed.is_object());
         }
         assert_eq!(
             RUST_CIRCLE_IMAGE,
@@ -342,11 +342,8 @@ mod tests {
         assert!(template.contains("validate-env:"));
         assert!(template.contains("curl -fsSL"));
         assert!(template.contains(BINARY_IMAGE));
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&template).unwrap();
-        assert_eq!(
-            parsed["validate-env"]["rules"].as_sequence().unwrap().len(),
-            1
-        );
+        let parsed: serde_json::Value = serde_saphyr::from_str(&template).unwrap();
+        assert_eq!(parsed["validate-env"]["rules"].as_array().unwrap().len(), 1);
     }
 
     #[test]
