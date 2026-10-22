@@ -303,7 +303,7 @@ fn kubernetes_export_preserves_scalar_types_and_control_characters() {
             .into_iter()
             .collect();
         let exported = export_to_string(&env, ExportFormat::K8s).unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&exported).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&exported).unwrap();
         assert_eq!(parsed["data"]["VALUE"].as_str(), Some(value), "{exported}");
     }
 }

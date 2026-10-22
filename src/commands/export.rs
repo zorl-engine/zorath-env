@@ -486,7 +486,7 @@ mod tests {
         let result = export_k8s(&keys, &env).unwrap();
         assert!(result.contains("apiVersion: v1"));
         assert!(result.contains("kind: ConfigMap"));
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&result).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&result).unwrap();
         assert_eq!(
             parsed["data"]["DATABASE_URL"].as_str(),
             env.get("DATABASE_URL").map(String::as_str)

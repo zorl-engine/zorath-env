@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-21
+
+### Changed
+- YAML schema parsing and saving now use `serde-saphyr` 2, a YAML engine written in safe Rust, replacing the deprecated `serde_yaml`. The unmaintained `unsafe-libyaml` crate (RUSTSEC-2024-0449) is gone from the dependency tree; the locked audit reports zero vulnerabilities and zero warnings.
+- The supported minimum Rust version is now 1.99, the current stable toolchain, replacing the previous 1.85 minimum.
+
 ## [0.3.13] - 2026-10-10
 
 ### Documentation

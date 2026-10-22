@@ -7,7 +7,7 @@
 
 **Package:** `zorath-env` | **Binary:** `zenv`
 
-**Current release: [v0.3.13](https://github.com/zorl-engine/zorath-env/releases/tag/v0.3.13)** (October 10, 2026). This patch corrects CLI/MCP guidance, Action examples, and installation documentation, and is verified with Rust 1.99.0. It includes the config, schema, watch, masking, and release hardening shipped in v0.3.12. See the [changelog](CHANGELOG.md), [verification record](TESTED.md), and [complete wiki](https://github.com/zorl-engine/zorath-env/wiki).
+**Current release: [v0.4.0](https://github.com/zorl-engine/zorath-env/releases/tag/v0.4.0)** (October 21, 2026). This release replaces the deprecated serde_yaml engine with serde-saphyr, removing the unmaintained unsafe-libyaml dependency from the tree, and raises the supported minimum Rust version to 1.99. See the [changelog](CHANGELOG.md), [verification record](TESTED.md), and [complete wiki](https://github.com/zorl-engine/zorath-env/wiki).
 
 **Built by Zorath -- infrastructure for builders.**
 
@@ -44,18 +44,18 @@ Local validation runs offline and never uploads your `.env` values. Remote schem
 ## Install
 
 ### Via cargo (recommended)
-Use the latest stable toolchain, [Rust 1.99.0](https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/) as of October 10, 2026. The supported minimum with locked dependencies remains Rust 1.85.
+Use the latest stable toolchain, [Rust 1.99.0](https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/) as of October 10, 2026. The supported minimum with locked dependencies is Rust 1.99.
 
 ```bash
 rustup update stable
 cargo +stable install --locked zorath-env
 ```
 
-For a reproducible install, use `cargo install zorath-env --version 0.3.13 --locked`.
+For a reproducible install, use `cargo install zorath-env --version 0.4.0 --locked`.
 
 ### Prebuilt binaries
 
-Download from [v0.3.13](https://github.com/zorl-engine/zorath-env/releases/tag/v0.3.13). No Rust toolchain is needed:
+Download from [v0.4.0](https://github.com/zorl-engine/zorath-env/releases/tag/v0.4.0). No Rust toolchain is needed:
 
 | Platform | Asset |
 |---|---|
@@ -777,9 +777,9 @@ Validate `.env` files in your CI/CD pipeline:
 
 ```yaml
 - name: Validate .env
-  uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.3.13
+  uses: zorl-engine/zorath-env/.github/actions/zenv-action@v0.4.0
   with:
-    version: '0.3.13'
+    version: '0.4.0'
     schema: env.schema.json
     env-file: .env.example
 ```

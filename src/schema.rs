@@ -328,7 +328,7 @@ fn parse_schema_content(content: &str, format: SchemaFormat) -> Result<SchemaFil
     match format {
         SchemaFormat::Json => serde_json::from_str(content)
             .map_err(|e| SchemaError::Parse(format.name().to_string(), e.to_string())),
-        SchemaFormat::Yaml => serde_yaml::from_str(content)
+        SchemaFormat::Yaml => serde_saphyr::from_str(content)
             .map_err(|e| SchemaError::Parse(format.name().to_string(), e.to_string())),
     }
 }
@@ -510,7 +510,7 @@ pub fn save_schema(path: &str, schema: &Schema) -> Result<(), SchemaError> {
     let content = match format {
         SchemaFormat::Json => serde_json::to_string_pretty(schema)
             .map_err(|e| SchemaError::Parse(format.name().to_string(), e.to_string()))?,
-        SchemaFormat::Yaml => serde_yaml::to_string(schema)
+        SchemaFormat::Yaml => serde_saphyr::to_string(schema)
             .map_err(|e| SchemaError::Parse(format.name().to_string(), e.to_string()))?,
     };
     remote::write_atomic(Path::new(path), content.as_bytes())
