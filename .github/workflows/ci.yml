@@ -110,9 +110,9 @@ jobs:
           cargo run -- version
 
   msrv:
-    name: Rust 1.85 minimum version
+    name: Rust 1.99 minimum version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.99.0
       - run: cargo check --locked --all-targets
