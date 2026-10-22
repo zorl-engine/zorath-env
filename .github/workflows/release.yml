@@ -66,24 +66,32 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             name: zenv.exe
+    steps:
+      - uses: actions/checkout@v6
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
+
       - name: Rename binary (Unix)
         if: matrix.os != 'windows-latest'
         run: |
           mv target/${{ matrix.target }}/release/zenv ${{ matrix.name }}
+
       - name: Rename binary (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           mv target/${{ matrix.target }}/release/zenv.exe ${{ matrix.name }}
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ matrix.name }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
